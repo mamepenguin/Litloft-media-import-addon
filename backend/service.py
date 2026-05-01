@@ -641,4 +641,57 @@ def _ensure_loft_table() -> None:
         db.close()
 
 
+def _backfill_provider_item_ids() -> int:
+    """Populate ``provider_item_id`` on rows that pre-date Phase 2.
+
+    Scans rows where the column is NULL, dispatches each ``url`` through
+    the SubscriptionProvider registry, and writes the resolved item_id
+    when the URL points at a single video. Channel / playlist / unknown
+    URLs are intentionally left NULL — they wouldn't have a per-video
+    id anyway, and the dedup index treats NULLs as non-matching which
+    is the correct behavior.
+
+    Idempotent: rows already filled are skipped via the WHERE clause.
+    Returns the number of rows updated, for logging / tests.
+    """
+    from .subscription.registry import (
+        REF_KIND_VIDEO,
+        find_subscription_provider_by_url,
+    )
+
+    updated = 0
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            text(
+                "SELECT file_id, url FROM loft_metadata "
+                "WHERE provider_item_id IS NULL"
+            )
+        ).mappings().all()
+        for row in rows:
+            match = find_subscription_provider_by_url(row["url"])
+            if match is None:
+                continue
+            _, ref = match
+            if ref.kind != REF_KIND_VIDEO:
+                # Channel / playlist URLs don't yield a per-video id;
+                # the .loft is for a video, so this row's url being
+                # non-video is unusual but harmless. Leave NULL.
+                continue
+            db.execute(
+                text(
+                    "UPDATE loft_metadata SET provider_item_id = :iid "
+                    "WHERE file_id = :fid"
+                ),
+                {"iid": ref.ref, "fid": row["file_id"]},
+            )
+            updated += 1
+        if updated:
+            db.commit()
+            logger.info("backfilled provider_item_id on %d rows", updated)
+    finally:
+        db.close()
+    return updated
+
+
 loft_manager = LoftManager()

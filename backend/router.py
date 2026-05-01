@@ -28,8 +28,13 @@ from .schemas import (
     LoftCreateResponse,
     LoftMetadataResponse,
 )
-from .service import loft_manager, _ensure_loft_table
+from .service import (
+    loft_manager,
+    _backfill_provider_item_ids,
+    _ensure_loft_table,
+)
 from .provider_registration import register_media_import_providers
+from .subscription.registration import register_subscription_providers
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +55,12 @@ router = APIRouter(prefix="/api/addons/media_import", tags=["media_import"])
 
 async def on_startup() -> None:
     register_media_import_providers()
+    register_subscription_providers()
     _ensure_loft_table()
+    # Backfill must run after both registries and the schema are ready;
+    # it depends on the youtube subscription provider being registered
+    # to recognize legacy URLs.
+    _backfill_provider_item_ids()
     await loft_manager.start_worker()
 
 
