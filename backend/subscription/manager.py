@@ -33,6 +33,7 @@ from app.database import SessionLocal
 from app.services.scanner import register_single_file
 from app.services.ws import broadcast_from_thread
 
+from ..service import _save_loft_thumbnail
 from .registry import (
     REF_KIND_CHANNEL,
     REF_KIND_VIDEO,
@@ -515,6 +516,20 @@ class SubscriptionManager:
             if loft_path.exists():
                 loft_path.unlink()
             raise
+
+        # Mirror the /link pipeline so subscription-imported .loft files
+        # get the same thumbnail UX as single-link imports. Pass
+        # ``loft_path.name`` rather than ``meta.title`` because
+        # _allocate_loft_path may have appended a "(1)" suffix or run
+        # _sanitize_filename — the thumb_rel must match the on-disk
+        # filename for the core thumbnail endpoint to find it.
+        _save_loft_thumbnail(
+            file_id=file_id,
+            drive=drive,
+            folder_path=folder_path,
+            filename=loft_path.name,
+            thumbnail_url=meta.thumbnail_url,
+        )
 
         transcript_error: str | None = None
         if meta.has_captions or include_no_transcript:

@@ -342,6 +342,156 @@ class TestSyncCreatesNewItems:
         assert not by_iid["vid_b"]["captions_downloaded"]
 
 
+class TestSyncThumbnail:
+    """Subscription-imported .loft files must populate File.thumbnail_path
+    via the shared _save_loft_thumbnail helper, mirroring the /link path
+    (hako IpF19kUI3OKoY_ps7iKg1). Without this, grid views fall back to
+    the placeholder image even when the provider returned a thumbnail URL.
+    """
+
+    def test_thumbnail_url_populates_file_thumbnail_path(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider,
+        monkeypatch,
+    ) -> None:
+        from addons.media_import import service
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        fake_provider.headers = [ItemHeader(item_id="vt", title="WithThumb")]
+        fake_provider.items = {
+            "vt": ItemMetadata(
+                item_id="vt",
+                canonical_url="https://fake/v/vt",
+                title="WithThumb",
+                thumbnail_url="https://fake.cdn/vt.jpg",
+            ),
+        }
+
+        # Stub the network call but materialize a file so the helper's
+        # commit path is exercised end-to-end.
+        def _fake_dl(url, dest):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"fake jpg")
+            return True
+
+        monkeypatch.setattr(service, "_download_thumbnail_sync", _fake_dl)
+
+        mgr = SubscriptionManager()
+        sub_id = _create_subscription(mgr, drive="d", folder="yt")
+        result = mgr._sync_blocking(sub_id)
+        assert result["added"] == 1
+
+        db = media_import_db()
+        try:
+            row = db.execute(
+                text(
+                    "SELECT thumbnail_path FROM files "
+                    "WHERE filename = 'WithThumb.loft'"
+                )
+            ).first()
+        finally:
+            db.close()
+        assert row is not None
+        assert row[0] == "d/yt/WithThumb.jpg"
+
+    def test_no_thumbnail_url_leaves_thumbnail_path_null(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider,
+        monkeypatch,
+    ) -> None:
+        from addons.media_import import service
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        fake_provider.headers = [ItemHeader(item_id="nt", title="NoThumb")]
+        fake_provider.items = {
+            "nt": ItemMetadata(
+                item_id="nt",
+                canonical_url="https://fake/v/nt",
+                title="NoThumb",
+                # thumbnail_url left as None
+            ),
+        }
+
+        called: list = []
+        monkeypatch.setattr(
+            service, "_download_thumbnail_sync",
+            lambda *a, **kw: called.append(True) or True,
+        )
+
+        mgr = SubscriptionManager()
+        sub_id = _create_subscription(mgr, drive="d", folder="yt")
+        mgr._sync_blocking(sub_id)
+
+        assert called == []  # helper short-circuits before download
+        db = media_import_db()
+        try:
+            row = db.execute(
+                text(
+                    "SELECT thumbnail_path FROM files "
+                    "WHERE filename = 'NoThumb.loft'"
+                )
+            ).first()
+        finally:
+            db.close()
+        assert row is not None
+        assert row[0] is None
+
+    def test_filename_uniquifier_used_for_thumb_path(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider,
+        monkeypatch,
+    ) -> None:
+        """When _allocate_loft_path appends '(1)' for a name collision,
+        the thumbnail path must use the same uniquified stem so the core
+        thumbnail endpoint can resolve filename → thumbnail.
+        """
+        from addons.media_import import service
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        # Pre-seed an unrelated .loft at the target name to force
+        # _allocate_loft_path into the "(1)" branch.
+        (drive_path / "yt").mkdir(parents=True, exist_ok=True)
+        (drive_path / "yt" / "Dup.loft").write_text("{}", encoding="utf-8")
+
+        fake_provider.headers = [ItemHeader(item_id="d2", title="Dup")]
+        fake_provider.items = {
+            "d2": ItemMetadata(
+                item_id="d2",
+                canonical_url="https://fake/v/d2",
+                title="Dup",
+                thumbnail_url="https://fake.cdn/d2.jpg",
+            ),
+        }
+        monkeypatch.setattr(
+            service, "_download_thumbnail_sync",
+            lambda url, dest: True,
+        )
+
+        mgr = SubscriptionManager()
+        sub_id = _create_subscription(mgr, drive="d", folder="yt")
+        mgr._sync_blocking(sub_id)
+
+        db = media_import_db()
+        try:
+            row = db.execute(
+                text(
+                    "SELECT filename, thumbnail_path FROM files "
+                    "WHERE folder_path = 'yt' "
+                    "  AND filename LIKE 'Dup%' "
+                    "  AND filename != 'Dup.loft'"
+                )
+            ).first()
+        finally:
+            db.close()
+        assert row is not None
+        assert row[0] == "Dup (1).loft"
+        # Thumb stem must match the uniquified filename.
+        assert row[1] == "d/yt/Dup (1).jpg"
+
+
 class TestSyncDedup:
     def test_existing_loft_in_same_folder_is_reused(
         self, media_import_db, drive_path, fake_provider: _FakeProvider
