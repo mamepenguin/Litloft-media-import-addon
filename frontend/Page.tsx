@@ -17,6 +17,7 @@ import {
   type SubscriptionKind,
   type SubscriptionSyncResult,
 } from "./api";
+import SubscriptionsList from "./SubscriptionsList";
 
 interface PendingItem {
   url: string;
@@ -62,6 +63,7 @@ export default function MediaImportPage() {
   const [error, setError] = useState<string | null>(null);
   const [recent, setRecent] = useState<PendingItem[]>([]);
   const [recentSubs, setRecentSubs] = useState<PendingSubscription[]>([]);
+  const [subsListVersion, setSubsListVersion] = useState(0);
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -147,6 +149,9 @@ export default function MediaImportPage() {
           createdAt: Date.now(),
         };
         setRecentSubs((prev) => [next, ...prev].slice(0, 10));
+        // Force SubscriptionsList to re-fetch so the new subscription
+        // appears in the list section without manual refresh.
+        setSubsListVersion((v) => v + 1);
       } else {
         const result = await createLoft(
           trimmed, selectedDrive, selectedFolder,
@@ -387,6 +392,15 @@ export default function MediaImportPage() {
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {selectedDrive && (
+        <div className="mt-10">
+          <h2 className="mb-3 text-sm font-medium text-text-secondary">
+            Subscriptions on {selectedDrive}
+          </h2>
+          <SubscriptionsList key={`${selectedDrive}-${subsListVersion}`} drive={selectedDrive} />
         </div>
       )}
 
