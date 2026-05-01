@@ -295,6 +295,48 @@ def _download_thumbnail_sync(thumbnail_url: str, dest: Path) -> bool:
         return False
 
 
+def _save_loft_thumbnail(
+    file_id: str,
+    drive: str,
+    folder_path: str,
+    filename: str,
+    thumbnail_url: str | None,
+) -> str | None:
+    """Download a .loft's remote thumbnail and update File.thumbnail_path.
+
+    Returns the relative thumbnail_path on success, None on failure or
+    when ``thumbnail_url`` is empty. Failures are logged but not raised
+    — the .loft is still usable in degraded mode (placeholder thumb).
+
+    Used by both the /link pipeline (LoftManager._fetch_and_update) and
+    the subscription import pipeline (SubscriptionManager._import_one_item)
+    so the two paths produce identical thumbnail state per file_id.
+    Centralizing this here is the structural defense against the kind of
+    contract drift documented in hako rSexxNohzBFCSwvD7oQPI.
+    """
+    if not thumbnail_url:
+        return None
+    nfc_stem = Path(unicodedata.normalize("NFC", filename)).stem
+    thumb_rel = (
+        f"{drive}/{folder_path}/{nfc_stem}.jpg"
+        if folder_path
+        else f"{drive}/{nfc_stem}.jpg"
+    )
+    thumb_full = config.THUMBNAILS_DIR / thumb_rel
+    if not _download_thumbnail_sync(thumbnail_url, thumb_full):
+        return None
+    db = SessionLocal()
+    try:
+        file_record = db.query(File).filter(File.id == file_id).first()
+        if file_record is None:
+            return None
+        file_record.thumbnail_path = thumb_rel
+        db.commit()
+    finally:
+        db.close()
+    return thumb_rel
+
+
 class LoftManager:
     def __init__(self) -> None:
         self._queue: asyncio.Queue[str] = asyncio.Queue()
@@ -455,20 +497,18 @@ class LoftManager:
             if meta.get("duration"):
                 file_record.duration = meta["duration"]
 
-            if meta.get("thumbnail_url"):
-                nfc_stem = Path(
-                    unicodedata.normalize("NFC", file_record.filename)
-                ).stem
-                thumb_rel = (
-                    f"{file_record.drive}/{file_record.folder_path}/{nfc_stem}.jpg"
-                    if file_record.folder_path
-                    else f"{file_record.drive}/{nfc_stem}.jpg"
-                )
-                thumb_full = config.THUMBNAILS_DIR / thumb_rel
-                if _download_thumbnail_sync(meta["thumbnail_url"], thumb_full):
-                    file_record.thumbnail_path = thumb_rel
-
             db.commit()
+
+            # Thumbnail download runs in its own session via the shared
+            # helper so the /link and subscription pipelines stay in
+            # lockstep (hako IpF19kUI3OKoY_ps7iKg1).
+            _save_loft_thumbnail(
+                file_id=file_record.id,
+                drive=file_record.drive,
+                folder_path=file_record.folder_path,
+                filename=file_record.filename,
+                thumbnail_url=meta.get("thumbnail_url"),
+            )
 
             provider = detect_provider(item.url)
             now_iso = datetime.now(UTC).isoformat()
