@@ -43,9 +43,11 @@ def media_import_db(tmp_path, monkeypatch):
     # Patch each call site so per-test isolation actually applies.
     import addons.media_import.service as service
     import addons.media_import.router as router
+    import addons.media_import.subscription.manager as manager_mod
 
     monkeypatch.setattr(service, "SessionLocal", TestSession)
     monkeypatch.setattr(router, "SessionLocal", TestSession)
+    monkeypatch.setattr(manager_mod, "SessionLocal", TestSession)
 
     # Materialize loft_metadata via the addon's own migration helper so
     # the schema under test is the production schema.
@@ -57,6 +59,9 @@ def media_import_db(tmp_path, monkeypatch):
     #   - intelligence event hook (no addon registry in unit tests)
     monkeypatch.setattr(
         service, "broadcast_from_thread", lambda *_a, **_kw: None
+    )
+    monkeypatch.setattr(
+        manager_mod, "broadcast_from_thread", lambda *_a, **_kw: None
     )
     import app.services.event_hooks as event_hooks
 
