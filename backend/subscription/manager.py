@@ -1,15 +1,15 @@
 """SubscriptionManager — drives sync for one subscription.
 
-Responsibilities (Phase 2 Commit 3c):
+Responsibilities:
 
-- ``create``  — resolve URL via the registry, canonicalize the ref if
-  the provider returns a non-canonical channel form, INSERT the
+- ``create``         — resolve URL via the registry, canonicalize the
+  ref if the provider returns a non-canonical channel form, INSERT the
   ``subscriptions`` row.
-- ``sync``    — under a per-id ``asyncio.Lock``, run one diff/import
-  pass: ``provider.list_items`` → diff against ``subscription_videos``
-  → for each new item, dedup against existing ``loft_metadata`` (same
-  drive + folder) or fetch + create the .loft + transcript.
-- ``delete``  — DELETE the row (CASCADE drops subscription_videos).
+- ``_sync_blocking`` — synchronous executor called by SubscriptionWorker
+  (see ``subscription/worker.py``). Runs either a full diff/import pass
+  (``item_id is None``) or a single-item retry. Concurrency is the
+  worker's responsibility; this method assumes serial invocation.
+- ``delete``         — DELETE the row (CASCADE drops subscription_videos).
 
 The manager intentionally keeps the .loft writing path narrow: it
 mirrors ``LoftManager.create_loft_sync`` (single-URL import) so a video
@@ -20,16 +20,13 @@ items inherit the standard caption-recovery behavior for free.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
-import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import text
-from sqlalchemy.orm import Session
 
 import app.config as config
 from app.database import SessionLocal
@@ -50,10 +47,6 @@ logger = logging.getLogger(__name__)
 
 
 # ---- Public exceptions --------------------------------------------
-
-
-class SubscriptionConflict(Exception):
-    """A sync is already running for this subscription."""
 
 
 class SubscriptionNotFound(Exception):
@@ -134,35 +127,13 @@ def _allocate_loft_path(
 
 
 class SubscriptionManager:
-    def __init__(self) -> None:
-        # In-flight set guarded by a single async mutex. Per-id Lock
-        # would TOCTOU under concurrent requests (two callers can both
-        # observe ``Lock.locked() == False`` before either acquires) and
-        # also leak entries forever (hako 4GQX1-KucQ1lbCeLCylwe). The
-        # check-and-add inside ``_inflight_mutex`` is atomic, and the
-        # set is bounded by the number of concurrent syncs.
-        self._inflight: set[int] = set()
-        self._inflight_mutex: asyncio.Lock = asyncio.Lock()
+    """Owns DB writes for one subscription.
 
-    async def _claim_inflight(self, subscription_id: int) -> None:
-        """Mark this id as in-flight or raise SubscriptionConflict."""
-        async with self._inflight_mutex:
-            if subscription_id in self._inflight:
-                raise SubscriptionConflict(
-                    f"sync already running for subscription {subscription_id}"
-                )
-            self._inflight.add(subscription_id)
-
-    def _release_inflight(self, subscription_id: int) -> None:
-        self._inflight.discard(subscription_id)
-
-    def is_running(self, subscription_id: int) -> bool:
-        """Return True iff a sync / retry currently holds the in-flight slot.
-
-        Test-only escape hatch — production callers should observe the
-        409 contract instead of polling this.
-        """
-        return subscription_id in self._inflight
+    Concurrency / serialization is the worker's responsibility (see
+    ``subscription/worker.py``); this class is a stateless helper from
+    the worker's perspective. Direct callers in tests invoke
+    ``_sync_blocking`` synchronously.
+    """
 
     # ---- create ---------------------------------------------------
 
@@ -245,23 +216,21 @@ class SubscriptionManager:
         finally:
             db.close()
 
-    # ---- sync -----------------------------------------------------
-
-    async def sync(
-        self, subscription_id: int, backfill: int | None = None
-    ) -> dict:
-        await self._claim_inflight(subscription_id)
-        try:
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(
-                None, self._sync_blocking, subscription_id, backfill
-            )
-        finally:
-            self._release_inflight(subscription_id)
+    # ---- sync (single entry, called from worker) -----------------
 
     def _sync_blocking(
-        self, subscription_id: int, backfill: int | None
+        self,
+        subscription_id: int,
+        backfill: int | None = None,
+        item_id: str | None = None,
     ) -> dict:
+        """Synchronous sync executor — called by SubscriptionWorker.
+
+        ``item_id is None`` runs a full diff-and-import pass. ``item_id``
+        non-None runs a single-item retry: the row must already exist in
+        ``subscription_videos`` (it is a retry, not a fresh discovery)
+        and we return a one-item result for parity with full sync.
+        """
         sub = self._load_subscription(subscription_id)
         provider = get_subscription_provider(sub["provider"])
         if provider is None:
@@ -270,6 +239,18 @@ class SubscriptionManager:
             kind=sub["source_kind"], ref=sub["source_ref"]
         )
 
+        if item_id is not None:
+            return self._sync_single_item(
+                subscription_id, sub, provider, ref, item_id
+            )
+
+        return self._sync_diff(
+            subscription_id, sub, provider, ref, backfill
+        )
+
+    def _sync_diff(
+        self, subscription_id, sub, provider, ref, backfill
+    ) -> dict:
         headers = provider.list_items(ref, limit=backfill)
         upstream_ids = [h.item_id for h in headers]
 
@@ -327,36 +308,10 @@ class SubscriptionManager:
             "total_new": len(new_ids),
         }
 
-    # ---- retry single item ---------------------------------------
-
-    async def retry_item(
-        self, subscription_id: int, item_id: str
+    def _sync_single_item(
+        self, subscription_id, sub, provider, ref, item_id
     ) -> dict:
-        """Re-attempt one previously-failed item under the per-id Lock.
-
-        Returns the same shape as ``sync`` so the route handler can hand
-        it back uniformly. The row must already exist in
-        ``subscription_videos`` (this is a retry, not a fresh discovery);
-        callers that don't have one should run a full sync instead.
-        """
-        await self._claim_inflight(subscription_id)
-        try:
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(
-                None, self._retry_blocking, subscription_id, item_id
-            )
-        finally:
-            self._release_inflight(subscription_id)
-
-    def _retry_blocking(
-        self, subscription_id: int, item_id: str
-    ) -> dict:
-        sub = self._load_subscription(subscription_id)
-        provider = get_subscription_provider(sub["provider"])
-        if provider is None:
-            raise ValueError(f"Provider not registered: {sub['provider']}")
-
-        # Confirm the row exists before doing any network work.
+        # Confirm the row exists before any network work.
         db = SessionLocal()
         try:
             existing = db.execute(
@@ -374,9 +329,6 @@ class SubscriptionManager:
             )
         first_seen = existing[0]
 
-        ref = SubscriptionRef(
-            kind=sub["source_kind"], ref=sub["source_ref"]
-        )
         try:
             outcome = self._import_one_item(
                 provider=provider,

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { RefreshCw } from "lucide-react";
+import { useWebSocket } from "@/hooks/useWebSocket";
 import {
   listSubscriptionVideos,
   retrySubscriptionVideo,
@@ -40,6 +41,17 @@ export default function SubscriptionItems({ subscriptionId }: Props) {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subscriptionId]);
+
+  // Refresh the items list when this subscription completes a sync,
+  // so retried items flip from "failed" to "imported" without the user
+  // having to collapse + re-expand the row.
+  const completedEvent = useWebSocket("media_import.subscription.sync_completed");
+  useEffect(() => {
+    if (!completedEvent) return;
+    if (completedEvent.data?.subscription_id !== subscriptionId) return;
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [completedEvent, subscriptionId]);
 
   async function handleRetry(itemId: string) {
     setRetrying((prev) => new Set(prev).add(itemId));

@@ -15,7 +15,6 @@ import {
   resolveSubscriptionUrl,
   syncSubscription,
   type SubscriptionKind,
-  type SubscriptionSyncResult,
 } from "./api";
 import SubscriptionsList from "./SubscriptionsList";
 
@@ -23,13 +22,6 @@ interface PendingItem {
   url: string;
   filename: string;
   fileId: string;
-  createdAt: number;
-}
-
-interface PendingSubscription {
-  url: string;
-  kind: SubscriptionKind;
-  summary: SubscriptionSyncResult;
   createdAt: number;
 }
 
@@ -62,7 +54,6 @@ export default function MediaImportPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [recent, setRecent] = useState<PendingItem[]>([]);
-  const [recentSubs, setRecentSubs] = useState<PendingSubscription[]>([]);
   const [subsListVersion, setSubsListVersion] = useState(0);
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -141,16 +132,11 @@ export default function MediaImportPage() {
           folder_path: selectedFolder,
           include_no_transcript: includeNoTranscript,
         });
-        const summary = await syncSubscription(sub.id, backfill);
-        const next: PendingSubscription = {
-          url: trimmed,
-          kind,
-          summary,
-          createdAt: Date.now(),
-        };
-        setRecentSubs((prev) => [next, ...prev].slice(0, 10));
-        // Force SubscriptionsList to re-fetch so the new subscription
-        // appears in the list section without manual refresh.
+        // Fire-and-forget: enqueue the initial backfill and let the
+        // worker stream progress via WS. The form unblocks immediately
+        // — completion will surface in SubscriptionsList via the
+        // ``subscription.sync_completed`` event.
+        await syncSubscription(sub.id, backfill);
         setSubsListVersion((v) => v + 1);
       } else {
         const result = await createLoft(
@@ -404,28 +390,6 @@ export default function MediaImportPage() {
         </div>
       )}
 
-      {recentSubs.length > 0 && (
-        <div className="mt-8" data-testid="recent-subscriptions">
-          <h2 className="mb-3 text-sm font-medium text-text-secondary">
-            Recent subscription syncs
-          </h2>
-          <ul className="space-y-2">
-            {recentSubs.map((s, i) => (
-              <li
-                key={`${s.createdAt}-${i}`}
-                className="rounded-lg border border-border-primary bg-bg-card px-3 py-2"
-              >
-                <div className="text-sm font-medium text-text-primary">
-                  {s.kind === "channel" ? "Channel" : s.kind === "playlist" ? "Playlist" : "Feed"}
-                  {": "}
-                  added {s.summary.added}, reused {s.summary.reused}, failed {s.summary.failed}
-                </div>
-                <div className="truncate text-xs text-text-muted">{s.url}</div>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
     </div>
   );
 }

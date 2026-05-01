@@ -2,12 +2,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { ChevronDown, ChevronRight, RefreshCw, Trash2 } from "lucide-react";
+import { useWebSocket } from "@/hooks/useWebSocket";
 import {
   deleteSubscription,
   listSubscriptions,
   syncSubscription,
   type Subscription,
-  type SubscriptionSyncResult,
 } from "./api";
 import SubscriptionItems from "./SubscriptionItems";
 
@@ -41,9 +41,13 @@ export default function SubscriptionsList({ drive }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
-  const [lastSummary, setLastSummary] = useState<
-    Record<number, SubscriptionSyncResult>
-  >({});
+  // Track which subscriptions are syncing on top of the snapshot from
+  // GET /subscriptions. Keys are added on sync_started, removed on
+  // sync_completed; the next refetch reconciles with server state.
+  const [syncing, setSyncing] = useState<Set<number>>(new Set());
+
+  const startedEvent = useWebSocket("media_import.subscription.sync_started");
+  const completedEvent = useWebSocket("media_import.subscription.sync_completed");
 
   const load = useCallback(async () => {
     if (!drive) return;
@@ -52,6 +56,8 @@ export default function SubscriptionsList({ drive }: Props) {
     try {
       const rows = await listSubscriptions(drive);
       setSubs(rows);
+      // Reconcile syncing set with server-side running flag.
+      setSyncing(new Set(rows.filter((s) => s.running).map((s) => s.id)));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load");
     } finally {
@@ -63,13 +69,46 @@ export default function SubscriptionsList({ drive }: Props) {
     load();
   }, [load]);
 
+  // Apply WS sync_started events optimistically.
+  useEffect(() => {
+    if (!startedEvent) return;
+    const sid = startedEvent.data?.subscription_id as number | undefined;
+    if (typeof sid !== "number") return;
+    setSyncing((prev) => {
+      if (prev.has(sid)) return prev;
+      const next = new Set(prev);
+      next.add(sid);
+      return next;
+    });
+  }, [startedEvent]);
+
+  // On sync_completed, drop the syncing flag and refetch so summaries
+  // (added/reused/failed counts on subscription rows) refresh.
+  useEffect(() => {
+    if (!completedEvent) return;
+    const sid = completedEvent.data?.subscription_id as number | undefined;
+    if (typeof sid !== "number") return;
+    setSyncing((prev) => {
+      if (!prev.has(sid)) return prev;
+      const next = new Set(prev);
+      next.delete(sid);
+      return next;
+    });
+    load();
+  }, [completedEvent, load]);
+
   async function handleSync(id: number) {
     setBusyId(id);
     setError(null);
     try {
-      const result = await syncSubscription(id);
-      setLastSummary((prev) => ({ ...prev, [id]: result }));
-      await load();
+      await syncSubscription(id);
+      // Worker will broadcast sync_started shortly; mark optimistically
+      // so the badge appears even if the WS event lands a tick later.
+      setSyncing((prev) => {
+        const next = new Set(prev);
+        next.add(id);
+        return next;
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Sync failed");
     } finally {
@@ -133,7 +172,7 @@ export default function SubscriptionsList({ drive }: Props) {
       <ul className="space-y-2">
         {subs.map((s) => {
           const isExpanded = expanded.has(s.id);
-          const summary = lastSummary[s.id];
+          const isSyncing = syncing.has(s.id);
           return (
             <li
               key={s.id}
@@ -160,6 +199,14 @@ export default function SubscriptionsList({ drive }: Props) {
                     <span className="rounded bg-bg-hover px-1.5 py-0.5 text-xs text-text-secondary">
                       {kindBadge(s.source_kind)}
                     </span>
+                    {isSyncing && (
+                      <span
+                        className="rounded bg-accent-cta/10 px-1.5 py-0.5 text-xs text-accent-cta"
+                        data-testid={`syncing-badge-${s.id}`}
+                      >
+                        Syncing…
+                      </span>
+                    )}
                     {s.folder_path && (
                       <span className="text-xs text-text-muted">
                         / {s.folder_path}
@@ -168,26 +215,17 @@ export default function SubscriptionsList({ drive }: Props) {
                   </div>
                   <div className="text-xs text-text-muted">
                     Last synced: {formatLastSynced(s.last_synced_at)}
-                    {summary && (
-                      <span className="ml-2">
-                        (+{summary.added} added, {summary.reused} reused
-                        {summary.failed > 0
-                          ? `, ${summary.failed} failed`
-                          : ""}
-                        )
-                      </span>
-                    )}
                   </div>
                 </div>
                 <button
                   onClick={() => handleSync(s.id)}
-                  disabled={busyId === s.id}
+                  disabled={busyId === s.id || isSyncing}
                   className="flex items-center gap-1 rounded px-2 py-1 text-xs text-text-secondary hover:bg-bg-hover disabled:opacity-50"
                   data-testid={`sync-${s.id}`}
                 >
                   <RefreshCw
                     size={12}
-                    className={busyId === s.id ? "animate-spin" : ""}
+                    className={isSyncing ? "animate-spin" : ""}
                   />
                   Sync
                 </button>

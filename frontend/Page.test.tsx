@@ -110,9 +110,10 @@ describe("MediaImportPage URL branching", () => {
       last_synced_at: null,
       cooldown_until: null,
       created_at: "2026-05-01T00:00:00",
+      running: false,
     });
     vi.mocked(mediaApi.syncSubscription).mockResolvedValue({
-      added: 3, reused: 0, failed: 0, total_new: 3,
+      status: "queued",
     });
 
     render(<MediaImportPage />);

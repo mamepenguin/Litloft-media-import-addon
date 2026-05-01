@@ -1,6 +1,10 @@
 /**
- * Tests for SubscriptionsList — the per-drive subscription overview
- * with sync / delete / expand controls.
+ * Tests for SubscriptionsList — per-drive subscription overview with
+ * sync / delete / expand controls and WS-driven Syncing badge.
+ *
+ * Sync is fire-and-forget: ``syncSubscription`` enqueues a worker job
+ * and returns immediately. Completion lands as
+ * ``subscription.sync_completed`` over WebSocket and triggers a refetch.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, render, fireEvent, screen, waitFor } from "@testing-library/react";
@@ -17,6 +21,12 @@ vi.mock("@/addons/media_import/api", async () => {
     listSubscriptionVideos: vi.fn(async () => []),
   };
 });
+
+// Stateful WS mock: tests update mockEvents to simulate inbound events.
+const mockEvents: Record<string, { event: string; data: unknown } | null> = {};
+vi.mock("@/hooks/useWebSocket", () => ({
+  useWebSocket: (filter?: string) => mockEvents[filter ?? ""] ?? null,
+}));
 
 import SubscriptionsList from "@/addons/media_import/SubscriptionsList";
 import * as api from "@/addons/media_import/api";
@@ -36,12 +46,14 @@ function fakeSub(overrides: Partial<api.Subscription> = {}): api.Subscription {
     last_synced_at: null,
     cooldown_until: null,
     created_at: "2026-05-01T00:00:00",
+    running: false,
     ...overrides,
   };
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  for (const key of Object.keys(mockEvents)) delete mockEvents[key];
 });
 
 describe("SubscriptionsList", () => {
@@ -56,7 +68,12 @@ describe("SubscriptionsList", () => {
   it("renders one row per subscription", async () => {
     vi.mocked(api.listSubscriptions).mockResolvedValue([
       fakeSub({ id: 1, title: "Channel A" }),
-      fakeSub({ id: 2, source_kind: "playlist", title: "Playlist B" }),
+      fakeSub({
+        id: 2,
+        source_kind: "playlist",
+        source_ref: "PLxyz",
+        title: "Playlist B",
+      }),
     ]);
     render(<SubscriptionsList drive="media" />);
     await waitFor(() =>
@@ -67,23 +84,86 @@ describe("SubscriptionsList", () => {
     expect(screen.getByText("Playlist B")).toBeTruthy();
   });
 
-  it("calls syncSubscription and re-fetches the list on Sync click", async () => {
+  it("calls syncSubscription on Sync click and shows the badge", async () => {
     vi.mocked(api.listSubscriptions).mockResolvedValue([fakeSub({ id: 7 })]);
-    vi.mocked(api.syncSubscription).mockResolvedValue({
-      added: 2, reused: 0, failed: 0, total_new: 2,
-    });
+    vi.mocked(api.syncSubscription).mockResolvedValue({ status: "queued" });
 
     render(<SubscriptionsList drive="media" />);
     await waitFor(() =>
       expect(screen.getByTestId("subscription-row-7")).toBeTruthy(),
     );
+    expect(screen.queryByTestId("syncing-badge-7")).toBeNull();
 
     fireEvent.click(screen.getByTestId("sync-7"));
     await waitFor(() =>
       expect(api.syncSubscription).toHaveBeenCalledWith(7),
     );
-    // The list re-loads after sync.
-    expect(api.listSubscriptions).toHaveBeenCalledTimes(2);
+    // Optimistic Syncing badge appears even before the WS event lands.
+    await waitFor(() =>
+      expect(screen.getByTestId("syncing-badge-7")).toBeTruthy(),
+    );
+    // No automatic refetch — completion handler will refetch via WS.
+    expect(api.listSubscriptions).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders Syncing badge for subscriptions with running=true on load", async () => {
+    vi.mocked(api.listSubscriptions).mockResolvedValue([
+      fakeSub({ id: 5, running: true }),
+    ]);
+    render(<SubscriptionsList drive="media" />);
+    await waitFor(() =>
+      expect(screen.getByTestId("syncing-badge-5")).toBeTruthy(),
+    );
+  });
+
+  it("clears Syncing badge and refetches on subscription.sync_completed", async () => {
+    vi.mocked(api.listSubscriptions).mockResolvedValue([
+      fakeSub({ id: 11, running: true }),
+    ]);
+
+    const { rerender } = render(<SubscriptionsList drive="media" />);
+    await waitFor(() =>
+      expect(screen.getByTestId("syncing-badge-11")).toBeTruthy(),
+    );
+    expect(api.listSubscriptions).toHaveBeenCalledTimes(1);
+
+    // Next refetch returns the row with running=false.
+    vi.mocked(api.listSubscriptions).mockResolvedValue([
+      fakeSub({ id: 11, running: false, last_synced_at: "2026-05-01T01:00:00" }),
+    ]);
+
+    // Simulate WS event arrival.
+    mockEvents["media_import.subscription.sync_completed"] = {
+      event: "media_import.subscription.sync_completed",
+      data: { subscription_id: 11, drive: "media", added: 3, total_new: 3 },
+    };
+    rerender(<SubscriptionsList drive="media" />);
+
+    await waitFor(() =>
+      expect(api.listSubscriptions).toHaveBeenCalledTimes(2),
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId("syncing-badge-11")).toBeNull(),
+    );
+  });
+
+  it("adds Syncing badge on subscription.sync_started", async () => {
+    vi.mocked(api.listSubscriptions).mockResolvedValue([fakeSub({ id: 8 })]);
+    const { rerender } = render(<SubscriptionsList drive="media" />);
+    await waitFor(() =>
+      expect(screen.getByTestId("subscription-row-8")).toBeTruthy(),
+    );
+    expect(screen.queryByTestId("syncing-badge-8")).toBeNull();
+
+    mockEvents["media_import.subscription.sync_started"] = {
+      event: "media_import.subscription.sync_started",
+      data: { subscription_id: 8, drive: "media" },
+    };
+    rerender(<SubscriptionsList drive="media" />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("syncing-badge-8")).toBeTruthy(),
+    );
   });
 
   it("calls deleteSubscription after confirm", async () => {
@@ -114,7 +194,6 @@ describe("SubscriptionsList", () => {
     );
 
     fireEvent.click(screen.getByTestId("delete-9"));
-    // give any error path a tick to surface
     await act(async () => {
       await new Promise((r) => setTimeout(r, 10));
     });

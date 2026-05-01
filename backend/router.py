@@ -35,10 +35,10 @@ from .schemas import (
     LoftCreateResponse,
     LoftMetadataResponse,
     SubscriptionCreateRequest,
+    SubscriptionEnqueueResponse,
     SubscriptionResolveRequest,
     SubscriptionResolveResponse,
     SubscriptionResponse,
-    SubscriptionSyncResponse,
     SubscriptionVideoResponse,
 )
 from .subscription.registry import find_subscription_provider_by_url
@@ -49,12 +49,9 @@ from .service import (
     _ensure_subscription_tables,
 )
 from .provider_registration import register_media_import_providers
-from .subscription.manager import (
-    SubscriptionConflict,
-    SubscriptionNotFound,
-    subscription_manager,
-)
+from .subscription.manager import subscription_manager
 from .subscription.registration import register_subscription_providers
+from .subscription.worker import subscription_worker
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +80,7 @@ async def on_startup() -> None:
     # to recognize legacy URLs.
     _backfill_provider_item_ids()
     await loft_manager.start_worker()
+    await subscription_worker.start()
 
 
 @router.post("/link", response_model=LoftCreateResponse)
@@ -184,7 +182,9 @@ async def resolve_subscription_url(
 
 
 
-def _row_to_subscription_response(row: dict) -> SubscriptionResponse:
+def _row_to_subscription_response(
+    row: dict, *, running: bool = False
+) -> SubscriptionResponse:
     return SubscriptionResponse(
         id=row["id"],
         provider=row["provider"],
@@ -199,6 +199,7 @@ def _row_to_subscription_response(row: dict) -> SubscriptionResponse:
         last_synced_at=row.get("last_synced_at"),
         cooldown_until=row.get("cooldown_until"),
         created_at=row["created_at"],
+        running=running,
     )
 
 
@@ -255,7 +256,8 @@ async def create_subscription(
 
     row = _load_subscription_row(sub_id)
     assert row is not None
-    return _row_to_subscription_response(row)
+    running = sub_id in subscription_worker.running_ids
+    return _row_to_subscription_response(row, running=running)
 
 
 @router.get(
@@ -278,7 +280,11 @@ async def list_subscriptions(
         ).mappings().all()
     finally:
         db.close()
-    return [_row_to_subscription_response(dict(r)) for r in rows]
+    running = subscription_worker.running_ids
+    return [
+        _row_to_subscription_response(dict(r), running=r["id"] in running)
+        for r in rows
+    ]
 
 
 def _load_owned_subscription(
@@ -312,7 +318,7 @@ async def delete_subscription(
 
 @router.post(
     "/subscriptions/{subscription_id}/sync",
-    response_model=SubscriptionSyncResponse,
+    response_model=SubscriptionEnqueueResponse,
 )
 async def sync_subscription(
     subscription_id: int,
@@ -320,18 +326,14 @@ async def sync_subscription(
         None, ge=1, description="Limit upstream items considered (default: all)"
     ),
     unlocked_groups: list[str] = Depends(get_unlocked_groups),
-) -> SubscriptionSyncResponse:
+) -> SubscriptionEnqueueResponse:
     _load_owned_subscription(subscription_id, unlocked_groups)
-    try:
-        result = await subscription_manager.sync(
-            subscription_id, backfill=backfill
-        )
-    except SubscriptionConflict as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    except SubscriptionNotFound:
-        # Race: row deleted between the check and the sync. Treat as 404.
-        raise HTTPException(status_code=404, detail="Subscription not found")
-    return SubscriptionSyncResponse(**result)
+    queued = await subscription_worker.enqueue_sync(
+        subscription_id, kind="manual", backfill=backfill
+    )
+    return SubscriptionEnqueueResponse(
+        status="queued" if queued else "already_queued"
+    )
 
 
 @router.get(
@@ -362,20 +364,34 @@ async def list_subscription_videos(
 
 @router.post(
     "/subscriptions/{subscription_id}/videos/{item_id}/retry",
-    response_model=SubscriptionSyncResponse,
+    response_model=SubscriptionEnqueueResponse,
 )
 async def retry_subscription_video(
     subscription_id: int,
     item_id: str,
     unlocked_groups: list[str] = Depends(get_unlocked_groups),
-) -> SubscriptionSyncResponse:
+) -> SubscriptionEnqueueResponse:
     _load_owned_subscription(subscription_id, unlocked_groups)
+    # Eager existence check: the worker's _sync_blocking would also raise
+    # SubscriptionNotFound for an unknown item, but by then the route has
+    # already returned 200 and the frontend has no per-click failure
+    # signal. Cheap query that preserves the synchronous 404 contract.
+    db = SessionLocal()
     try:
-        result = await subscription_manager.retry_item(
-            subscription_id, item_id
-        )
-    except SubscriptionConflict as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    except SubscriptionNotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-    return SubscriptionSyncResponse(**result)
+        exists = db.execute(
+            text(
+                "SELECT 1 FROM subscription_videos "
+                "WHERE subscription_id = :sid AND item_id = :iid"
+            ),
+            {"sid": subscription_id, "iid": item_id},
+        ).first()
+    finally:
+        db.close()
+    if not exists:
+        raise HTTPException(status_code=404, detail="video not found")
+    queued = await subscription_worker.enqueue_sync(
+        subscription_id, kind="retry", item_id=item_id
+    )
+    return SubscriptionEnqueueResponse(
+        status="queued" if queued else "already_queued"
+    )

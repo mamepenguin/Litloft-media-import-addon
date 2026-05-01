@@ -15,6 +15,10 @@ vi.mock("@/addons/media_import/api", async () => {
   };
 });
 
+vi.mock("@/hooks/useWebSocket", () => ({
+  useWebSocket: () => null,
+}));
+
 import SubscriptionItems from "@/addons/media_import/SubscriptionItems";
 import * as api from "@/addons/media_import/api";
 
@@ -80,7 +84,7 @@ describe("SubscriptionItems", () => {
       video({ item_id: "rl", status: "failed", error_kind: "rate_limited" }),
     ]);
     vi.mocked(api.retrySubscriptionVideo).mockResolvedValue({
-      added: 1, reused: 0, failed: 0, total_new: 1,
+      status: "queued",
     });
 
     render(<SubscriptionItems subscriptionId={42} />);

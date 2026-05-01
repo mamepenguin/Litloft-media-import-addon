@@ -44,6 +44,7 @@ def media_import_db(tmp_path, monkeypatch):
     import addons.media_import.service as service
     import addons.media_import.router as router
     import addons.media_import.subscription.manager as manager_mod
+    import addons.media_import.subscription.worker as worker_mod
 
     monkeypatch.setattr(service, "SessionLocal", TestSession)
     monkeypatch.setattr(router, "SessionLocal", TestSession)
@@ -62,6 +63,9 @@ def media_import_db(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         manager_mod, "broadcast_from_thread", lambda *_a, **_kw: None
+    )
+    monkeypatch.setattr(
+        worker_mod, "broadcast_from_thread", lambda *_a, **_kw: None
     )
     import app.services.event_hooks as event_hooks
 

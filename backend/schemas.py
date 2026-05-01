@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -58,6 +60,7 @@ class SubscriptionResponse(BaseModel):
     last_synced_at: str | None = None
     cooldown_until: str | None = None
     created_at: str
+    running: bool = False  # derived from SubscriptionWorker.running_ids
 
 
 class SubscriptionVideoResponse(BaseModel):
@@ -70,11 +73,15 @@ class SubscriptionVideoResponse(BaseModel):
     last_attempted_at: str | None = None
 
 
-class SubscriptionSyncResponse(BaseModel):
-    added: int
-    reused: int
-    failed: int
-    total_new: int
+class SubscriptionEnqueueResponse(BaseModel):
+    """Response shape for enqueue triggers (POST sync / retry).
+
+    Sync runs on a background worker, so the HTTP response only confirms
+    whether the job entered the queue. Completion notifications travel
+    over WebSocket (``subscription.sync_completed``).
+    """
+
+    status: Literal["queued", "already_queued"]
 
 
 class SubscriptionResolveRequest(BaseModel):

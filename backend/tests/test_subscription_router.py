@@ -1,13 +1,20 @@
-"""HTTP-level tests for the subscription endpoints (Commit 4).
+"""HTTP-level tests for the subscription endpoints.
 
 The provider seam is faked end-to-end so these tests exercise wiring
-(schema → manager → DB → response) without yt-dlp / network. Manager
-internals are already covered by ``test_subscription_manager.py``.
+(schema → manager → worker → DB → response) without yt-dlp / network.
+Manager internals are covered by ``test_subscription_manager.py``;
+worker mechanics by ``test_subscription_worker.py``.
+
+The ``client`` fixture starts the SubscriptionWorker singleton via
+FastAPI lifespan so route handlers that enqueue jobs trigger real
+work. ``_drain_worker`` blocks the test thread until the worker idles.
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Callable
 from unittest.mock import patch
@@ -92,16 +99,50 @@ def fake_provider():
 
 @pytest.fixture()
 def client(media_import_db, drive_path, fake_provider):
-    """Mount the addon router in a fresh FastAPI app for HTTP testing.
-
-    media_import_db owns the SessionLocal patching; drive_path makes
-    config.get_drive_path return a writable tmp dir.
-    """
+    """Mount the addon router with worker lifespan for HTTP testing."""
     from addons.media_import.router import router
+    from addons.media_import.subscription.worker import subscription_worker
 
-    app = FastAPI()
+    @asynccontextmanager
+    async def lifespan(_app):
+        # Reset singleton state per test so queue/in-flight don't bleed.
+        subscription_worker._queue = asyncio.Queue()
+        subscription_worker._running_ids.clear()
+        subscription_worker._queued_ids.clear()
+        subscription_worker._idle_event.set()
+        await subscription_worker.start()
+        try:
+            yield
+        finally:
+            await subscription_worker.stop()
+
+    app = FastAPI(lifespan=lifespan)
     app.include_router(router)
-    return TestClient(app)
+    with TestClient(app) as c:
+        yield c
+
+
+def _drain_worker(timeout: float = 5.0) -> None:
+    """Poll-wait for the SubscriptionWorker singleton to become idle.
+
+    The worker runs on the TestClient's portal event loop; we cannot
+    await wait_idle() from sync test code, but its state (running_ids,
+    queue.empty()) is safe to read from any thread.
+    """
+    from addons.media_import.subscription.worker import subscription_worker
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if (
+            not subscription_worker.running_ids
+            and subscription_worker._queue.empty()
+        ):
+            # Give the loop one final tick so task_done() and the idle
+            # event update before we return.
+            time.sleep(0.05)
+            return
+        time.sleep(0.02)
+    raise TimeoutError("subscription worker did not drain in time")
 
 
 _UC = "UCabcdefghijklmnopqrstuv"
@@ -221,6 +262,44 @@ class TestListSubscriptions:
         res = client.get("/api/addons/media_import/subscriptions")
         assert res.status_code == 422
 
+    def test_running_flag_reflects_worker_state(
+        self, client, media_import_db
+    ) -> None:
+        from addons.media_import.subscription.worker import subscription_worker
+
+        # Seed two rows with distinct source_ref to satisfy the UNIQUE
+        # (provider, source_kind, source_ref, drive, folder_path) constraint.
+        db = media_import_db()
+        try:
+            for sid, ref in [(1, _UC), (2, "UC2222222222222222222222")]:
+                db.execute(
+                    text(
+                        "INSERT INTO subscriptions "
+                        "(id, provider, source_kind, source_ref, drive, "
+                        " folder_path, is_enabled, cooldown_minutes, "
+                        " include_no_transcript, created_at) "
+                        "VALUES (:id, 'fakeyt', 'channel', :ref, 'd', "
+                        " '', 1, 60, 0, '2026-05-01T00:00:00')"
+                    ),
+                    {"id": sid, "ref": ref},
+                )
+            db.commit()
+        finally:
+            db.close()
+
+        # Inject sub_id=2 directly into worker state for the snapshot.
+        subscription_worker._running_ids.add(2)
+        try:
+            res = client.get("/api/addons/media_import/subscriptions?drive=d")
+        finally:
+            subscription_worker._running_ids.discard(2)
+
+        assert res.status_code == 200
+        body = res.json()
+        by_id = {s["id"]: s for s in body}
+        assert by_id[1]["running"] is False
+        assert by_id[2]["running"] is True
+
 
 # ---- delete -------------------------------------------------------
 
@@ -269,11 +348,21 @@ class TestDeleteSubscription:
 
 
 class TestSyncSubscription:
-    def test_returns_summary(self, client, fake_provider: _FakeProvider) -> None:
+    def test_returns_queued_then_drains_to_files(
+        self, client, fake_provider: _FakeProvider, drive_path
+    ) -> None:
         fake_provider.headers = [
             ItemHeader(item_id="vid_a", title="A"),
             ItemHeader(item_id="vid_b", title="B"),
         ]
+        fake_provider.items = {
+            "vid_a": ItemMetadata(
+                item_id="vid_a", canonical_url="https://fake/v/a", title="A",
+            ),
+            "vid_b": ItemMetadata(
+                item_id="vid_b", canonical_url="https://fake/v/b", title="B",
+            ),
+        }
         create = client.post(
             "/api/addons/media_import/subscriptions",
             json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
@@ -284,16 +373,38 @@ class TestSyncSubscription:
             f"/api/addons/media_import/subscriptions/{sub_id}/sync"
         )
         assert res.status_code == 200
-        body = res.json()
-        assert body["added"] == 2
-        assert body["reused"] == 0
-        assert body["failed"] == 0
-        assert body["total_new"] == 2
+        assert res.json() == {"status": "queued"}
 
-    def test_lock_conflict_returns_409(
+        _drain_worker()
+        # Files materialized after worker completes.
+        assert (drive_path / "A.loft").exists()
+        assert (drive_path / "B.loft").exists()
+
+    def test_duplicate_call_returns_already_queued(
         self, client, fake_provider: _FakeProvider
     ) -> None:
-        from addons.media_import.subscription import manager as manager_mod
+        """Two enqueues for the same id while the first is still
+        in-flight collapse — the second responds 200 ``already_queued``
+        instead of running again. Replaces the old 409 contract.
+        """
+        from addons.media_import.subscription.worker import subscription_worker
+
+        # Long-running fake so the second call lands while the first is
+        # still in the worker.
+        fake_provider.headers = [ItemHeader(item_id="x", title="X")]
+        fake_provider.items = {
+            "x": ItemMetadata(
+                item_id="x", canonical_url="https://fake/v/x", title="X",
+            ),
+        }
+
+        original = fake_provider.fetch_item
+
+        def _slow(ref, item_id):
+            time.sleep(0.3)
+            return original(ref, item_id)
+
+        fake_provider.fetch_item = _slow  # type: ignore[method-assign]
 
         create = client.post(
             "/api/addons/media_import/subscriptions",
@@ -301,21 +412,26 @@ class TestSyncSubscription:
         )
         sub_id = create.json()["id"]
 
-        # Pre-claim the in-flight slot so the route observes contention
-        # without needing a real concurrent sync.
-        async def _scenario() -> int:
-            mgr = manager_mod.subscription_manager
-            await mgr._claim_inflight(sub_id)
-            try:
-                res = client.post(
-                    f"/api/addons/media_import/subscriptions/{sub_id}/sync"
-                )
-                return res.status_code
-            finally:
-                mgr._release_inflight(sub_id)
+        first = client.post(
+            f"/api/addons/media_import/subscriptions/{sub_id}/sync"
+        )
+        assert first.status_code == 200
+        assert first.json() == {"status": "queued"}
 
-        status = asyncio.run(_scenario())
-        assert status == 409
+        # Wait for the worker to actually pick up job #1.
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            if sub_id in subscription_worker.running_ids:
+                break
+            time.sleep(0.02)
+
+        second = client.post(
+            f"/api/addons/media_import/subscriptions/{sub_id}/sync"
+        )
+        assert second.status_code == 200
+        assert second.json() == {"status": "already_queued"}
+
+        _drain_worker()
 
     def test_unknown_id_returns_404(self, client) -> None:
         res = client.post(
@@ -470,16 +586,14 @@ class TestPathTraversalRejection:
         res = client.post(
             f"/api/addons/media_import/subscriptions/{sub_id}/sync"
         )
-        # The sync call ultimately raises in _allocate_loft_path. The
-        # batch wraps individual item failures, so total_new=1 and
-        # failed=1 — but no file should land outside drive_path.
-        body = res.json()
+        # Worker accepts the job; the per-item failure happens inside
+        # _allocate_loft_path during sync execution.
         assert res.status_code == 200
-        assert body["failed"] == 1
-        assert body["added"] == 0
+        assert res.json() == {"status": "queued"}
+
+        _drain_worker()
 
         parent = drive_path.parent
-        # No directory or file landed in drive_path.parent or above.
         leaked = list(parent.glob("escape"))
         assert leaked == [], f"path traversal escaped: {leaked}"
 
@@ -523,6 +637,9 @@ class TestRetryVideo:
             f"/api/addons/media_import/subscriptions/{sub_id}/videos/v1/retry"
         )
         assert res.status_code == 200
+        assert res.json() == {"status": "queued"}
+
+        _drain_worker()
 
         # Row flipped to imported, .loft was created.
         assert (drive_path / "V One.loft").exists()
@@ -543,6 +660,10 @@ class TestRetryVideo:
     def test_unknown_video_returns_404(
         self, client, fake_provider: _FakeProvider
     ) -> None:
+        """Eager existence check in the route preserves the 404 contract
+        (the worker's SubscriptionNotFound would only surface via WS,
+        too late for synchronous click feedback).
+        """
         create = client.post(
             "/api/addons/media_import/subscriptions",
             json={"url": f"https://fake/channel/{_UC}", "drive": "d"},

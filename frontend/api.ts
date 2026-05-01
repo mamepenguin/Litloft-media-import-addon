@@ -85,6 +85,9 @@ export interface Subscription {
   last_synced_at: string | null;
   cooldown_until: string | null;
   created_at: string;
+  // Derived from SubscriptionWorker.running_ids on the server. True
+  // while a sync job for this subscription is currently executing.
+  running: boolean;
 }
 
 export interface SubscriptionVideo {
@@ -97,11 +100,8 @@ export interface SubscriptionVideo {
   last_attempted_at: string | null;
 }
 
-export interface SubscriptionSyncResult {
-  added: number;
-  reused: number;
-  failed: number;
-  total_new: number;
+export interface SubscriptionEnqueueResult {
+  status: "queued" | "already_queued";
 }
 
 async function _json<T>(res: Response): Promise<T> {
@@ -174,14 +174,14 @@ export async function deleteSubscription(id: number): Promise<void> {
 export async function syncSubscription(
   id: number,
   backfill?: number,
-): Promise<SubscriptionSyncResult> {
+): Promise<SubscriptionEnqueueResult> {
   const qs =
     typeof backfill === "number" ? `?backfill=${backfill}` : "";
   const res = await fetch(`${BASE}/subscriptions/${id}/sync${qs}`, {
     method: "POST",
     credentials: "include",
   });
-  return _json<SubscriptionSyncResult>(res);
+  return _json<SubscriptionEnqueueResult>(res);
 }
 
 export async function listSubscriptionVideos(
@@ -196,7 +196,7 @@ export async function listSubscriptionVideos(
 export async function retrySubscriptionVideo(
   id: number,
   itemId: string,
-): Promise<SubscriptionSyncResult> {
+): Promise<SubscriptionEnqueueResult> {
   const res = await fetch(
     `${BASE}/subscriptions/${id}/videos/${encodeURIComponent(itemId)}/retry`,
     {
@@ -204,5 +204,5 @@ export async function retrySubscriptionVideo(
       credentials: "include",
     },
   );
-  return _json<SubscriptionSyncResult>(res);
+  return _json<SubscriptionEnqueueResult>(res);
 }

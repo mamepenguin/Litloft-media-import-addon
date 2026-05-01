@@ -1,14 +1,17 @@
-"""Tests for SubscriptionManager (Commit 3c).
+"""Tests for SubscriptionManager.
 
 The provider seam is faked end-to-end so these tests do not rely on the
 YouTubeProvider internals — that contract is already covered by
 ``test_youtube_provider*.py``. Each test exercises a single behavior of
-the manager: create / delete / sync flow, dedup, transcript handling,
-last-sync bookkeeping, and per-id lock contention.
+the manager: create / delete / sync flow (full + single-item), dedup,
+transcript handling, last-sync bookkeeping.
+
+Concurrency / serialization is tested separately at the worker layer
+(``test_subscription_worker.py``); the manager is exercised here with
+direct ``_sync_blocking`` calls.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Callable
@@ -285,7 +288,7 @@ class TestSyncCreatesNewItems:
         mgr = SubscriptionManager()
         sub_id = _create_subscription(mgr, drive="d", folder="yt")
 
-        result = asyncio.run(mgr.sync(sub_id))
+        result = mgr._sync_blocking(sub_id)
         assert result["added"] == 2
         assert result["reused"] == 0
         assert result["failed"] == 0
@@ -391,7 +394,7 @@ class TestSyncDedup:
 
         mgr = SubscriptionManager()
         sub_id = _create_subscription(mgr, drive="d", folder="yt")
-        result = asyncio.run(mgr.sync(sub_id))
+        result = mgr._sync_blocking(sub_id)
 
         assert result["reused"] == 1
         assert result["added"] == 0
@@ -432,8 +435,8 @@ class TestSyncIdempotent:
 
         mgr = SubscriptionManager()
         sub_id = _create_subscription(mgr, drive="d")
-        first = asyncio.run(mgr.sync(sub_id))
-        second = asyncio.run(mgr.sync(sub_id))
+        first = mgr._sync_blocking(sub_id)
+        second = mgr._sync_blocking(sub_id)
         assert first["added"] == 1
         assert second["added"] == 0
         assert second["reused"] == 0
@@ -460,7 +463,7 @@ class TestSyncTranscriptFailure:
 
         mgr = SubscriptionManager()
         sub_id = _create_subscription(mgr, drive="d")
-        result = asyncio.run(mgr.sync(sub_id))
+        result = mgr._sync_blocking(sub_id)
 
         assert result["added"] == 1
 
@@ -493,7 +496,7 @@ class TestSyncLastSyncedAt:
 
         mgr = SubscriptionManager()
         sub_id = _create_subscription(mgr, drive="d")
-        asyncio.run(mgr.sync(sub_id))
+        mgr._sync_blocking(sub_id)
 
         db = media_import_db()
         try:
@@ -506,82 +509,52 @@ class TestSyncLastSyncedAt:
         assert ts is not None
 
 
-class TestSyncLockContention:
-    def test_concurrent_sync_raises_conflict(
+class TestSyncSingleItemRetry:
+    def test_retry_existing_failed_row_imports_and_marks_imported(
         self, media_import_db, drive_path, fake_provider: _FakeProvider
     ) -> None:
-        from addons.media_import.subscription.manager import (
-            SubscriptionConflict,
-            SubscriptionManager,
-        )
+        """``_sync_blocking`` with ``item_id`` re-attempts a single video.
 
-        fake_provider.headers = []
-        mgr = SubscriptionManager()
-        sub_id = _create_subscription(mgr, drive="d")
-
-        async def _scenario() -> None:
-            # Mark the slot as in-flight manually so the second call
-            # observes contention without a real concurrent sync.
-            await mgr._claim_inflight(sub_id)
-            try:
-                with pytest.raises(SubscriptionConflict):
-                    await mgr.sync(sub_id)
-            finally:
-                mgr._release_inflight(sub_id)
-
-        asyncio.run(_scenario())
-
-    def test_truly_concurrent_calls_one_succeeds_one_409(
-        self, media_import_db, drive_path, fake_provider: _FakeProvider
-    ) -> None:
-        """Both callers race past the check; only one wins.
-
-        The previous ``Lock.locked() + async with Lock`` pattern was
-        TOCTOU — both observers saw ``False`` and the second silently
-        blocked rather than 409'ing. The current ``_claim_inflight``
-        path holds an outer mutex around the check-and-add so this test
-        deterministically rejects the loser.
+        Mirrors the old ``retry_item`` shape: the row must already exist
+        in ``subscription_videos`` (raises SubscriptionNotFound otherwise),
+        and the result is a one-item summary. dedup against existing
+        loft files still applies.
         """
         from addons.media_import.subscription.manager import (
-            SubscriptionConflict,
             SubscriptionManager,
+            SubscriptionNotFound,
         )
 
-        # A slow provider so the first sync is still in-flight when the
-        # second call arrives.
-        fake_provider.headers = [ItemHeader(item_id="x", title="X")]
+        fake_provider.headers = [ItemHeader(item_id="vid", title="Vid")]
         fake_provider.items = {
-            "x": ItemMetadata(
-                item_id="x", canonical_url="https://fake/v/x", title="X",
+            "vid": ItemMetadata(
+                item_id="vid", canonical_url="https://fake/v/vid",
+                title="Vid", has_captions=False,
             ),
         }
-        # Simulate a slow inter-item delay so the executor task lingers.
-        fake_provider.inter_item_delay_seconds = 0.0
-        # Force the blocking phase to take long enough by patching the
-        # inner _import_one_item to sleep.
+
         mgr = SubscriptionManager()
         sub_id = _create_subscription(mgr, drive="d")
 
-        original = mgr._import_one_item
+        # Seed a failed row to retry.
+        db = media_import_db()
+        try:
+            db.execute(
+                text(
+                    "INSERT INTO subscription_videos "
+                    "(subscription_id, item_id, status, first_seen_at) "
+                    "VALUES (:sid, 'vid', 'failed', '2026-05-01T00:00:00')"
+                ),
+                {"sid": sub_id},
+            )
+            db.commit()
+        finally:
+            db.close()
 
-        def _slow(*args, **kwargs):
-            import time
-            time.sleep(0.2)
-            return original(*args, **kwargs)
+        result = mgr._sync_blocking(sub_id, item_id="vid")
+        assert result == {"added": 1, "reused": 0, "failed": 0, "total_new": 1}
+        assert (drive_path / "Vid.loft").exists()
 
-        mgr._import_one_item = _slow  # type: ignore[method-assign]
-
-        async def _scenario() -> tuple[bool, bool]:
-            t1 = asyncio.create_task(mgr.sync(sub_id))
-            # Give task1 a tick to enter _claim_inflight.
-            await asyncio.sleep(0.05)
-            try:
-                await mgr.sync(sub_id)
-                second_succeeded = True
-            except SubscriptionConflict:
-                second_succeeded = False
-            await t1
-            return (True, second_succeeded)
-
-        first_ok, second_ok = asyncio.run(_scenario())
-        assert first_ok and not second_ok
+        # Retry on a non-existent row must raise SubscriptionNotFound.
+        with pytest.raises(SubscriptionNotFound):
+            mgr._sync_blocking(sub_id, item_id="never_seen")
