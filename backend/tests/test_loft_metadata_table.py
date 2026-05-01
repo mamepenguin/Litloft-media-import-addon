@@ -43,6 +43,7 @@ class TestEnsureLoftTableIdempotency:
         for required in (
             "file_id",
             "provider",
+            "provider_item_id",
             "url",
             "description",
             "channel",

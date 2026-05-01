@@ -587,6 +587,7 @@ def _ensure_loft_table() -> None:
                 CREATE TABLE IF NOT EXISTS loft_metadata (
                     file_id TEXT PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
                     provider TEXT NOT NULL,
+                    provider_item_id TEXT,
                     url TEXT NOT NULL,
                     description TEXT,
                     channel TEXT,
@@ -619,6 +620,21 @@ def _ensure_loft_table() -> None:
             )
         except Exception:
             pass
+        try:
+            db.execute(
+                text(
+                    "ALTER TABLE loft_metadata ADD COLUMN "
+                    "provider_item_id TEXT"
+                )
+            )
+        except Exception:
+            pass
+        db.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_loft_metadata_dedup "
+                "ON loft_metadata(provider, provider_item_id)"
+            )
+        )
         db.commit()
         logger.info("loft_metadata table ensured")
     finally:
