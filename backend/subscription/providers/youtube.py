@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 import re
 import tempfile
+import urllib.error
 import urllib.request
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -63,9 +64,57 @@ _ATOM_NS = "{http://www.w3.org/2005/Atom}"
 _YT_NS = "{http://www.youtube.com/xml/schemas/2015}"
 
 
+_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+_CHANNEL_ID_RE = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
+_PLAYLIST_ID_RE = re.compile(r"^(PL|UU|FL|RD|OL|LL)[A-Za-z0-9_-]+$")
+_HANDLE_RE = re.compile(r"^[A-Za-z0-9._-]{3,30}$")
+
+_YOUTUBE_HOSTS = frozenset(
+    [
+        "youtube.com",
+        "www.youtube.com",
+        "m.youtube.com",
+        "music.youtube.com",
+        "youtu.be",
+    ]
+)
+
+
+class _YouTubeOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Block redirects that leave the YouTube host set.
+
+    Defense-in-depth: ``_http_get_bytes`` is only called with URLs we
+    construct ourselves from a regex-validated ``UC...`` channel id, so
+    a primary-request SSRF is not possible today. But ``urllib.request``
+    follows arbitrary 3xx Location headers including cross-host and (on
+    some Python versions) cross-scheme redirects, so a hostile
+    intermediary could redirect into an internal network. Restricting
+    redirect targets to the YouTube host set closes that avenue without
+    blocking legitimate www→m or canonical→cache hops.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        target_host = (urlparse(newurl).hostname or "").lower()
+        if target_host not in _YOUTUBE_HOSTS:
+            raise urllib.error.HTTPError(
+                newurl, code, f"redirect to non-YouTube host blocked: {target_host}",
+                headers, fp,
+            )
+        return super().redirect_request(
+            req, fp, code, msg, headers, newurl,
+        )
+
+
+_youtube_opener = urllib.request.build_opener(_YouTubeOnlyRedirectHandler())
+
+
 def _http_get_bytes(url: str, timeout: float = 10.0) -> bytes:
-    """Fetch ``url`` and return raw body. Module-level for test patching."""
-    with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310
+    """Fetch ``url`` and return raw body. Module-level for test patching.
+
+    Uses a custom OpenerDirector that rejects redirects to hosts outside
+    ``_YOUTUBE_HOSTS`` (see ``_YouTubeOnlyRedirectHandler``).
+    """
+    with _youtube_opener.open(url, timeout=timeout) as resp:
         return resp.read()
 
 
@@ -106,22 +155,6 @@ def _download_captions_sync_for_provider(
     from ...service import _download_captions_sync
 
     return _download_captions_sync(url, output_stem, language=language)
-
-
-_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
-_CHANNEL_ID_RE = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
-_PLAYLIST_ID_RE = re.compile(r"^(PL|UU|FL|RD|OL|LL)[A-Za-z0-9_-]+$")
-_HANDLE_RE = re.compile(r"^[A-Za-z0-9._-]{3,30}$")
-
-_YOUTUBE_HOSTS = frozenset(
-    [
-        "youtube.com",
-        "www.youtube.com",
-        "m.youtube.com",
-        "music.youtube.com",
-        "youtu.be",
-    ]
-)
 
 
 def _video_id_from_short(path: str) -> str | None:
@@ -295,6 +328,14 @@ class YouTubeProvider:
     def fetch_item(
         self, ref: SubscriptionRef, item_id: str
     ) -> ItemMetadata:
+        # ``item_id`` reaches us from RSS / yt-dlp / the retry endpoint
+        # path param. The first two are trusted upstream but never
+        # re-validated; the path param is wholly user-controlled. A
+        # crafted id like ``abc&list=PLevil`` would, when interpolated
+        # into the URL, switch yt-dlp into playlist-extraction mode for
+        # an attacker-chosen list. Fail fast at the boundary.
+        if not _VIDEO_ID_RE.match(item_id):
+            raise ValueError(f"invalid YouTube item_id: {item_id!r}")
         canonical_url = f"https://www.youtube.com/watch?v={item_id}"
         meta = _fetch_metadata_sync_for_provider(canonical_url)
         return ItemMetadata(
@@ -319,6 +360,8 @@ class YouTubeProvider:
         item_id: str,
         language: str | None = None,
     ) -> TranscriptResult:
+        if not _VIDEO_ID_RE.match(item_id):
+            raise ValueError(f"invalid YouTube item_id: {item_id!r}")
         canonical_url = f"https://www.youtube.com/watch?v={item_id}"
         lang = language or "ja"
         with tempfile.TemporaryDirectory(prefix="ytsub_") as td:

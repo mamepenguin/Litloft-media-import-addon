@@ -178,15 +178,17 @@ class TestFetchItem:
         self, provider: YouTubeProvider
     ) -> None:
         ref = SubscriptionRef(kind=REF_KIND_PLAYLIST, ref="PLfoo")
+        # Use a valid 11-char id; the boundary check now rejects anything
+        # else outright.
         with patch(
             "addons.media_import.subscription.providers.youtube"
             "._fetch_metadata_sync_for_provider",
             return_value={},
         ):
-            md = provider.fetch_item(ref, "missingtitle")
+            md = provider.fetch_item(ref, "missingtitl")
         # Title is required (non-Optional). When yt-dlp returns nothing,
         # fall back to the item_id rather than crashing the whole sync.
-        assert md.title == "missingtitle"
+        assert md.title == "missingtitl"
         assert md.has_captions is False
 
 
@@ -215,6 +217,32 @@ class _FakeDownloadCaptions:
                 self.vtt_body, encoding="utf-8"
             )
         return self.ok, self.error_kind
+
+
+class TestItemIdValidation:
+    """Untrusted item_id (e.g. retry path param) must not flow into the
+    yt-dlp URL without re-validation. A crafted id like ``XX&list=PLevil``
+    would otherwise switch yt-dlp into playlist-extraction mode against
+    an attacker-chosen list.
+    """
+
+    def test_fetch_item_rejects_invalid_id(
+        self, provider: YouTubeProvider
+    ) -> None:
+        ref = SubscriptionRef(kind=REF_KIND_CHANNEL, ref="UCabcdefghijklmnopqrstuv")
+        with pytest.raises(ValueError):
+            provider.fetch_item(ref, "abc&list=PLevil")
+        with pytest.raises(ValueError):
+            provider.fetch_item(ref, "")
+        with pytest.raises(ValueError):
+            provider.fetch_item(ref, "../etc")
+
+    def test_fetch_transcript_rejects_invalid_id(
+        self, provider: YouTubeProvider
+    ) -> None:
+        ref = SubscriptionRef(kind=REF_KIND_CHANNEL, ref="UCabcdefghijklmnopqrstuv")
+        with pytest.raises(ValueError):
+            provider.fetch_transcript(ref, "abc&list=PLevil")
 
 
 class TestFetchTranscript:

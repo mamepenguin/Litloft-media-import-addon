@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,7 +37,6 @@ from app.services.scanner import register_single_file
 from app.services.ws import broadcast_from_thread
 
 from .registry import (
-    ERROR_PATH_CONFLICT,
     REF_KIND_CHANNEL,
     REF_KIND_VIDEO,
     SubscriptionProvider,
@@ -220,11 +220,11 @@ class SubscriptionManager:
         self, ref: SubscriptionRef
     ) -> SubscriptionRef:
         # Accepts ``@handle`` / ``c/foo`` / ``user/foo`` and returns a
-        # ``UC...`` ref so RSS / API URLs can be built later.
-        if ref.ref.startswith("@"):
-            url = f"https://www.youtube.com/{ref.ref}"
-        else:
-            url = f"https://www.youtube.com/{ref.ref}"
+        # ``UC...`` ref so RSS / API URLs can be built later. All three
+        # legacy forms append directly to the YouTube root — yt-dlp's
+        # extract_info handles each shape uniformly and returns the
+        # canonical channel_id.
+        url = f"https://www.youtube.com/{ref.ref}"
         canonical = _resolve_channel_id_via_yt_dlp(url)
         if not canonical:
             raise ValueError(
@@ -288,27 +288,19 @@ class SubscriptionManager:
                     folder_path=sub["folder_path"],
                     include_no_transcript=bool(sub["include_no_transcript"]),
                 )
-            except _PathConflict:
-                self._record_video(
-                    subscription_id, item_id, status="failed",
-                    file_id=None, first_seen=first_seen,
-                    error_kind=ERROR_PATH_CONFLICT,
-                )
-                failed += 1
-                continue
             except Exception:
                 logger.exception(
                     "Subscription %s: failed to import %s",
                     subscription_id, item_id,
                 )
-                self._record_video(
+                self._record_video_safe(
                     subscription_id, item_id, status="failed",
                     file_id=None, first_seen=first_seen,
                 )
                 failed += 1
                 continue
 
-            self._record_video(
+            self._record_video_safe(
                 subscription_id, item_id, status="imported",
                 file_id=outcome.file_id, first_seen=first_seen,
                 error_kind=outcome.transcript_error,
@@ -325,8 +317,6 @@ class SubscriptionManager:
                 and idx < len(new_ids) - 1
                 and provider.inter_item_delay_seconds > 0
             ):
-                import time
-
                 time.sleep(provider.inter_item_delay_seconds)
 
         self._touch_last_synced_at(subscription_id)
@@ -401,13 +391,13 @@ class SubscriptionManager:
                 "Retry failed for subscription=%s item=%s",
                 subscription_id, item_id,
             )
-            self._record_video(
+            self._record_video_safe(
                 subscription_id, item_id, status="failed",
                 file_id=None, first_seen=first_seen,
             )
             return {"added": 0, "reused": 0, "failed": 1, "total_new": 0}
 
-        self._record_video(
+        self._record_video_safe(
             subscription_id, item_id, status="imported",
             file_id=outcome.file_id, first_seen=first_seen,
             error_kind=outcome.transcript_error,
@@ -451,6 +441,39 @@ class SubscriptionManager:
         finally:
             db.close()
         return {r[0] for r in rows}
+
+    def _record_video_safe(
+        self,
+        subscription_id: int,
+        item_id: str,
+        *,
+        status: str,
+        file_id: str | None,
+        first_seen: str,
+        error_kind: str | None = None,
+    ) -> None:
+        """``_record_video`` wrapper that swallows write errors.
+
+        Called from the per-item loop after the .loft / DB rows are
+        already committed. A subscription_videos write failure here
+        would corrupt accounting, but the work itself is done — next
+        sync re-discovers the upstream id and the dedup query reuses
+        the existing file_id, so the recorded state self-heals. Log
+        loudly instead of failing the batch.
+        """
+        try:
+            self._record_video(
+                subscription_id, item_id,
+                status=status, file_id=file_id,
+                first_seen=first_seen, error_kind=error_kind,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to write subscription_videos row "
+                "(subscription=%s item=%s status=%s); next sync will "
+                "self-heal via dedup",
+                subscription_id, item_id, status,
+            )
 
     def _record_video(
         self,
@@ -583,16 +606,6 @@ class _ImportOutcome:
         self.transcript_error = transcript_error
 
 
-class _PathConflict(Exception):
-    """Raised when a target .loft already exists with conflicting content.
-
-    Reserved for the FS-overlap edge case described in hako
-    ``FSrqtHVrv9B8NW3n2vb22``. Phase 2 currently lets ``_allocate_loft_path``
-    side-step this by appending ``(n)`` — the exception is wired but only
-    raised by future tightening (not in 3c).
-    """
-
-
 # ---- DB helpers (module-level for clarity) -----------------------
 
 
@@ -633,6 +646,9 @@ def _lookup_dedup(
     return row[0] if row else None
 
 
+_ALLOWED_LOFT_URL_SCHEMES: tuple[str, ...] = ("http://", "https://")
+
+
 def _register_loft_in_db(
     drive: str,
     loft_path: Path,
@@ -640,6 +656,16 @@ def _register_loft_in_db(
     meta,
 ) -> str:
     """INSERT files + loft_metadata rows for the freshly written .loft."""
+    # The ``SubscriptionProvider`` Protocol does not enforce that
+    # ``canonical_url`` is HTTP(S). YouTubeProvider always builds
+    # ``https://www.youtube.com/...``, but a future provider could
+    # return ``javascript:...`` and downstream `<a href={url}>` would
+    # then fire on click. Reject at the persistence boundary so any
+    # bad data in DB is detectable.
+    if not meta.canonical_url.startswith(_ALLOWED_LOFT_URL_SCHEMES):
+        raise ValueError(
+            f"refusing to persist non-HTTP canonical_url: {meta.canonical_url!r}"
+        )
     now_iso = datetime.now(UTC).isoformat()
     db = SessionLocal()
     try:
