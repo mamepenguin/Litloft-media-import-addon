@@ -107,6 +107,48 @@ def client(media_import_db, drive_path, fake_provider):
 _UC = "UCabcdefghijklmnopqrstuv"
 
 
+# ---- resolve ------------------------------------------------------
+
+
+class TestResolveUrl:
+    def test_video_url_classified_as_video(self, client) -> None:
+        res = client.post(
+            "/api/addons/media_import/subscriptions/resolve",
+            json={"url": "https://fake/video/abc"},
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert body["kind"] == REF_KIND_VIDEO
+        assert body["provider"] == "fakeyt"
+        assert body["ref"] == "abc"
+
+    def test_channel_url_classified_as_channel(self, client) -> None:
+        res = client.post(
+            "/api/addons/media_import/subscriptions/resolve",
+            json={"url": f"https://fake/channel/{_UC}"},
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert body["kind"] == REF_KIND_CHANNEL
+        assert body["ref"] == _UC
+
+    def test_unknown_url_returns_unknown(self, client) -> None:
+        res = client.post(
+            "/api/addons/media_import/subscriptions/resolve",
+            json={"url": "https://other.example/x"},
+        )
+        assert res.status_code == 200
+        assert res.json()["kind"] == "unknown"
+
+    def test_blank_url_returns_unknown(self, client) -> None:
+        res = client.post(
+            "/api/addons/media_import/subscriptions/resolve",
+            json={"url": "   "},
+        )
+        assert res.status_code == 200
+        assert res.json()["kind"] == "unknown"
+
+
 # ---- create -------------------------------------------------------
 
 

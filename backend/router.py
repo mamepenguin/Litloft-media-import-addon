@@ -34,10 +34,13 @@ from .schemas import (
     LoftCreateResponse,
     LoftMetadataResponse,
     SubscriptionCreateRequest,
+    SubscriptionResolveRequest,
+    SubscriptionResolveResponse,
     SubscriptionResponse,
     SubscriptionSyncResponse,
     SubscriptionVideoResponse,
 )
+from .subscription.registry import find_subscription_provider_by_url
 from .service import (
     loft_manager,
     _backfill_provider_item_ids,
@@ -150,6 +153,34 @@ async def refresh_loft(file_id: str) -> dict:
 
 
 # ---- Subscriptions (Phase 2 Commit 4) -----------------------------
+
+
+@router.post(
+    "/subscriptions/resolve", response_model=SubscriptionResolveResponse
+)
+async def resolve_subscription_url(
+    request: SubscriptionResolveRequest,
+) -> SubscriptionResolveResponse:
+    """Classify a pasted URL without persisting anything.
+
+    Frontend uses this to decide whether to show the single-import flow
+    (kind=video / kind=unknown → existing /link path) or the
+    subscription creation flow (kind=channel / kind=playlist → backfill
+    picker etc.). Pure parsing, no DB / network.
+    """
+    url = request.url.strip()
+    if not url:
+        return SubscriptionResolveResponse(kind="unknown")
+    match = find_subscription_provider_by_url(url)
+    if match is None:
+        return SubscriptionResolveResponse(kind="unknown")
+    provider, ref = match
+    return SubscriptionResolveResponse(
+        kind=ref.kind, provider=provider.name, ref=ref.ref
+    )
+
+
+
 
 
 def _row_to_subscription_response(row: dict) -> SubscriptionResponse:

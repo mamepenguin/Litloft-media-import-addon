@@ -75,3 +75,13 @@ class SubscriptionSyncResponse(BaseModel):
     reused: int
     failed: int
     total_new: int
+
+
+class SubscriptionResolveRequest(BaseModel):
+    url: str
+
+
+class SubscriptionResolveResponse(BaseModel):
+    kind: str  # "video" / "channel" / "playlist" / "feed" / "unknown"
+    provider: str | None = None
+    ref: str | None = None

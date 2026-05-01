@@ -55,3 +55,154 @@ export async function refreshLoft(fileId: string): Promise<void> {
     credentials: "include",
   });
 }
+
+// ---- Subscriptions (Phase 2 Commit 5) ----
+
+export type SubscriptionKind =
+  | "video"
+  | "channel"
+  | "playlist"
+  | "feed"
+  | "unknown";
+
+export interface SubscriptionResolveResponse {
+  kind: SubscriptionKind;
+  provider: string | null;
+  ref: string | null;
+}
+
+export interface Subscription {
+  id: number;
+  provider: string;
+  source_kind: string;
+  source_ref: string;
+  drive: string;
+  folder_path: string;
+  title: string | null;
+  is_enabled: boolean;
+  cooldown_minutes: number;
+  include_no_transcript: boolean;
+  last_synced_at: string | null;
+  cooldown_until: string | null;
+  created_at: string;
+}
+
+export interface SubscriptionVideo {
+  subscription_id: number;
+  item_id: string;
+  status: "pending" | "imported" | "failed";
+  error_kind: string | null;
+  file_id: string | null;
+  first_seen_at: string;
+  last_attempted_at: string | null;
+}
+
+export interface SubscriptionSyncResult {
+  added: number;
+  reused: number;
+  failed: number;
+  total_new: number;
+}
+
+async function _json<T>(res: Response): Promise<T> {
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.detail ?? `Error: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function resolveSubscriptionUrl(
+  url: string,
+): Promise<SubscriptionResolveResponse> {
+  const res = await fetch(`${BASE}/subscriptions/resolve`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+  return _json<SubscriptionResolveResponse>(res);
+}
+
+export interface SubscriptionCreateInput {
+  url: string;
+  drive: string;
+  folder_path?: string;
+  cooldown_minutes?: number;
+  include_no_transcript?: boolean;
+}
+
+export async function createSubscription(
+  input: SubscriptionCreateInput,
+): Promise<Subscription> {
+  const res = await fetch(`${BASE}/subscriptions`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      url: input.url,
+      drive: input.drive,
+      folder_path: input.folder_path ?? "",
+      cooldown_minutes: input.cooldown_minutes ?? 60,
+      include_no_transcript: input.include_no_transcript ?? false,
+    }),
+  });
+  return _json<Subscription>(res);
+}
+
+export async function listSubscriptions(
+  drive: string,
+): Promise<Subscription[]> {
+  const res = await fetch(
+    `${BASE}/subscriptions?drive=${encodeURIComponent(drive)}`,
+    { credentials: "include" },
+  );
+  return _json<Subscription[]>(res);
+}
+
+export async function deleteSubscription(id: number): Promise<void> {
+  const res = await fetch(`${BASE}/subscriptions/${id}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.detail ?? `Error: ${res.status}`);
+  }
+}
+
+export async function syncSubscription(
+  id: number,
+  backfill?: number,
+): Promise<SubscriptionSyncResult> {
+  const qs =
+    typeof backfill === "number" ? `?backfill=${backfill}` : "";
+  const res = await fetch(`${BASE}/subscriptions/${id}/sync${qs}`, {
+    method: "POST",
+    credentials: "include",
+  });
+  return _json<SubscriptionSyncResult>(res);
+}
+
+export async function listSubscriptionVideos(
+  id: number,
+): Promise<SubscriptionVideo[]> {
+  const res = await fetch(`${BASE}/subscriptions/${id}/videos`, {
+    credentials: "include",
+  });
+  return _json<SubscriptionVideo[]>(res);
+}
+
+export async function retrySubscriptionVideo(
+  id: number,
+  itemId: string,
+): Promise<SubscriptionSyncResult> {
+  const res = await fetch(
+    `${BASE}/subscriptions/${id}/videos/${encodeURIComponent(itemId)}/retry`,
+    {
+      method: "POST",
+      credentials: "include",
+    },
+  );
+  return _json<SubscriptionSyncResult>(res);
+}

@@ -9,12 +9,26 @@ import { useRouter } from "next/navigation";
 import { ChevronRight, FolderIcon, Link as LinkIcon } from "lucide-react";
 import { getDrives, getFolders } from "@/lib/api";
 import type { Drive, Folder } from "@/types";
-import { createLoft } from "./api";
+import {
+  createLoft,
+  createSubscription,
+  resolveSubscriptionUrl,
+  syncSubscription,
+  type SubscriptionKind,
+  type SubscriptionSyncResult,
+} from "./api";
 
 interface PendingItem {
   url: string;
   filename: string;
   fileId: string;
+  createdAt: number;
+}
+
+interface PendingSubscription {
+  url: string;
+  kind: SubscriptionKind;
+  summary: SubscriptionSyncResult;
   createdAt: number;
 }
 
@@ -32,6 +46,10 @@ function extractUrl(e: React.DragEvent): string | null {
   return null;
 }
 
+function isSubscriptionKind(kind: SubscriptionKind): boolean {
+  return kind === "channel" || kind === "playlist" || kind === "feed";
+}
+
 export default function MediaImportPage() {
   const router = useRouter();
   const [url, setUrl] = useState("");
@@ -43,8 +61,15 @@ export default function MediaImportPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [recent, setRecent] = useState<PendingItem[]>([]);
+  const [recentSubs, setRecentSubs] = useState<PendingSubscription[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // URL classification state.
+  const [kind, setKind] = useState<SubscriptionKind>("unknown");
+  const [resolving, setResolving] = useState(false);
+  const [backfill, setBackfill] = useState<number>(15);
+  const [includeNoTranscript, setIncludeNoTranscript] = useState(false);
 
   useEffect(() => {
     getDrives().then((d) => {
@@ -60,6 +85,24 @@ export default function MediaImportPage() {
       folderStack.length > 0 ? folderStack[folderStack.length - 1] : undefined;
     getFolders(selectedDrive, currentPath).then(setFolders);
   }, [selectedDrive, folderStack]);
+
+  // Debounced URL classification: when the URL settles, ask backend
+  // whether it points at a subscription source so we can swap UI modes.
+  useEffect(() => {
+    const trimmed = url.trim();
+    if (!trimmed) {
+      setKind("unknown");
+      return;
+    }
+    setResolving(true);
+    const handle = setTimeout(() => {
+      resolveSubscriptionUrl(trimmed)
+        .then((res) => setKind(res.kind))
+        .catch(() => setKind("unknown"))
+        .finally(() => setResolving(false));
+    }, 400);
+    return () => clearTimeout(handle);
+  }, [url]);
 
   function handleDriveChange(drive: string) {
     setSelectedDrive(drive);
@@ -89,14 +132,33 @@ export default function MediaImportPage() {
     setSubmitting(true);
     setError(null);
     try {
-      const result = await createLoft(trimmed, selectedDrive, selectedFolder);
-      const next: PendingItem = {
-        url: trimmed,
-        filename: result.filename,
-        fileId: result.file_id,
-        createdAt: Date.now(),
-      };
-      setRecent((prev) => [next, ...prev].slice(0, 20));
+      if (isSubscriptionKind(kind)) {
+        const sub = await createSubscription({
+          url: trimmed,
+          drive: selectedDrive,
+          folder_path: selectedFolder,
+          include_no_transcript: includeNoTranscript,
+        });
+        const summary = await syncSubscription(sub.id, backfill);
+        const next: PendingSubscription = {
+          url: trimmed,
+          kind,
+          summary,
+          createdAt: Date.now(),
+        };
+        setRecentSubs((prev) => [next, ...prev].slice(0, 10));
+      } else {
+        const result = await createLoft(
+          trimmed, selectedDrive, selectedFolder,
+        );
+        const next: PendingItem = {
+          url: trimmed,
+          filename: result.filename,
+          fileId: result.file_id,
+          createdAt: Date.now(),
+        };
+        setRecent((prev) => [next, ...prev].slice(0, 20));
+      }
       setUrl("");
       inputRef.current?.focus();
     } catch (e) {
@@ -135,6 +197,13 @@ export default function MediaImportPage() {
     return parts[parts.length - 1];
   });
 
+  const showSubscriptionFields = isSubscriptionKind(kind);
+  const submitLabel = submitting
+    ? "..."
+    : showSubscriptionFields
+      ? "Subscribe"
+      : "Import";
+
   return (
     <div
       className="relative mx-auto max-w-3xl p-6"
@@ -170,6 +239,21 @@ export default function MediaImportPage() {
               }
             }}
           />
+          {url.trim() && (
+            <p className="mt-1 text-xs text-text-muted" data-testid="url-kind-hint">
+              {resolving
+                ? "Detecting URL type..."
+                : kind === "video"
+                  ? "Single video — will create a single .loft"
+                  : kind === "channel"
+                    ? "YouTube channel — subscription will track new uploads"
+                    : kind === "playlist"
+                      ? "YouTube playlist — subscription will track all items"
+                      : kind === "feed"
+                        ? "Feed — subscription"
+                        : "Single import (unrecognized provider — will pass through)"}
+            </p>
+          )}
         </div>
 
         <div>
@@ -228,6 +312,39 @@ export default function MediaImportPage() {
           </div>
         </div>
 
+        {showSubscriptionFields && (
+          <div
+            className="space-y-3 rounded-lg border border-border-primary bg-bg-card p-4"
+            data-testid="subscription-fields"
+          >
+            <div>
+              <label className="mb-1.5 block text-sm font-medium text-text-secondary">
+                Backfill (initial import count)
+              </label>
+              <input
+                type="number"
+                min={1}
+                value={backfill}
+                onChange={(e) => setBackfill(Math.max(1, Number(e.target.value) || 1))}
+                className="w-full rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm text-text-primary focus:border-accent-cta focus:outline-none"
+              />
+              <p className="mt-1 text-xs text-text-muted">
+                {kind === "channel"
+                  ? "Most-recent N uploads. RSS handles ≤15 cheaply; larger values fall back to yt-dlp."
+                  : "Items from the start of the playlist."}
+              </p>
+            </div>
+            <label className="flex items-center gap-2 text-sm text-text-primary">
+              <input
+                type="checkbox"
+                checked={includeNoTranscript}
+                onChange={(e) => setIncludeNoTranscript(e.target.checked)}
+              />
+              Try to fetch transcripts even when the video reports none
+            </label>
+          </div>
+        )}
+
         {error && (
           <div className="rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">
             {error}
@@ -240,7 +357,7 @@ export default function MediaImportPage() {
             disabled={!url.trim() || !selectedDrive || submitting}
             className="rounded-lg bg-accent-cta px-5 py-2.5 text-sm font-medium text-white disabled:opacity-50 hover:opacity-90"
           >
-            {submitting ? "..." : "Import"}
+            {submitLabel}
           </button>
         </div>
       </div>
@@ -267,6 +384,29 @@ export default function MediaImportPage() {
                     {item.url}
                   </span>
                 </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {recentSubs.length > 0 && (
+        <div className="mt-8" data-testid="recent-subscriptions">
+          <h2 className="mb-3 text-sm font-medium text-text-secondary">
+            Recent subscription syncs
+          </h2>
+          <ul className="space-y-2">
+            {recentSubs.map((s, i) => (
+              <li
+                key={`${s.createdAt}-${i}`}
+                className="rounded-lg border border-border-primary bg-bg-card px-3 py-2"
+              >
+                <div className="text-sm font-medium text-text-primary">
+                  {s.kind === "channel" ? "Channel" : s.kind === "playlist" ? "Playlist" : "Feed"}
+                  {": "}
+                  added {s.summary.added}, reused {s.summary.reused}, failed {s.summary.failed}
+                </div>
+                <div className="truncate text-xs text-text-muted">{s.url}</div>
               </li>
             ))}
           </ul>
