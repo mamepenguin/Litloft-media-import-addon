@@ -4,6 +4,12 @@ Endpoints:
 - POST /api/addons/media_import/link             — URL → .loft generation
 - GET  /api/addons/media_import/link/{file_id}/metadata
 - POST /api/addons/media_import/link/{file_id}/refresh
+- POST /api/addons/media_import/subscriptions
+- GET  /api/addons/media_import/subscriptions?drive=X
+- DELETE /api/addons/media_import/subscriptions/{id}
+- POST /api/addons/media_import/subscriptions/{id}/sync
+- GET  /api/addons/media_import/subscriptions/{id}/videos
+- POST /api/addons/media_import/subscriptions/{id}/videos/{item_id}/retry
 
 Slot:
 - ``loft-metadata`` — channel/description/captions panel under the player.
@@ -17,7 +23,7 @@ On startup:
 import asyncio
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import text
 
 import app.config as config
@@ -27,6 +33,10 @@ from .schemas import (
     LoftCreateRequest,
     LoftCreateResponse,
     LoftMetadataResponse,
+    SubscriptionCreateRequest,
+    SubscriptionResponse,
+    SubscriptionSyncResponse,
+    SubscriptionVideoResponse,
 )
 from .service import (
     loft_manager,
@@ -35,6 +45,11 @@ from .service import (
     _ensure_subscription_tables,
 )
 from .provider_registration import register_media_import_providers
+from .subscription.manager import (
+    SubscriptionConflict,
+    SubscriptionNotFound,
+    subscription_manager,
+)
 from .subscription.registration import register_subscription_providers
 
 logger = logging.getLogger(__name__)
@@ -132,3 +147,176 @@ async def refresh_loft(file_id: str) -> dict:
 
     await loft_manager.enqueue_fetch(file_id, url, drive)
     return {"status": "queued"}
+
+
+# ---- Subscriptions (Phase 2 Commit 4) -----------------------------
+
+
+def _row_to_subscription_response(row: dict) -> SubscriptionResponse:
+    return SubscriptionResponse(
+        id=row["id"],
+        provider=row["provider"],
+        source_kind=row["source_kind"],
+        source_ref=row["source_ref"],
+        drive=row["drive"],
+        folder_path=row["folder_path"],
+        title=row.get("title"),
+        is_enabled=bool(row["is_enabled"]),
+        cooldown_minutes=row["cooldown_minutes"],
+        include_no_transcript=bool(row["include_no_transcript"]),
+        last_synced_at=row.get("last_synced_at"),
+        cooldown_until=row.get("cooldown_until"),
+        created_at=row["created_at"],
+    )
+
+
+def _load_subscription_row(subscription_id: int) -> dict | None:
+    db = SessionLocal()
+    try:
+        row = db.execute(
+            text("SELECT * FROM subscriptions WHERE id = :id"),
+            {"id": subscription_id},
+        ).mappings().first()
+    finally:
+        db.close()
+    return dict(row) if row else None
+
+
+@router.post(
+    "/subscriptions", response_model=SubscriptionResponse
+)
+async def create_subscription(
+    request: SubscriptionCreateRequest,
+) -> SubscriptionResponse:
+    if not request.url.strip():
+        raise HTTPException(status_code=422, detail="URL is required")
+    try:
+        config.get_drive_path(request.drive)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Drive not found")
+
+    loop = asyncio.get_running_loop()
+    try:
+        sub_id = await loop.run_in_executor(
+            None,
+            lambda: subscription_manager.create(
+                url=request.url,
+                drive=request.drive,
+                folder_path=request.folder_path,
+                cooldown_minutes=request.cooldown_minutes,
+                include_no_transcript=request.include_no_transcript,
+            ),
+        )
+    except ValueError as exc:
+        # URL not recognized / points at a single video.
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception:
+        logger.exception("Failed to create subscription: %s", request.url)
+        raise HTTPException(
+            status_code=500, detail="Failed to create subscription"
+        )
+
+    row = _load_subscription_row(sub_id)
+    assert row is not None
+    return _row_to_subscription_response(row)
+
+
+@router.get(
+    "/subscriptions", response_model=list[SubscriptionResponse]
+)
+async def list_subscriptions(
+    drive: str = Query(..., description="Drive name (required)"),
+) -> list[SubscriptionResponse]:
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            text(
+                "SELECT * FROM subscriptions WHERE drive = :drive "
+                "ORDER BY created_at DESC"
+            ),
+            {"drive": drive},
+        ).mappings().all()
+    finally:
+        db.close()
+    return [_row_to_subscription_response(dict(r)) for r in rows]
+
+
+@router.delete("/subscriptions/{subscription_id}")
+async def delete_subscription(subscription_id: int) -> dict:
+    if _load_subscription_row(subscription_id) is None:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        None, subscription_manager.delete, subscription_id
+    )
+    return {"status": "deleted"}
+
+
+@router.post(
+    "/subscriptions/{subscription_id}/sync",
+    response_model=SubscriptionSyncResponse,
+)
+async def sync_subscription(
+    subscription_id: int,
+    backfill: int | None = Query(
+        None, ge=1, description="Limit upstream items considered (default: all)"
+    ),
+) -> SubscriptionSyncResponse:
+    if _load_subscription_row(subscription_id) is None:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    try:
+        result = await subscription_manager.sync(
+            subscription_id, backfill=backfill
+        )
+    except SubscriptionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except SubscriptionNotFound:
+        # Race: row deleted between the check and the sync. Treat as 404.
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    return SubscriptionSyncResponse(**result)
+
+
+@router.get(
+    "/subscriptions/{subscription_id}/videos",
+    response_model=list[SubscriptionVideoResponse],
+)
+async def list_subscription_videos(
+    subscription_id: int,
+) -> list[SubscriptionVideoResponse]:
+    if _load_subscription_row(subscription_id) is None:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            text(
+                "SELECT subscription_id, item_id, status, error_kind, "
+                " file_id, first_seen_at, last_attempted_at "
+                "FROM subscription_videos "
+                "WHERE subscription_id = :sid "
+                "ORDER BY first_seen_at DESC"
+            ),
+            {"sid": subscription_id},
+        ).mappings().all()
+    finally:
+        db.close()
+    return [SubscriptionVideoResponse(**dict(r)) for r in rows]
+
+
+@router.post(
+    "/subscriptions/{subscription_id}/videos/{item_id}/retry",
+    response_model=SubscriptionSyncResponse,
+)
+async def retry_subscription_video(
+    subscription_id: int, item_id: str
+) -> SubscriptionSyncResponse:
+    if _load_subscription_row(subscription_id) is None:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    try:
+        result = await subscription_manager.retry_item(
+            subscription_id, item_id
+        )
+    except SubscriptionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except SubscriptionNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return SubscriptionSyncResponse(**result)

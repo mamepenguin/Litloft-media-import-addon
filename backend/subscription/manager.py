@@ -302,6 +302,90 @@ class SubscriptionManager:
             "total_new": len(new_ids),
         }
 
+    # ---- retry single item ---------------------------------------
+
+    async def retry_item(
+        self, subscription_id: int, item_id: str
+    ) -> dict:
+        """Re-attempt one previously-failed item under the per-id Lock.
+
+        Returns the same shape as ``sync`` so the route handler can hand
+        it back uniformly. The row must already exist in
+        ``subscription_videos`` (this is a retry, not a fresh discovery);
+        callers that don't have one should run a full sync instead.
+        """
+        lock = self._lock_for(subscription_id)
+        if lock.locked():
+            raise SubscriptionConflict(
+                f"sync already running for subscription {subscription_id}"
+            )
+        async with lock:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                None, self._retry_blocking, subscription_id, item_id
+            )
+
+    def _retry_blocking(
+        self, subscription_id: int, item_id: str
+    ) -> dict:
+        sub = self._load_subscription(subscription_id)
+        provider = get_subscription_provider(sub["provider"])
+        if provider is None:
+            raise ValueError(f"Provider not registered: {sub['provider']}")
+
+        # Confirm the row exists before doing any network work.
+        db = SessionLocal()
+        try:
+            existing = db.execute(
+                text(
+                    "SELECT first_seen_at FROM subscription_videos "
+                    "WHERE subscription_id = :sid AND item_id = :iid"
+                ),
+                {"sid": subscription_id, "iid": item_id},
+            ).first()
+        finally:
+            db.close()
+        if existing is None:
+            raise SubscriptionNotFound(
+                f"video not found: ({subscription_id}, {item_id})"
+            )
+        first_seen = existing[0]
+
+        ref = SubscriptionRef(
+            kind=sub["source_kind"], ref=sub["source_ref"]
+        )
+        try:
+            outcome = self._import_one_item(
+                provider=provider,
+                ref=ref,
+                item_id=item_id,
+                drive=sub["drive"],
+                folder_path=sub["folder_path"],
+                include_no_transcript=bool(sub["include_no_transcript"]),
+            )
+        except Exception:
+            logger.exception(
+                "Retry failed for subscription=%s item=%s",
+                subscription_id, item_id,
+            )
+            self._record_video(
+                subscription_id, item_id, status="failed",
+                file_id=None, first_seen=first_seen,
+            )
+            return {"added": 0, "reused": 0, "failed": 1, "total_new": 0}
+
+        self._record_video(
+            subscription_id, item_id, status="imported",
+            file_id=outcome.file_id, first_seen=first_seen,
+            error_kind=outcome.transcript_error,
+        )
+        return {
+            "added": 0 if outcome.reused else 1,
+            "reused": 1 if outcome.reused else 0,
+            "failed": 0,
+            "total_new": 1,
+        }
+
     # ---- DB helpers ----------------------------------------------
 
     def _load_subscription(self, subscription_id: int) -> dict:
