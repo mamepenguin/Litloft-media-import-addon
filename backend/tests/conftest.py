@@ -50,6 +50,7 @@ def media_import_db(tmp_path, monkeypatch):
     # Materialize loft_metadata via the addon's own migration helper so
     # the schema under test is the production schema.
     service._ensure_loft_table()
+    service._ensure_subscription_tables()
 
     # Silence side-effects that have no in-test infrastructure:
     #   - WS broadcast (no running event loop in fetch worker thread)

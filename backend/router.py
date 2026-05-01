@@ -32,6 +32,7 @@ from .service import (
     loft_manager,
     _backfill_provider_item_ids,
     _ensure_loft_table,
+    _ensure_subscription_tables,
 )
 from .provider_registration import register_media_import_providers
 from .subscription.registration import register_subscription_providers
@@ -57,6 +58,7 @@ async def on_startup() -> None:
     register_media_import_providers()
     register_subscription_providers()
     _ensure_loft_table()
+    _ensure_subscription_tables()
     # Backfill must run after both registries and the schema are ready;
     # it depends on the youtube subscription provider being registered
     # to recognize legacy URLs.

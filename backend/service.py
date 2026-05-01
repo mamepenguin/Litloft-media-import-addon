@@ -694,4 +694,68 @@ def _backfill_provider_item_ids() -> int:
     return updated
 
 
+def _ensure_subscription_tables() -> None:
+    """Create ``subscriptions`` and ``subscription_videos`` if missing.
+
+    Phase 2 introduces both tables as a single migration unit. Unlike
+    ``_ensure_loft_table`` there is no legacy table to migrate from —
+    this is brand-new in Phase 2 — so the body is just two
+    ``CREATE TABLE IF NOT EXISTS`` statements. ``status`` and
+    ``error_kind`` are deliberately stored as plain TEXT (no CHECK
+    constraint) so the SubscriptionManager can extend the vocabulary
+    without a follow-up migration; the registry module owns the
+    canonical value list.
+
+    The ``file_id`` FK uses ``ON DELETE SET NULL`` so a user-deleted
+    .loft preserves the subscription_videos row (history of seen items),
+    while the ``subscription_id`` FK uses ``ON DELETE CASCADE`` so
+    deleting a subscription drops every per-item row in one shot.
+    """
+    db = SessionLocal()
+    try:
+        db.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS subscriptions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    provider TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    source_ref TEXT NOT NULL,
+                    drive TEXT NOT NULL,
+                    folder_path TEXT NOT NULL DEFAULT '',
+                    title TEXT,
+                    is_enabled BOOLEAN NOT NULL DEFAULT 1,
+                    cooldown_minutes INTEGER NOT NULL DEFAULT 60,
+                    include_no_transcript BOOLEAN NOT NULL DEFAULT 0,
+                    last_synced_at TEXT,
+                    cooldown_until TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(provider, source_kind, source_ref, drive, folder_path)
+                )
+                """
+            )
+        )
+        db.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS subscription_videos (
+                    subscription_id INTEGER NOT NULL
+                        REFERENCES subscriptions(id) ON DELETE CASCADE,
+                    item_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    error_kind TEXT,
+                    file_id TEXT REFERENCES files(id) ON DELETE SET NULL,
+                    first_seen_at TEXT NOT NULL,
+                    last_attempted_at TEXT,
+                    PRIMARY KEY(subscription_id, item_id)
+                )
+                """
+            )
+        )
+        db.commit()
+        logger.info("subscription tables ensured")
+    finally:
+        db.close()
+
+
 loft_manager = LoftManager()
