@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from app.services.ws import broadcast_from_thread
@@ -178,6 +179,8 @@ class SubscriptionWorker:
             return
         except Exception:
             logger.exception("sync_blocking failed: %s", job)
+            if job.kind == "cron":
+                self._apply_cron_backoff(job.subscription_id)
             self._broadcast(
                 "media_import.subscription.sync_completed",
                 subscription_id=job.subscription_id,
@@ -198,6 +201,29 @@ class SubscriptionWorker:
             return self._manager._load_subscription(subscription_id)["drive"]
         except SubscriptionNotFound:
             return None
+
+    def _apply_cron_backoff(self, subscription_id: int) -> None:
+        """Bump ``cooldown_until`` to the next ladder rung after a cron fail.
+
+        Manual / retry / initial paths intentionally skip this: the user
+        is in front of the screen and another cron sweep would be
+        confusing. Only cron updates the column so the backoff state
+        machine has a single owner.
+        """
+        try:
+            minutes = self._manager._next_backoff_minutes(subscription_id)
+            until = datetime.now(UTC) + timedelta(minutes=minutes)
+            self._manager._set_cooldown_until(subscription_id, until)
+            logger.warning(
+                "subscription %d: cron failed, backoff %d min "
+                "(cooldown_until=%s)",
+                subscription_id, minutes, until.isoformat(),
+            )
+        except Exception:  # pragma: no cover — best-effort backoff
+            logger.exception(
+                "subscription %d: failed to apply cron backoff",
+                subscription_id,
+            )
 
     def _broadcast(self, event: str, **payload) -> None:
         try:

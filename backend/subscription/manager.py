@@ -87,6 +87,29 @@ def _resolve_channel_id_via_yt_dlp(url: str) -> str | None:
 # ---- File path helpers --------------------------------------------
 
 
+def _parse_iso(value: str | None) -> datetime | None:
+    """Best-effort ``datetime.fromisoformat`` that returns None on failure."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _cron_due(row: dict, now: datetime) -> bool:
+    """Pure predicate for cron eligibility, factored out for testability."""
+    cooldown_until = _parse_iso(row.get("cooldown_until"))
+    if cooldown_until is not None and cooldown_until > now:
+        return False
+    last_synced_at = _parse_iso(row.get("last_synced_at"))
+    if last_synced_at is None:
+        return True
+    cooldown_minutes = int(row.get("cooldown_minutes") or 0)
+    elapsed_seconds = (now - last_synced_at).total_seconds()
+    return elapsed_seconds >= cooldown_minutes * 60
+
+
 def _sanitize_filename(title: str) -> str:
     """Mirror service.py — kept local to avoid a cross-module import cycle."""
     import re
@@ -135,6 +158,11 @@ class SubscriptionManager:
     the worker's perspective. Direct callers in tests invoke
     ``_sync_blocking`` synchronously.
     """
+
+    # Cron backoff ladder. Inferred state-less from the existing
+    # (last_synced_at, cooldown_until) pair, so no consecutive_failures
+    # column is needed (hako z6wc1bI3g_WQ9_jS0xi69).
+    BACKOFF_LADDER_MINUTES: tuple[int, ...] = (60, 240, 1440)
 
     # ---- create ---------------------------------------------------
 
@@ -302,6 +330,11 @@ class SubscriptionManager:
                 time.sleep(provider.inter_item_delay_seconds)
 
         self._touch_last_synced_at(subscription_id)
+        # Successful full sync resets any pending cron backoff. Single-
+        # item retry path (``_sync_single_item``) deliberately does not
+        # touch this column — retries are user-initiated and shouldn't
+        # interfere with cron's backoff state machine.
+        self._clear_cooldown_until(subscription_id)
         return {
             "added": added,
             "reused": reused,
@@ -483,6 +516,113 @@ class SubscriptionManager:
             db.commit()
         finally:
             db.close()
+
+    # ---- Cron eligibility & backoff ------------------------------
+
+    def list_eligible_for_cron(self, now: datetime) -> list[int]:
+        """Return subscription_ids whose cron sync should fire at ``now``.
+
+        Eligibility predicate (all must hold):
+        - ``is_enabled = 1``
+        - ``last_synced_at`` is NULL, or
+          ``now - last_synced_at >= cooldown_minutes``
+        - ``cooldown_until`` is NULL or already in the past
+
+        Filtering happens in Python rather than SQL because the timestamp
+        column is stored as ISO-8601 with timezone offset (
+        ``datetime.now(UTC).isoformat()``) and the SQLite ``datetime()``
+        modifier output drops the offset, making string comparison
+        unreliable. Subscription cardinality is small, so a full scan is
+        cheaper than the workaround.
+        """
+        db = SessionLocal()
+        try:
+            rows = db.execute(
+                text(
+                    "SELECT id, cooldown_minutes, last_synced_at, "
+                    " cooldown_until "
+                    "FROM subscriptions "
+                    "WHERE is_enabled = 1 "
+                    "ORDER BY id"
+                )
+            ).mappings().all()
+        finally:
+            db.close()
+
+        eligible: list[int] = []
+        for row in rows:
+            if not _cron_due(row, now):
+                continue
+            eligible.append(row["id"])
+        return eligible
+
+    def _set_cooldown_until(
+        self, subscription_id: int, until: datetime
+    ) -> None:
+        db = SessionLocal()
+        try:
+            db.execute(
+                text(
+                    "UPDATE subscriptions SET cooldown_until = :u "
+                    "WHERE id = :id"
+                ),
+                {
+                    "u": until.astimezone(UTC).isoformat(),
+                    "id": subscription_id,
+                },
+            )
+            db.commit()
+        finally:
+            db.close()
+
+    def _clear_cooldown_until(self, subscription_id: int) -> None:
+        db = SessionLocal()
+        try:
+            db.execute(
+                text(
+                    "UPDATE subscriptions SET cooldown_until = NULL "
+                    "WHERE id = :id"
+                ),
+                {"id": subscription_id},
+            )
+            db.commit()
+        finally:
+            db.close()
+
+    def _next_backoff_minutes(self, subscription_id: int) -> int:
+        """Pick the next ladder rung from existing timestamps.
+
+        State-less inference: the gap between the *current*
+        ``cooldown_until`` and ``last_synced_at`` represents the rung
+        applied at the previous failure. The next rung is the smallest
+        ladder value strictly larger than that gap; the ladder caps at
+        the last entry. With no prior cooldown recorded the first rung
+        applies.
+        """
+        db = SessionLocal()
+        try:
+            row = db.execute(
+                text(
+                    "SELECT last_synced_at, cooldown_until "
+                    "FROM subscriptions WHERE id = :id"
+                ),
+                {"id": subscription_id},
+            ).mappings().first()
+        finally:
+            db.close()
+        if row is None:
+            raise SubscriptionNotFound(subscription_id)
+
+        cu = _parse_iso(row.get("cooldown_until"))
+        ls = _parse_iso(row.get("last_synced_at"))
+        if cu is None or ls is None:
+            return self.BACKOFF_LADDER_MINUTES[0]
+
+        prev_minutes = max(1, int((cu - ls).total_seconds() // 60))
+        for rung in self.BACKOFF_LADDER_MINUTES:
+            if prev_minutes < rung:
+                return rung
+        return self.BACKOFF_LADDER_MINUTES[-1]
 
     # ---- Per-item import -----------------------------------------
 

@@ -33,6 +33,8 @@ class _FakeManager:
         }
     )
     on_call: Callable[[int], None] | None = None
+    next_backoff: int = 60
+    backoff_calls: list[tuple[int, object]] = field(default_factory=list)
 
     def _load_subscription(self, subscription_id: int) -> dict:
         from addons.media_import.subscription.manager import (
@@ -57,6 +59,12 @@ class _FakeManager:
         if self.raise_on == subscription_id:
             raise RuntimeError(f"forced failure for {subscription_id}")
         return dict(self.return_value)
+
+    def _next_backoff_minutes(self, subscription_id: int) -> int:
+        return self.next_backoff
+
+    def _set_cooldown_until(self, subscription_id: int, until) -> None:
+        self.backoff_calls.append((subscription_id, until))
 
 
 @pytest.fixture()
@@ -371,3 +379,86 @@ class TestRunningIdsApi:
         assert empty_before == frozenset()
         assert during == frozenset({7})
         assert empty_after == frozenset()
+
+
+# ---- cron backoff -------------------------------------------------
+
+
+class TestCronBackoff:
+    """Only kind="cron" failures bump cooldown_until.
+
+    Manual / retry / initial run with the user watching, so adding a
+    backoff would surprise them with an automated delay window. The
+    matrix in the Phase 3 spec is encoded by this set of tests.
+    """
+
+    def test_cron_failure_sets_cooldown_until(self, _broadcasts):
+        mgr = _FakeManager(drives={1: "d"}, raise_on=1, next_backoff=240)
+        w = _build_worker(mgr)
+
+        async def _scenario():
+            await w.start()
+            try:
+                await w.enqueue_sync(1, kind="cron")
+                await _drain(w)
+            finally:
+                await w.stop()
+
+        asyncio.run(_scenario())
+        assert len(mgr.backoff_calls) == 1
+        sid, until = mgr.backoff_calls[0]
+        assert sid == 1
+        # Roughly 240 minutes ahead of "now"; we just verify it's a
+        # tz-aware datetime in the future.
+        from datetime import UTC, datetime, timedelta
+        now = datetime.now(UTC)
+        assert until > now + timedelta(minutes=200)
+        assert until < now + timedelta(minutes=300)
+
+    def test_manual_failure_does_not_set_cooldown(self, _broadcasts):
+        mgr = _FakeManager(drives={1: "d"}, raise_on=1)
+        w = _build_worker(mgr)
+
+        async def _scenario():
+            await w.start()
+            try:
+                await w.enqueue_sync(1, kind="manual")
+                await _drain(w)
+            finally:
+                await w.stop()
+
+        asyncio.run(_scenario())
+        assert mgr.backoff_calls == []
+
+    def test_retry_failure_does_not_set_cooldown(self, _broadcasts):
+        mgr = _FakeManager(drives={1: "d"}, raise_on=1)
+        w = _build_worker(mgr)
+
+        async def _scenario():
+            await w.start()
+            try:
+                await w.enqueue_sync(1, kind="retry", item_id="vid")
+                await _drain(w)
+            finally:
+                await w.stop()
+
+        asyncio.run(_scenario())
+        assert mgr.backoff_calls == []
+
+    def test_cron_success_does_not_set_cooldown(self, _broadcasts):
+        # success path is owned by the manager (clears cooldown_until in
+        # _sync_blocking). The worker's job on success is to broadcast
+        # only — verify no spurious backoff write.
+        mgr = _FakeManager(drives={1: "d"})
+        w = _build_worker(mgr)
+
+        async def _scenario():
+            await w.start()
+            try:
+                await w.enqueue_sync(1, kind="cron")
+                await _drain(w)
+            finally:
+                await w.stop()
+
+        asyncio.run(_scenario())
+        assert mgr.backoff_calls == []

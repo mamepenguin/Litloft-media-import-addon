@@ -51,6 +51,7 @@ from .service import (
 from .provider_registration import register_media_import_providers
 from .subscription.manager import subscription_manager
 from .subscription.registration import register_subscription_providers
+from .subscription.scheduler import subscription_scheduler
 from .subscription.worker import subscription_worker
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,7 @@ async def on_startup() -> None:
     _backfill_provider_item_ids()
     await loft_manager.start_worker()
     await subscription_worker.start()
+    await subscription_scheduler.start()
 
 
 @router.post("/link", response_model=LoftCreateResponse)

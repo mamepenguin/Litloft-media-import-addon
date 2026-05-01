@@ -708,3 +708,328 @@ class TestSyncSingleItemRetry:
         # Retry on a non-existent row must raise SubscriptionNotFound.
         with pytest.raises(SubscriptionNotFound):
             mgr._sync_blocking(sub_id, item_id="never_seen")
+
+
+class TestCronEligibility:
+    """``list_eligible_for_cron`` is the only entry point the scheduler uses.
+
+    It encodes the cron-due predicate at SQL/Python boundary; tests pin
+    each branch of the predicate so the scheduler can stay a thin
+    pump-and-broadcast layer.
+    """
+
+    def test_null_last_synced_is_eligible(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        from datetime import UTC, datetime
+
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        mgr = SubscriptionManager()
+        sub_id = _create_subscription(mgr, drive="d")
+        # Fresh subscription has last_synced_at = NULL.
+        assert mgr.list_eligible_for_cron(datetime.now(UTC)) == [sub_id]
+
+    def test_disabled_excluded(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        from datetime import UTC, datetime
+
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        mgr = SubscriptionManager()
+        sub_id = _create_subscription(mgr, drive="d")
+        db = media_import_db()
+        try:
+            db.execute(
+                text(
+                    "UPDATE subscriptions SET is_enabled = 0 WHERE id = :id"
+                ),
+                {"id": sub_id},
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        assert mgr.list_eligible_for_cron(datetime.now(UTC)) == []
+
+    def test_within_cooldown_excluded(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        mgr = SubscriptionManager()
+        sub_id = _create_subscription(mgr, drive="d")
+
+        now = datetime(2026, 5, 1, 12, 0, 0, tzinfo=UTC)
+        # Last synced 30 minutes ago; default cooldown_minutes=60.
+        recent = (now - timedelta(minutes=30)).isoformat()
+        db = media_import_db()
+        try:
+            db.execute(
+                text(
+                    "UPDATE subscriptions SET last_synced_at = :ts "
+                    "WHERE id = :id"
+                ),
+                {"ts": recent, "id": sub_id},
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        assert mgr.list_eligible_for_cron(now) == []
+        # 31 minutes later → cooldown elapsed, eligible.
+        future = now + timedelta(minutes=31)
+        assert mgr.list_eligible_for_cron(future) == [sub_id]
+
+    def test_cooldown_until_blocks_eligibility(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        mgr = SubscriptionManager()
+        sub_id = _create_subscription(mgr, drive="d")
+
+        now = datetime(2026, 5, 1, 12, 0, 0, tzinfo=UTC)
+        future = (now + timedelta(hours=2)).isoformat()
+        db = media_import_db()
+        try:
+            db.execute(
+                text(
+                    "UPDATE subscriptions SET cooldown_until = :u "
+                    "WHERE id = :id"
+                ),
+                {"u": future, "id": sub_id},
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        assert mgr.list_eligible_for_cron(now) == []
+        # Past the cooldown_until → eligible.
+        assert mgr.list_eligible_for_cron(
+            datetime(2026, 5, 1, 14, 30, tzinfo=UTC)
+        ) == [sub_id]
+
+
+class TestCooldownHelpers:
+    def test_set_and_clear_cooldown_until_round_trip(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        mgr = SubscriptionManager()
+        sub_id = _create_subscription(mgr, drive="d")
+        until = datetime(2026, 5, 1, 13, 0, tzinfo=UTC) + timedelta(hours=1)
+
+        mgr._set_cooldown_until(sub_id, until)
+        db = media_import_db()
+        try:
+            value = db.execute(
+                text(
+                    "SELECT cooldown_until FROM subscriptions "
+                    "WHERE id = :id"
+                ),
+                {"id": sub_id},
+            ).scalar()
+        finally:
+            db.close()
+        assert value is not None and "2026-05-01T14:00" in value
+
+        mgr._clear_cooldown_until(sub_id)
+        db = media_import_db()
+        try:
+            value = db.execute(
+                text(
+                    "SELECT cooldown_until FROM subscriptions "
+                    "WHERE id = :id"
+                ),
+                {"id": sub_id},
+            ).scalar()
+        finally:
+            db.close()
+        assert value is None
+
+    def test_next_backoff_minutes_first_rung_when_no_history(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        mgr = SubscriptionManager()
+        sub_id = _create_subscription(mgr, drive="d")
+        # last_synced_at and cooldown_until both NULL → first rung.
+        assert mgr._next_backoff_minutes(sub_id) == 60
+
+    def test_next_backoff_minutes_climbs_ladder(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        mgr = SubscriptionManager()
+        sub_id = _create_subscription(mgr, drive="d")
+
+        ls = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+        db = media_import_db()
+        try:
+            db.execute(
+                text(
+                    "UPDATE subscriptions "
+                    "SET last_synced_at = :ls, cooldown_until = :cu "
+                    "WHERE id = :id"
+                ),
+                {
+                    "ls": ls.isoformat(),
+                    "cu": (ls + timedelta(minutes=60)).isoformat(),
+                    "id": sub_id,
+                },
+            )
+            db.commit()
+        finally:
+            db.close()
+        # Previous rung was 60 → next is 240.
+        assert mgr._next_backoff_minutes(sub_id) == 240
+
+        # Bump to 240 → next is 1440.
+        db = media_import_db()
+        try:
+            db.execute(
+                text(
+                    "UPDATE subscriptions SET cooldown_until = :cu "
+                    "WHERE id = :id"
+                ),
+                {
+                    "cu": (ls + timedelta(minutes=240)).isoformat(),
+                    "id": sub_id,
+                },
+            )
+            db.commit()
+        finally:
+            db.close()
+        assert mgr._next_backoff_minutes(sub_id) == 1440
+
+        # At 1440 → caps at 1440.
+        db = media_import_db()
+        try:
+            db.execute(
+                text(
+                    "UPDATE subscriptions SET cooldown_until = :cu "
+                    "WHERE id = :id"
+                ),
+                {
+                    "cu": (ls + timedelta(minutes=1440)).isoformat(),
+                    "id": sub_id,
+                },
+            )
+            db.commit()
+        finally:
+            db.close()
+        assert mgr._next_backoff_minutes(sub_id) == 1440
+
+
+class TestSyncClearsCooldownOnSuccess:
+    def test_full_sync_clears_cooldown_until(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        mgr = SubscriptionManager()
+        sub_id = _create_subscription(mgr, drive="d")
+        # Pretend a previous cron failure set a backoff.
+        mgr._set_cooldown_until(
+            sub_id, datetime.now(UTC) + timedelta(hours=1)
+        )
+
+        mgr._sync_blocking(sub_id)
+
+        db = media_import_db()
+        try:
+            value = db.execute(
+                text(
+                    "SELECT cooldown_until FROM subscriptions "
+                    "WHERE id = :id"
+                ),
+                {"id": sub_id},
+            ).scalar()
+        finally:
+            db.close()
+        assert value is None
+
+    def test_single_item_retry_does_not_clear_cooldown(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        """Retry must not interfere with cron's backoff state machine."""
+        from datetime import UTC, datetime, timedelta
+
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        fake_provider.headers = [ItemHeader(item_id="vid", title="Vid")]
+        fake_provider.items = {
+            "vid": ItemMetadata(
+                item_id="vid",
+                canonical_url="https://fake/v/vid",
+                title="Vid",
+                has_captions=False,
+            ),
+        }
+        mgr = SubscriptionManager()
+        sub_id = _create_subscription(mgr, drive="d")
+        until = datetime.now(UTC) + timedelta(hours=1)
+        mgr._set_cooldown_until(sub_id, until)
+
+        # Seed the row so retry can target it.
+        db = media_import_db()
+        try:
+            db.execute(
+                text(
+                    "INSERT INTO subscription_videos "
+                    "(subscription_id, item_id, status, first_seen_at) "
+                    "VALUES (:sid, 'vid', 'failed', '2026-05-01T00:00:00')"
+                ),
+                {"sid": sub_id},
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        mgr._sync_blocking(sub_id, item_id="vid")
+
+        db = media_import_db()
+        try:
+            value = db.execute(
+                text(
+                    "SELECT cooldown_until FROM subscriptions "
+                    "WHERE id = :id"
+                ),
+                {"id": sub_id},
+            ).scalar()
+        finally:
+            db.close()
+        assert value is not None  # retry must not clear cron backoff
