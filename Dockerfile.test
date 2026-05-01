@@ -1,0 +1,23 @@
+FROM python:3.12-slim
+RUN apt-get update && apt-get install -y ffmpeg libheif-dev curl && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+
+# Core requirements + dev/test tooling
+COPY backend/requirements-dev.txt backend/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements-dev.txt
+
+# Core app sources
+COPY backend/app/ ./app/
+
+# Media Import addon (mounted under addons/media_import/ inside the image,
+# matching the layout produced by backend/Dockerfile in production).
+COPY addons/media_import/backend/ ./addons/media_import/
+COPY addons/media_import/backend/requirements.txt ./addons/media_import-requirements.txt
+RUN pip install --no-cache-dir -r ./addons/media_import-requirements.txt
+RUN touch addons/__init__.py
+
+# Test config + tests
+COPY addons/media_import/pytest.ini ./pytest.ini
+
+CMD ["pytest", "-v", "--tb=short", "addons/media_import/tests/", \
+     "--cov=addons.media_import", "--cov-report=term-missing"]
