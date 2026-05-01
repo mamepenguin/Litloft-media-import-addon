@@ -520,13 +520,68 @@ class TestSyncLockContention:
         sub_id = _create_subscription(mgr, drive="d")
 
         async def _scenario() -> None:
-            # Hold the lock manually so the second call observes contention.
-            lock = mgr._lock_for(sub_id)
-            await lock.acquire()
+            # Mark the slot as in-flight manually so the second call
+            # observes contention without a real concurrent sync.
+            await mgr._claim_inflight(sub_id)
             try:
                 with pytest.raises(SubscriptionConflict):
                     await mgr.sync(sub_id)
             finally:
-                lock.release()
+                mgr._release_inflight(sub_id)
 
         asyncio.run(_scenario())
+
+    def test_truly_concurrent_calls_one_succeeds_one_409(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        """Both callers race past the check; only one wins.
+
+        The previous ``Lock.locked() + async with Lock`` pattern was
+        TOCTOU — both observers saw ``False`` and the second silently
+        blocked rather than 409'ing. The current ``_claim_inflight``
+        path holds an outer mutex around the check-and-add so this test
+        deterministically rejects the loser.
+        """
+        from addons.media_import.subscription.manager import (
+            SubscriptionConflict,
+            SubscriptionManager,
+        )
+
+        # A slow provider so the first sync is still in-flight when the
+        # second call arrives.
+        fake_provider.headers = [ItemHeader(item_id="x", title="X")]
+        fake_provider.items = {
+            "x": ItemMetadata(
+                item_id="x", canonical_url="https://fake/v/x", title="X",
+            ),
+        }
+        # Simulate a slow inter-item delay so the executor task lingers.
+        fake_provider.inter_item_delay_seconds = 0.0
+        # Force the blocking phase to take long enough by patching the
+        # inner _import_one_item to sleep.
+        mgr = SubscriptionManager()
+        sub_id = _create_subscription(mgr, drive="d")
+
+        original = mgr._import_one_item
+
+        def _slow(*args, **kwargs):
+            import time
+            time.sleep(0.2)
+            return original(*args, **kwargs)
+
+        mgr._import_one_item = _slow  # type: ignore[method-assign]
+
+        async def _scenario() -> tuple[bool, bool]:
+            t1 = asyncio.create_task(mgr.sync(sub_id))
+            # Give task1 a tick to enter _claim_inflight.
+            await asyncio.sleep(0.05)
+            try:
+                await mgr.sync(sub_id)
+                second_succeeded = True
+            except SubscriptionConflict:
+                second_succeeded = False
+            await t1
+            return (True, second_succeeded)
+
+        first_ok, second_ok = asyncio.run(_scenario())
+        assert first_ok and not second_ok

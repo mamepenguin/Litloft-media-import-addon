@@ -82,5 +82,14 @@ def drive_path(tmp_path, monkeypatch):
     def _fake_get_drive_path(name: str) -> Path:
         return drive_dir
 
+    def _fake_get_drive_access_group(name: str) -> str | None:
+        # Tests run without drives.json, so default every drive to no
+        # access_group (publicly accessible). Tests that exercise the
+        # locked-drive path patch this further.
+        return None
+
     monkeypatch.setattr(config, "get_drive_path", _fake_get_drive_path)
+    monkeypatch.setattr(
+        config, "get_drive_access_group", _fake_get_drive_access_group
+    )
     return drive_dir

@@ -6,7 +6,7 @@
  * (``createSubscription`` + ``syncSubscription``) flows.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, fireEvent, waitFor, screen } from "@testing-library/react";
+import { act, render, fireEvent, waitFor, screen } from "@testing-library/react";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
@@ -45,8 +45,11 @@ beforeEach(() => {
 });
 
 async function settleResolveDebounce() {
-  // Page debounces resolveSubscriptionUrl by 400ms; wait it out.
-  await new Promise((r) => setTimeout(r, 450));
+  // Page debounces resolveSubscriptionUrl by 400ms; wait inside act()
+  // so the post-debounce setKind state update is captured.
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 450));
+  });
 }
 
 describe("MediaImportPage URL branching", () => {

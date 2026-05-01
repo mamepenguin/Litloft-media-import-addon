@@ -23,10 +23,11 @@ On startup:
 import asyncio
 import logging
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 
 import app.config as config
+from app.auth import check_drive_access, get_unlocked_groups
 from app.database import SessionLocal
 
 from .schemas import (
@@ -218,6 +219,7 @@ def _load_subscription_row(subscription_id: int) -> dict | None:
 )
 async def create_subscription(
     request: SubscriptionCreateRequest,
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
 ) -> SubscriptionResponse:
     if not request.url.strip():
         raise HTTPException(status_code=422, detail="URL is required")
@@ -225,6 +227,10 @@ async def create_subscription(
         config.get_drive_path(request.drive)
     except ValueError:
         raise HTTPException(status_code=404, detail="Drive not found")
+    # in-process addons bypass addon_proxy's X-Lit-Drive enforcement; we
+    # must validate drive access in the handler. Returns 404 (not 403)
+    # to keep existence hidden, per design-decisions.md.
+    check_drive_access(request.drive, unlocked_groups)
 
     loop = asyncio.get_running_loop()
     try:
@@ -257,7 +263,10 @@ async def create_subscription(
 )
 async def list_subscriptions(
     drive: str = Query(..., description="Drive name (required)"),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
 ) -> list[SubscriptionResponse]:
+    # 404 the drive itself when caller cannot see it, hiding existence.
+    check_drive_access(drive, unlocked_groups)
     db = SessionLocal()
     try:
         rows = db.execute(
@@ -272,10 +281,28 @@ async def list_subscriptions(
     return [_row_to_subscription_response(dict(r)) for r in rows]
 
 
-@router.delete("/subscriptions/{subscription_id}")
-async def delete_subscription(subscription_id: int) -> dict:
-    if _load_subscription_row(subscription_id) is None:
+def _load_owned_subscription(
+    subscription_id: int, unlocked_groups: list[str]
+) -> dict:
+    """Load a subscription row or 404 if absent / inaccessible.
+
+    Centralizes the per-id auth check so every subscription endpoint
+    enforces the same drive-boundary rule. Always returns 404 (never
+    403) — per design-decisions.md, locked drives must hide existence.
+    """
+    row = _load_subscription_row(subscription_id)
+    if row is None:
         raise HTTPException(status_code=404, detail="Subscription not found")
+    check_drive_access(row["drive"], unlocked_groups)
+    return row
+
+
+@router.delete("/subscriptions/{subscription_id}")
+async def delete_subscription(
+    subscription_id: int,
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
+) -> dict:
+    _load_owned_subscription(subscription_id, unlocked_groups)
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(
         None, subscription_manager.delete, subscription_id
@@ -292,9 +319,9 @@ async def sync_subscription(
     backfill: int | None = Query(
         None, ge=1, description="Limit upstream items considered (default: all)"
     ),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
 ) -> SubscriptionSyncResponse:
-    if _load_subscription_row(subscription_id) is None:
-        raise HTTPException(status_code=404, detail="Subscription not found")
+    _load_owned_subscription(subscription_id, unlocked_groups)
     try:
         result = await subscription_manager.sync(
             subscription_id, backfill=backfill
@@ -313,9 +340,9 @@ async def sync_subscription(
 )
 async def list_subscription_videos(
     subscription_id: int,
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
 ) -> list[SubscriptionVideoResponse]:
-    if _load_subscription_row(subscription_id) is None:
-        raise HTTPException(status_code=404, detail="Subscription not found")
+    _load_owned_subscription(subscription_id, unlocked_groups)
     db = SessionLocal()
     try:
         rows = db.execute(
@@ -338,10 +365,11 @@ async def list_subscription_videos(
     response_model=SubscriptionSyncResponse,
 )
 async def retry_subscription_video(
-    subscription_id: int, item_id: str
+    subscription_id: int,
+    item_id: str,
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
 ) -> SubscriptionSyncResponse:
-    if _load_subscription_row(subscription_id) is None:
-        raise HTTPException(status_code=404, detail="Subscription not found")
+    _load_owned_subscription(subscription_id, unlocked_groups)
     try:
         result = await subscription_manager.retry_item(
             subscription_id, item_id

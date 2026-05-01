@@ -105,14 +105,27 @@ def _sanitize_filename(title: str) -> str:
 def _allocate_loft_path(
     drive_path: Path, folder_path: str, title: str
 ) -> Path:
-    """Resolve a unique ``Title.loft`` path under ``drive/folder``."""
-    output_dir = drive_path / folder_path if folder_path else drive_path
-    output_dir.mkdir(parents=True, exist_ok=True)
+    """Resolve a unique ``Title.loft`` path under ``drive/folder``.
+
+    ``folder_path`` is user input from ``SubscriptionCreateRequest``.
+    ``pathlib`` ``/`` does not interpret ``..`` segments, so we resolve
+    to an absolute path and verify it lives under ``drive_path`` before
+    creating any directories or writing files. Without this check a
+    crafted ``folder_path`` like ``../../etc`` would let mkdir + write
+    escape the drive root irreversibly (see hako PKehLyI3eRqO3Vl6Fv5iy).
+    """
+    drive_root = drive_path.resolve()
+    target = (drive_path / folder_path).resolve() if folder_path else drive_root
+    if not (target == drive_root or target.is_relative_to(drive_root)):
+        raise ValueError(
+            f"folder_path escapes drive root: {folder_path!r}"
+        )
+    target.mkdir(parents=True, exist_ok=True)
     safe = _sanitize_filename(title)
-    candidate = output_dir / f"{safe}.loft"
+    candidate = target / f"{safe}.loft"
     counter = 1
     while candidate.exists():
-        candidate = output_dir / f"{safe} ({counter}).loft"
+        candidate = target / f"{safe} ({counter}).loft"
         counter += 1
     return candidate
 
@@ -122,10 +135,34 @@ def _allocate_loft_path(
 
 class SubscriptionManager:
     def __init__(self) -> None:
-        self._locks: dict[int, asyncio.Lock] = {}
+        # In-flight set guarded by a single async mutex. Per-id Lock
+        # would TOCTOU under concurrent requests (two callers can both
+        # observe ``Lock.locked() == False`` before either acquires) and
+        # also leak entries forever (hako 4GQX1-KucQ1lbCeLCylwe). The
+        # check-and-add inside ``_inflight_mutex`` is atomic, and the
+        # set is bounded by the number of concurrent syncs.
+        self._inflight: set[int] = set()
+        self._inflight_mutex: asyncio.Lock = asyncio.Lock()
 
-    def _lock_for(self, subscription_id: int) -> asyncio.Lock:
-        return self._locks.setdefault(subscription_id, asyncio.Lock())
+    async def _claim_inflight(self, subscription_id: int) -> None:
+        """Mark this id as in-flight or raise SubscriptionConflict."""
+        async with self._inflight_mutex:
+            if subscription_id in self._inflight:
+                raise SubscriptionConflict(
+                    f"sync already running for subscription {subscription_id}"
+                )
+            self._inflight.add(subscription_id)
+
+    def _release_inflight(self, subscription_id: int) -> None:
+        self._inflight.discard(subscription_id)
+
+    def is_running(self, subscription_id: int) -> bool:
+        """Return True iff a sync / retry currently holds the in-flight slot.
+
+        Test-only escape hatch — production callers should observe the
+        409 contract instead of polling this.
+        """
+        return subscription_id in self._inflight
 
     # ---- create ---------------------------------------------------
 
@@ -213,16 +250,14 @@ class SubscriptionManager:
     async def sync(
         self, subscription_id: int, backfill: int | None = None
     ) -> dict:
-        lock = self._lock_for(subscription_id)
-        if lock.locked():
-            raise SubscriptionConflict(
-                f"sync already running for subscription {subscription_id}"
-            )
-        async with lock:
+        await self._claim_inflight(subscription_id)
+        try:
             loop = asyncio.get_running_loop()
             return await loop.run_in_executor(
                 None, self._sync_blocking, subscription_id, backfill
             )
+        finally:
+            self._release_inflight(subscription_id)
 
     def _sync_blocking(
         self, subscription_id: int, backfill: int | None
@@ -314,16 +349,14 @@ class SubscriptionManager:
         ``subscription_videos`` (this is a retry, not a fresh discovery);
         callers that don't have one should run a full sync instead.
         """
-        lock = self._lock_for(subscription_id)
-        if lock.locked():
-            raise SubscriptionConflict(
-                f"sync already running for subscription {subscription_id}"
-            )
-        async with lock:
+        await self._claim_inflight(subscription_id)
+        try:
             loop = asyncio.get_running_loop()
             return await loop.run_in_executor(
                 None, self._retry_blocking, subscription_id, item_id
             )
+        finally:
+            self._release_inflight(subscription_id)
 
     def _retry_blocking(
         self, subscription_id: int, item_id: str

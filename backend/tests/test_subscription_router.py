@@ -301,17 +301,18 @@ class TestSyncSubscription:
         )
         sub_id = create.json()["id"]
 
-        # Hold the lock so the route observes contention.
+        # Pre-claim the in-flight slot so the route observes contention
+        # without needing a real concurrent sync.
         async def _scenario() -> int:
-            lock = manager_mod.subscription_manager._lock_for(sub_id)
-            await lock.acquire()
+            mgr = manager_mod.subscription_manager
+            await mgr._claim_inflight(sub_id)
             try:
                 res = client.post(
                     f"/api/addons/media_import/subscriptions/{sub_id}/sync"
                 )
                 return res.status_code
             finally:
-                lock.release()
+                mgr._release_inflight(sub_id)
 
         status = asyncio.run(_scenario())
         assert status == 409
@@ -359,6 +360,128 @@ class TestListVideos:
         assert len(body) == 2
         statuses = {v["status"] for v in body}
         assert statuses == {"imported", "failed"}
+
+
+# ---- drive auth ---------------------------------------------------
+
+
+class TestDriveAccessControl:
+    """In-process addons must enforce drive auth themselves; the host
+    addon_proxy's X-Lit-Drive enforcement does not apply (hako
+    RpRxLPvcuF79bwnRZRcDg).
+    """
+
+    def _lock_drive(self, monkeypatch, locked_drive: str, group: str) -> None:
+        import app.config as config
+
+        def _gate(name: str) -> str | None:
+            return group if name == locked_drive else None
+
+        monkeypatch.setattr(config, "get_drive_access_group", _gate)
+
+    def test_create_on_locked_drive_returns_404(
+        self, client, fake_provider: _FakeProvider, monkeypatch,
+    ) -> None:
+        self._lock_drive(monkeypatch, "secret", "vip")
+        res = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": f"https://fake/channel/{_UC}", "drive": "secret"},
+        )
+        assert res.status_code == 404
+
+    def test_list_on_locked_drive_returns_404(
+        self, client, monkeypatch,
+    ) -> None:
+        self._lock_drive(monkeypatch, "secret", "vip")
+        res = client.get(
+            "/api/addons/media_import/subscriptions?drive=secret"
+        )
+        assert res.status_code == 404
+
+    def test_per_id_endpoints_404_when_drive_locked_post_creation(
+        self, client, fake_provider: _FakeProvider, media_import_db,
+        monkeypatch,
+    ) -> None:
+        # Seed a subscription on drive "secret" while it is unlocked.
+        db = media_import_db()
+        try:
+            db.execute(
+                text(
+                    "INSERT INTO subscriptions "
+                    "(id, provider, source_kind, source_ref, drive, "
+                    " folder_path, is_enabled, cooldown_minutes, "
+                    " include_no_transcript, created_at) "
+                    "VALUES (1, 'fakeyt', 'channel', :ref, 'secret', "
+                    " '', 1, 60, 0, '2026-05-01T00:00:00')"
+                ),
+                {"ref": _UC},
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        # Now lock the drive — caller has no cookie → unlocked_groups=[].
+        self._lock_drive(monkeypatch, "secret", "vip")
+
+        endpoints = [
+            ("DELETE", "/api/addons/media_import/subscriptions/1"),
+            ("POST", "/api/addons/media_import/subscriptions/1/sync"),
+            ("GET", "/api/addons/media_import/subscriptions/1/videos"),
+            ("POST", "/api/addons/media_import/subscriptions/1/videos/x/retry"),
+        ]
+        for method, path in endpoints:
+            res = client.request(method, path)
+            assert res.status_code == 404, (
+                f"{method} {path} should 404 on locked drive, "
+                f"got {res.status_code}"
+            )
+
+
+# ---- path traversal ----------------------------------------------
+
+
+class TestPathTraversalRejection:
+    def test_dotdot_folder_path_does_not_escape_drive(
+        self, client, fake_provider: _FakeProvider, drive_path,
+    ) -> None:
+        # Create with a malicious folder_path. The DB row should land
+        # (manager.create itself doesn't write FS), but a sync attempt
+        # must refuse rather than mkdir / write outside drive_path.
+        fake_provider.headers = [ItemHeader(item_id="x", title="X")]
+        fake_provider.items = {
+            "x": ItemMetadata(
+                item_id="x",
+                canonical_url="https://fake/v/x",
+                title="X",
+            ),
+        }
+        create = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={
+                "url": f"https://fake/channel/{_UC}",
+                "drive": "d",
+                "folder_path": "../../escape",
+            },
+        )
+        # Create itself doesn't touch the FS, so it is allowed.
+        assert create.status_code == 200
+        sub_id = create.json()["id"]
+
+        res = client.post(
+            f"/api/addons/media_import/subscriptions/{sub_id}/sync"
+        )
+        # The sync call ultimately raises in _allocate_loft_path. The
+        # batch wraps individual item failures, so total_new=1 and
+        # failed=1 — but no file should land outside drive_path.
+        body = res.json()
+        assert res.status_code == 200
+        assert body["failed"] == 1
+        assert body["added"] == 0
+
+        parent = drive_path.parent
+        # No directory or file landed in drive_path.parent or above.
+        leaked = list(parent.glob("escape"))
+        assert leaked == [], f"path traversal escaped: {leaked}"
 
 
 # ---- retry --------------------------------------------------------
