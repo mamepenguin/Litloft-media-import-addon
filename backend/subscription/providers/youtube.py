@@ -1,11 +1,8 @@
 """YouTubeProvider — the first SubscriptionProvider implementation.
 
-Phase 2 scope: ``resolve_ref`` + ``build_loft_content`` (pure functions
-exercised by the registry and backfill paths). The remaining methods
-(``list_items``, ``fetch_item``, ``fetch_transcript``) are stubbed to
-NotImplementedError and will be filled in Commit 3, where the
-SubscriptionManager arrives. Splitting like this keeps Commit 2 a
-pure-refactor diff testable without HTTP mocks.
+Phase 2 scope: ``resolve_ref`` + ``build_loft_content`` (pure parsing /
+construction) plus ``list_items`` / ``fetch_item`` / ``fetch_transcript``
+(network-bound). The SubscriptionManager (Commit 3c) drives them.
 
 URL forms recognized:
 
@@ -33,10 +30,16 @@ inserting the row, so the DB always stores ``UC...`` form.
 """
 from __future__ import annotations
 
+import logging
 import re
+import tempfile
+import urllib.request
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from xml.etree import ElementTree as ET
 
 from ..registry import (
+    ERROR_NO_TRANSCRIPT,
     REF_KIND_CHANNEL,
     REF_KIND_PLAYLIST,
     REF_KIND_VIDEO,
@@ -45,6 +48,64 @@ from ..registry import (
     SubscriptionRef,
     TranscriptResult,
 )
+
+
+logger = logging.getLogger(__name__)
+
+
+# RSS feed cap: YouTube's Atom feed always returns up to 15 entries and
+# never honors a count parameter, so any limit beyond 15 must fall back
+# to yt-dlp.
+_RSS_MAX_ITEMS = 15
+
+# Atom + YouTube namespaces used by feeds/videos.xml.
+_ATOM_NS = "{http://www.w3.org/2005/Atom}"
+_YT_NS = "{http://www.youtube.com/xml/schemas/2015}"
+
+
+def _http_get_bytes(url: str, timeout: float = 10.0) -> bytes:
+    """Fetch ``url`` and return raw body. Module-level for test patching."""
+    with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310
+        return resp.read()
+
+
+def _yt_dlp_extract_flat(url: str, limit: int | None) -> list[dict]:
+    """Enumerate items at ``url`` via yt-dlp ``extract_flat``.
+
+    Returns the raw ``entries`` list; callers map each entry to
+    ``ItemHeader``. Module-level for test patching.
+    """
+    import yt_dlp
+
+    opts: dict = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": True,
+        "skip_download": True,
+    }
+    if limit is not None:
+        opts["playlistend"] = limit
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+    if not info:
+        return []
+    return list(info.get("entries") or [])
+
+
+def _fetch_metadata_sync_for_provider(url: str) -> dict:
+    """Indirection so tests can patch metadata fetch at the provider module."""
+    from ...service import _fetch_metadata_sync
+
+    return _fetch_metadata_sync(url)
+
+
+def _download_captions_sync_for_provider(
+    url: str, output_stem: Path, language: str | None = None
+) -> tuple[bool, str | None]:
+    """Indirection so tests can patch caption download at the provider module."""
+    from ...service import _download_captions_sync
+
+    return _download_captions_sync(url, output_stem, language=language)
 
 
 _VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -163,17 +224,94 @@ class YouTubeProvider:
             "url": item.canonical_url,
         }
 
-    # ---- network-bound; Commit 3 fills these ----
+    # ---- network-bound -------------------------------------------
 
     def list_items(
         self, ref: SubscriptionRef, limit: int | None = None
     ) -> list[ItemHeader]:
-        raise NotImplementedError("list_items lands in Commit 3")
+        if ref.kind == REF_KIND_CHANNEL:
+            if not _CHANNEL_ID_RE.match(ref.ref):
+                raise ValueError(
+                    f"YouTubeProvider.list_items requires a canonical "
+                    f"UC... channel id; got {ref.ref!r}. SubscriptionManager "
+                    f"must canonicalize handles before calling list_items."
+                )
+            if limit is None or limit <= _RSS_MAX_ITEMS:
+                return self._list_channel_via_rss(ref.ref, limit)
+            url = f"https://www.youtube.com/channel/{ref.ref}/videos"
+            return self._yt_dlp_headers(url, limit)
+
+        if ref.kind == REF_KIND_PLAYLIST:
+            url = f"https://www.youtube.com/playlist?list={ref.ref}"
+            return self._yt_dlp_headers(url, limit)
+
+        raise ValueError(f"unsupported ref kind: {ref.kind!r}")
+
+    def _list_channel_via_rss(
+        self, channel_id: str, limit: int | None
+    ) -> list[ItemHeader]:
+        url = (
+            "https://www.youtube.com/feeds/videos.xml"
+            f"?channel_id={channel_id}"
+        )
+        body = _http_get_bytes(url)
+        root = ET.fromstring(body)
+        headers: list[ItemHeader] = []
+        for entry in root.findall(f"{_ATOM_NS}entry"):
+            vid_el = entry.find(f"{_YT_NS}videoId")
+            if vid_el is None or not vid_el.text:
+                continue
+            title_el = entry.find(f"{_ATOM_NS}title")
+            published_el = entry.find(f"{_ATOM_NS}published")
+            headers.append(
+                ItemHeader(
+                    item_id=vid_el.text.strip(),
+                    title=(title_el.text.strip() if title_el is not None and title_el.text else None),
+                    published_at=(
+                        published_el.text.strip()
+                        if published_el is not None and published_el.text
+                        else None
+                    ),
+                )
+            )
+            if limit is not None and len(headers) >= limit:
+                break
+        return headers
+
+    def _yt_dlp_headers(
+        self, url: str, limit: int | None
+    ) -> list[ItemHeader]:
+        entries = _yt_dlp_extract_flat(url, limit)
+        return [
+            ItemHeader(
+                item_id=str(e.get("id")),
+                title=e.get("title"),
+                published_at=e.get("upload_date"),
+            )
+            for e in entries
+            if e.get("id")
+        ]
 
     def fetch_item(
         self, ref: SubscriptionRef, item_id: str
     ) -> ItemMetadata:
-        raise NotImplementedError("fetch_item lands in Commit 3")
+        canonical_url = f"https://www.youtube.com/watch?v={item_id}"
+        meta = _fetch_metadata_sync_for_provider(canonical_url)
+        return ItemMetadata(
+            item_id=item_id,
+            canonical_url=canonical_url,
+            # yt-dlp occasionally returns nothing (geo-blocked private listing
+            # buried in a public playlist, etc.). Falling back to item_id keeps
+            # the sync moving instead of aborting the whole batch.
+            title=meta.get("title") or item_id,
+            description=meta.get("description"),
+            channel=meta.get("channel"),
+            published_at=meta.get("published_at"),
+            language=meta.get("language"),
+            duration=meta.get("duration"),
+            thumbnail_url=meta.get("thumbnail_url"),
+            has_captions=bool(meta.get("has_captions")),
+        )
 
     def fetch_transcript(
         self,
@@ -181,4 +319,28 @@ class YouTubeProvider:
         item_id: str,
         language: str | None = None,
     ) -> TranscriptResult:
-        raise NotImplementedError("fetch_transcript lands in Commit 3")
+        canonical_url = f"https://www.youtube.com/watch?v={item_id}"
+        lang = language or "ja"
+        with tempfile.TemporaryDirectory(prefix="ytsub_") as td:
+            stem = Path(td) / item_id
+            ok, error_kind = _download_captions_sync_for_provider(
+                canonical_url, stem, language=lang
+            )
+            if ok:
+                vtt_path = stem.parent / f"{stem.name}.vtt"
+                try:
+                    text_body = vtt_path.read_text(encoding="utf-8")
+                except OSError:
+                    return TranscriptResult(
+                        error_kind=ERROR_NO_TRANSCRIPT
+                    )
+                return TranscriptResult(
+                    vtt_text=text_body, language=lang
+                )
+            if error_kind is None:
+                # _download_captions_sync returns (False, None) when yt-dlp
+                # produced no .vtt despite no exception — the video has no
+                # captions of any kind. Promote to NO_TRANSCRIPT so the
+                # SubscriptionManager can keep the .loft and not retry.
+                return TranscriptResult(error_kind=ERROR_NO_TRANSCRIPT)
+            return TranscriptResult(error_kind=error_kind)
