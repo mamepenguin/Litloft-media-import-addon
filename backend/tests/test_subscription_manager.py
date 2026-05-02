@@ -29,6 +29,7 @@ from addons.media_import.subscription.registry import (
     REF_KIND_VIDEO,
     ItemHeader,
     ItemMetadata,
+    SourceMetadata,
     SubscriptionRef,
     TranscriptResult,
     register_subscription_provider,
@@ -49,6 +50,8 @@ class _FakeProvider:
     items: dict[str, ItemMetadata] = field(default_factory=dict)
     transcripts: dict[str, TranscriptResult] = field(default_factory=dict)
     resolve_url: Callable[[str], SubscriptionRef | None] | None = None
+    source_metadata: SourceMetadata | None = None
+    source_metadata_calls: list[SubscriptionRef] = field(default_factory=list)
 
     def resolve_ref(self, url: str) -> SubscriptionRef | None:
         if self.resolve_url:
@@ -84,6 +87,12 @@ class _FakeProvider:
 
     def build_loft_content(self, item: ItemMetadata) -> dict:
         return {"provider": self.name, "url": item.canonical_url}
+
+    def fetch_source_metadata(
+        self, ref: SubscriptionRef
+    ) -> SourceMetadata | None:
+        self.source_metadata_calls.append(ref)
+        return self.source_metadata
 
 
 @pytest.fixture()
@@ -1033,3 +1042,219 @@ class TestSyncClearsCooldownOnSuccess:
         finally:
             db.close()
         assert value is not None  # retry must not clear cron backoff
+
+
+class TestSourceMetadataAtCreate:
+    """Phase 4: ``create`` opportunistically fetches avatar / display
+    title via the provider so the dashboard has something to show
+    before the first sync. Failures must not abort row creation."""
+
+    def test_metadata_persists_when_provider_returns_some(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        fake_provider.source_metadata = SourceMetadata(
+            title="Fake Channel",
+            avatar_url="https://example/avatar.jpg",
+        )
+        mgr = SubscriptionManager()
+
+        with patch(
+            "addons.media_import.subscription.manager."
+            "_save_subscription_avatar",
+            return_value=True,
+        ) as save_avatar:
+            sub_id = _create_subscription(mgr, drive="d")
+
+        save_avatar.assert_called_once_with(
+            sub_id, "https://example/avatar.jpg"
+        )
+        assert len(fake_provider.source_metadata_calls) == 1
+
+        db = media_import_db()
+        try:
+            row = db.execute(
+                text(
+                    "SELECT avatar_url, display_title FROM subscriptions "
+                    "WHERE id = :id"
+                ),
+                {"id": sub_id},
+            ).mappings().first()
+        finally:
+            db.close()
+        assert row["avatar_url"] == "https://example/avatar.jpg"
+        assert row["display_title"] == "Fake Channel"
+
+    def test_provider_returning_none_leaves_columns_null(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        fake_provider.source_metadata = None
+        mgr = SubscriptionManager()
+        sub_id = _create_subscription(mgr, drive="d")
+
+        db = media_import_db()
+        try:
+            row = db.execute(
+                text(
+                    "SELECT avatar_url, display_title FROM subscriptions "
+                    "WHERE id = :id"
+                ),
+                {"id": sub_id},
+            ).mappings().first()
+        finally:
+            db.close()
+        assert row["avatar_url"] is None
+        assert row["display_title"] is None
+
+    def test_provider_exception_does_not_abort_create(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        def boom(_ref):
+            raise RuntimeError("network down")
+
+        fake_provider.fetch_source_metadata = boom  # type: ignore[assignment]
+        mgr = SubscriptionManager()
+        sub_id = _create_subscription(mgr, drive="d")
+
+        # Row exists; columns are NULL.
+        db = media_import_db()
+        try:
+            row = db.execute(
+                text(
+                    "SELECT id, avatar_url FROM subscriptions WHERE id = :id"
+                ),
+                {"id": sub_id},
+            ).mappings().first()
+        finally:
+            db.close()
+        assert row is not None
+        assert row["avatar_url"] is None
+
+
+class TestRefreshSourceMetadata:
+    """Manual refresh entry point used by the
+    ``POST /subscriptions/{id}/refresh-metadata`` route in Phase C-1."""
+
+    def test_returns_true_when_provider_yields_metadata(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        fake_provider.source_metadata = None
+        mgr = SubscriptionManager()
+        sub_id = _create_subscription(mgr, drive="d")
+
+        # Now provider has metadata to give back.
+        fake_provider.source_metadata = SourceMetadata(
+            title="Refreshed", avatar_url=None
+        )
+        with patch(
+            "addons.media_import.subscription.manager."
+            "_save_subscription_avatar",
+            return_value=True,
+        ):
+            ok = mgr.refresh_source_metadata(sub_id)
+        assert ok is True
+
+        db = media_import_db()
+        try:
+            row = db.execute(
+                text(
+                    "SELECT display_title FROM subscriptions WHERE id = :id"
+                ),
+                {"id": sub_id},
+            ).mappings().first()
+        finally:
+            db.close()
+        assert row["display_title"] == "Refreshed"
+
+    def test_returns_false_when_provider_yields_none(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        fake_provider.source_metadata = None
+        mgr = SubscriptionManager()
+        sub_id = _create_subscription(mgr, drive="d")
+
+        ok = mgr.refresh_source_metadata(sub_id)
+        assert ok is False
+
+
+class TestSyncDiffOpportunisticBackfill:
+    """``_sync_diff`` retries source-metadata fetch only when the row
+    is missing both avatar and display_title — so populated rows do
+    not pay yt-dlp on every cron tick."""
+
+    def test_skips_when_either_field_already_set(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        fake_provider.source_metadata = SourceMetadata(
+            title="Original", avatar_url=None
+        )
+        mgr = SubscriptionManager()
+        sub_id = _create_subscription(mgr, drive="d")
+        # Reset call log; the create-time fetch already happened.
+        fake_provider.source_metadata_calls.clear()
+
+        # Sync with no items.
+        fake_provider.headers = []
+        mgr._sync_blocking(sub_id)
+
+        # display_title was set at create; backfill must not run.
+        assert fake_provider.source_metadata_calls == []
+
+    def test_runs_when_both_fields_null(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        # Create with no metadata available; both columns end up NULL.
+        fake_provider.source_metadata = None
+        mgr = SubscriptionManager()
+        sub_id = _create_subscription(mgr, drive="d")
+        fake_provider.source_metadata_calls.clear()
+
+        # Provider gains metadata between create and the first sync.
+        fake_provider.source_metadata = SourceMetadata(
+            title="Late title", avatar_url=None
+        )
+        fake_provider.headers = []
+        mgr._sync_blocking(sub_id)
+
+        assert len(fake_provider.source_metadata_calls) == 1
+
+
+class TestRefreshUnknownSubscription:
+    def test_refresh_raises_when_id_not_found(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+            SubscriptionNotFound,
+        )
+
+        mgr = SubscriptionManager()
+        with pytest.raises(SubscriptionNotFound):
+            mgr.refresh_source_metadata(99999)

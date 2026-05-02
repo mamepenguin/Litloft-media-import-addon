@@ -78,6 +78,26 @@ class ItemMetadata:
 
 
 @dataclass(frozen=True)
+class SourceMetadata:
+    """Channel/playlist-level metadata used to populate ``subscriptions``.
+
+    Phase 4 introduces ``avatar_url`` and ``display_title`` columns on
+    the ``subscriptions`` table; this struct is what providers return
+    so the SubscriptionManager can fill them. Both fields are optional
+    — providers that cannot resolve a stable display title (e.g. RSS
+    feeds with no ``channel`` element) leave it None and the UI falls
+    back to ``source_ref``.
+
+    ``avatar_url`` is the *remote* URL; the host is responsible for
+    downloading it to ``data/avatars/<sub_id>.jpg`` so the UI can serve
+    it through the existing core thumbnail-style endpoint.
+    """
+
+    title: str | None = None
+    avatar_url: str | None = None
+
+
+@dataclass(frozen=True)
 class TranscriptResult:
     """Outcome of a transcript fetch.
 
@@ -141,6 +161,21 @@ class SubscriptionProvider(Protocol):
 
     def build_loft_content(self, item: ItemMetadata) -> dict:
         """Return the ``{provider, url, ...}`` dict written into the .loft file."""
+        ...
+
+    def fetch_source_metadata(
+        self, ref: SubscriptionRef
+    ) -> SourceMetadata | None:
+        """Return source-level metadata (avatar, display title) or None.
+
+        Callable by SubscriptionManager at create-time and refresh-time
+        to populate the ``subscriptions.avatar_url`` /
+        ``display_title`` columns. Returning None signals "no metadata
+        available right now" — the manager keeps existing values.
+
+        Implementations may hit the network (yt-dlp / oEmbed / RSS).
+        Throwing is acceptable; the manager logs and treats it as None.
+        """
         ...
 
 

@@ -33,11 +33,12 @@ from pathlib import Path
 import app.config as config
 from app.services.ws import broadcast_from_thread
 
-from ..service import _save_loft_thumbnail
+from ..service import _save_loft_thumbnail, _save_subscription_avatar
 from . import db as subdb
 from .registry import (
     REF_KIND_CHANNEL,
     REF_KIND_VIDEO,
+    SourceMetadata,
     SubscriptionProvider,
     SubscriptionRef,
     find_subscription_provider_by_url,
@@ -169,7 +170,7 @@ class SubscriptionManager:
         if ref.kind == REF_KIND_CHANNEL and not ref.ref.startswith("UC"):
             ref = self._canonicalize_channel(ref)
 
-        return subdb.insert_subscription(
+        sub_id = subdb.insert_subscription(
             provider=provider.name,
             source_kind=ref.kind,
             source_ref=ref.ref,
@@ -178,6 +179,63 @@ class SubscriptionManager:
             cooldown_minutes=cooldown_minutes,
             include_no_transcript=include_no_transcript,
         )
+
+        # Best-effort source-metadata pull (avatar + display title).
+        # Failures here must not abort subscription creation — the row
+        # is committed and the UI can refresh metadata later via the
+        # dedicated route.
+        try:
+            self._refresh_source_metadata(sub_id, provider, ref)
+        except Exception:
+            logger.exception(
+                "Failed to fetch source metadata at create-time for "
+                "subscription=%s",
+                sub_id,
+            )
+
+        return sub_id
+
+    def _refresh_source_metadata(
+        self,
+        subscription_id: int,
+        provider: SubscriptionProvider,
+        ref: SubscriptionRef,
+    ) -> SourceMetadata | None:
+        """Fetch source metadata via the provider and persist it.
+
+        Avatar download is wired through the shared helper so any future
+        provider gains the same on-disk layout for free (hako
+        ``IpF19kUI3OKoY_ps7iKg1``: contract drift defense).
+        """
+        meta = provider.fetch_source_metadata(ref)
+        if meta is None:
+            return None
+        if meta.avatar_url:
+            _save_subscription_avatar(subscription_id, meta.avatar_url)
+        subdb.update_source_metadata(
+            subscription_id,
+            avatar_url=meta.avatar_url,
+            display_title=meta.title,
+        )
+        return meta
+
+    def refresh_source_metadata(self, subscription_id: int) -> bool:
+        """Public entry point for manual ``refresh-metadata`` UI button.
+
+        Returns True when the provider returned non-None metadata
+        (i.e. at least one of avatar / title was updated). Callers in
+        the router translate this to 200 / 204 / 404.
+        """
+        sub = self._load_subscription(subscription_id)
+        provider = get_subscription_provider(sub["provider"])
+        if provider is None:
+            raise ValueError(f"Provider not registered: {sub['provider']}")
+        ref = SubscriptionRef(
+            kind=sub["source_kind"], ref=sub["source_ref"]
+        )
+        return self._refresh_source_metadata(
+            subscription_id, provider, ref
+        ) is not None
 
     def _canonicalize_channel(
         self, ref: SubscriptionRef
@@ -235,6 +293,21 @@ class SubscriptionManager:
     def _sync_diff(
         self, subscription_id, sub, provider, ref, backfill
     ) -> dict:
+        # Opportunistic backfill for installs that pre-date Phase 4:
+        # the row exists with NULL avatar/display_title because the
+        # create-time fetch happened before the column existed. One-shot
+        # network call gated on missing data, so cron syncs of fully
+        # populated subscriptions don't pay the cost.
+        if not sub.get("display_title") and not sub.get("avatar_url"):
+            try:
+                self._refresh_source_metadata(subscription_id, provider, ref)
+            except Exception:
+                logger.exception(
+                    "Opportunistic source-metadata fetch failed for "
+                    "subscription=%s",
+                    subscription_id,
+                )
+
         headers = provider.list_items(ref, limit=backfill)
         upstream_ids = [h.item_id for h in headers]
 

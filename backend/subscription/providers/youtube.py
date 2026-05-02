@@ -46,6 +46,7 @@ from ..registry import (
     REF_KIND_VIDEO,
     ItemHeader,
     ItemMetadata,
+    SourceMetadata,
     SubscriptionRef,
     TranscriptResult,
 )
@@ -139,6 +140,62 @@ def _yt_dlp_extract_flat(url: str, limit: int | None) -> list[dict]:
     if not info:
         return []
     return list(info.get("entries") or [])
+
+
+def _yt_dlp_source_info(url: str) -> dict:
+    """Fetch the *envelope* dict for a channel/playlist URL.
+
+    Used by ``fetch_source_metadata``. ``playlistend=1`` keeps yt-dlp
+    from enumerating every item — we only need the top-level fields
+    (title, thumbnails, channel, uploader). Module-level for tests to
+    patch without spinning up yt-dlp.
+    """
+    import yt_dlp
+
+    opts: dict = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": True,
+        "skip_download": True,
+        "playlistend": 1,
+    }
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as exc:  # pragma: no cover — exercised via integration
+        logger.warning("yt-dlp source info failed for %s: %s", url, exc)
+        return {}
+    return info or {}
+
+
+def _pick_avatar_url(thumbnails: list[dict] | None) -> str | None:
+    """Choose a reasonably sized avatar/cover from yt-dlp's thumbnails.
+
+    yt-dlp returns a list ordered roughly by quality. Prefer entries
+    flagged as ``avatar_uncropped`` (channels) or ``maxresdefault``
+    (playlists), falling back to the largest non-banner entry. Banner
+    images are wide and unsuitable as a square avatar.
+    """
+    if not thumbnails:
+        return None
+    by_id = {t.get("id"): t for t in thumbnails if isinstance(t, dict)}
+    for preferred in ("avatar_uncropped", "maxresdefault", "hqdefault"):
+        t = by_id.get(preferred)
+        if t and isinstance(t.get("url"), str):
+            return t["url"]
+    candidates = [
+        t for t in thumbnails
+        if isinstance(t, dict)
+        and isinstance(t.get("url"), str)
+        and t.get("id") not in {"banner_uncropped"}
+    ]
+    if not candidates:
+        return None
+    candidates.sort(
+        key=lambda t: (t.get("width") or 0) * (t.get("height") or 0),
+        reverse=True,
+    )
+    return candidates[0]["url"]
 
 
 def _fetch_metadata_sync_for_provider(url: str) -> dict:
@@ -256,6 +313,48 @@ class YouTubeProvider:
             "provider": self.name,
             "url": item.canonical_url,
         }
+
+    def fetch_source_metadata(
+        self, ref: SubscriptionRef
+    ) -> SourceMetadata | None:
+        """Resolve the channel/playlist title + avatar via yt-dlp.
+
+        Channel: ``channel`` / ``uploader`` field plus the ``avatar``
+        thumbnail. Playlist: ``title`` field plus the playlist cover
+        (highest-resolution non-banner thumbnail).
+
+        Single-video subs do not exist (subscriptions only target
+        channel/playlist), so VIDEO refs raise.
+        """
+        if ref.kind == REF_KIND_CHANNEL:
+            if not _CHANNEL_ID_RE.match(ref.ref):
+                # Pre-canonicalization (handle/legacy): manager will
+                # canonicalize first; refuse to touch the network on a
+                # non-canonical ref to avoid double yt-dlp roundtrips.
+                return None
+            url = f"https://www.youtube.com/channel/{ref.ref}"
+        elif ref.kind == REF_KIND_PLAYLIST:
+            if not _PLAYLIST_ID_RE.match(ref.ref):
+                return None
+            url = f"https://www.youtube.com/playlist?list={ref.ref}"
+        else:
+            return None
+
+        info = _yt_dlp_source_info(url)
+        if not info:
+            return None
+        title = (
+            info.get("channel")
+            or info.get("uploader")
+            or info.get("title")
+        )
+        avatar = _pick_avatar_url(info.get("thumbnails"))
+        if not title and not avatar:
+            return None
+        return SourceMetadata(
+            title=title if isinstance(title, str) else None,
+            avatar_url=avatar,
+        )
 
     # ---- network-bound -------------------------------------------
 

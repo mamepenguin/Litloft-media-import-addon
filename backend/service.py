@@ -295,6 +295,30 @@ def _download_thumbnail_sync(thumbnail_url: str, dest: Path) -> bool:
         return False
 
 
+_SUBSCRIPTION_AVATARS_DIR = config.DATA_DIR / "media_import_avatars"
+
+
+def subscription_avatar_path(subscription_id: int) -> Path:
+    """Return the on-disk path for a subscription's avatar JPEG."""
+    return _SUBSCRIPTION_AVATARS_DIR / f"{subscription_id}.jpg"
+
+
+def _save_subscription_avatar(
+    subscription_id: int, avatar_url: str | None
+) -> bool:
+    """Download a subscription's source avatar to the avatars dir.
+
+    Returns True on success. Failures are logged and return False so
+    the caller can continue (degraded mode: UI falls back to a generic
+    avatar). The remote URL is sanitised for HTTP(S) only — no file://
+    or data: URIs from a hostile provider response.
+    """
+    if not avatar_url:
+        return False
+    dest = subscription_avatar_path(subscription_id)
+    return _download_thumbnail_sync(avatar_url, dest)
+
+
 def _save_loft_thumbnail(
     file_id: str,
     drive: str,

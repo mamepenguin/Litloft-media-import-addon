@@ -116,13 +116,48 @@ def delete_subscription(subscription_id: int) -> None:
         db.close()
 
 
+def update_source_metadata(
+    subscription_id: int,
+    *,
+    avatar_url: str | None,
+    display_title: str | None,
+) -> None:
+    """Update ``avatar_url`` / ``display_title`` for a subscription.
+
+    None values leave the existing column untouched (COALESCE) so a
+    second-pass refresh that resolves only one of the two fields does
+    not erase the other. To explicitly clear a field, callers pass an
+    empty string and convert at the call site, or call a future
+    dedicated helper — neither path is needed today.
+    """
+    db = SessionLocal()
+    try:
+        db.execute(
+            text(
+                "UPDATE subscriptions SET "
+                " avatar_url = COALESCE(:avatar, avatar_url), "
+                " display_title = COALESCE(:title, display_title) "
+                "WHERE id = :id"
+            ),
+            {
+                "avatar": avatar_url,
+                "title": display_title,
+                "id": subscription_id,
+            },
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
 def load_subscription(subscription_id: int) -> dict | None:
     db = SessionLocal()
     try:
         row = db.execute(
             text(
                 "SELECT provider, source_kind, source_ref, drive, "
-                " folder_path, include_no_transcript "
+                " folder_path, include_no_transcript, avatar_url, "
+                " display_title "
                 "FROM subscriptions WHERE id = :id"
             ),
             {"id": subscription_id},
