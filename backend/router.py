@@ -25,6 +25,7 @@ import logging
 from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi.responses import FileResponse
 from sqlalchemy import text
 
 import app.config as config
@@ -52,6 +53,7 @@ from .subscription import db as subdb
 from .subscription.registry import find_subscription_provider_by_url
 from .service import (
     loft_manager,
+    subscription_avatar_path,
     _backfill_provider_item_ids,
     _ensure_loft_table,
     _ensure_subscription_tables,
@@ -489,6 +491,28 @@ async def patch_subscription(
     assert row is not None
     running = subscription_id in subscription_worker.running_ids
     return _row_to_subscription_response(row, running=running)
+
+
+@router.get("/subscriptions/{subscription_id}/avatar")
+async def get_subscription_avatar(
+    subscription_id: int,
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
+) -> FileResponse:
+    """Serve the cached avatar JPEG for a subscription.
+
+    The file is downloaded by ``_save_subscription_avatar`` at
+    create / refresh time and stored under
+    ``data/media_import_avatars/<sub_id>.jpg``. 404 when missing so
+    the UI falls back to a generic avatar — this is the same
+    "absence reads as None" semantic the rest of the addon uses.
+    """
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    _load_owned_subscription(subscription_id, scoped, unlocked_groups)
+    path = subscription_avatar_path(subscription_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Avatar not available")
+    return FileResponse(path, media_type="image/jpeg")
 
 
 @router.post(
