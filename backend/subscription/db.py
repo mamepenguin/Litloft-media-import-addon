@@ -116,6 +116,120 @@ def delete_subscription(subscription_id: int) -> None:
         db.close()
 
 
+def update_settings(
+    subscription_id: int,
+    *,
+    is_enabled: bool | None = None,
+    cooldown_minutes: int | None = None,
+    include_no_transcript: bool | None = None,
+    folder_path: str | None = None,
+    display_title: str | None = None,
+    clear_cooldown_until: bool = False,
+) -> None:
+    """PATCH-style update for user-editable subscription fields.
+
+    Each parameter is optional; None means "do not touch". The handler
+    in router.py decides which fields the client sent.
+
+    ``clear_cooldown_until=True`` resets the cron backoff state (used
+    when ``cooldown_minutes`` changes — the previous backoff window is
+    no longer the user's intent).
+    """
+    set_clauses: list[str] = []
+    params: dict = {"id": subscription_id}
+    if is_enabled is not None:
+        set_clauses.append("is_enabled = :enabled")
+        params["enabled"] = int(is_enabled)
+    if cooldown_minutes is not None:
+        set_clauses.append("cooldown_minutes = :cd")
+        params["cd"] = cooldown_minutes
+    if include_no_transcript is not None:
+        set_clauses.append("include_no_transcript = :inc")
+        params["inc"] = int(include_no_transcript)
+    if folder_path is not None:
+        set_clauses.append("folder_path = :folder")
+        params["folder"] = folder_path
+    if display_title is not None:
+        set_clauses.append("display_title = :title")
+        params["title"] = display_title
+    if clear_cooldown_until:
+        set_clauses.append("cooldown_until = NULL")
+    if not set_clauses:
+        return
+    sql = (
+        f"UPDATE subscriptions SET {', '.join(set_clauses)} "
+        f"WHERE id = :id"
+    )
+    db = SessionLocal()
+    try:
+        db.execute(text(sql), params)
+        db.commit()
+    finally:
+        db.close()
+
+
+def summary_for_drive(drive: str) -> dict:
+    """Aggregate counts for the dashboard header.
+
+    One scan per call; subscription_videos is joined via a subquery so
+    the SQL stays one round trip even on a moderately large drive. The
+    syncing count is filled in by the router from worker.running_ids
+    (it is in-memory state, not persisted).
+    """
+    db = SessionLocal()
+    try:
+        sub_rows = db.execute(
+            text(
+                "SELECT id, is_enabled FROM subscriptions WHERE drive = :drive"
+            ),
+            {"drive": drive},
+        ).mappings().all()
+        total = len(sub_rows)
+        paused = sum(1 for r in sub_rows if not r["is_enabled"])
+
+        if total == 0:
+            return {
+                "total": 0, "paused": 0,
+                "imported_count": 0, "failed_count": 0,
+                "attention_subscription_ids": [],
+            }
+
+        sub_ids = [r["id"] for r in sub_rows]
+        # Build an inline IN list — bind parameters per id keep SQL injection out.
+        placeholders = ", ".join(f":id{i}" for i in range(len(sub_ids)))
+        bind_params = {f"id{i}": sid for i, sid in enumerate(sub_ids)}
+
+        counts = db.execute(
+            text(
+                "SELECT "
+                " SUM(CASE WHEN status = 'imported' THEN 1 ELSE 0 END) AS imp, "
+                " SUM(CASE WHEN status = 'failed' AND COALESCE(error_kind, '') NOT IN ('dismissed') THEN 1 ELSE 0 END) AS fail "
+                f"FROM subscription_videos WHERE subscription_id IN ({placeholders})"
+            ),
+            bind_params,
+        ).mappings().first()
+
+        attention = db.execute(
+            text(
+                "SELECT DISTINCT subscription_id FROM subscription_videos "
+                f"WHERE subscription_id IN ({placeholders}) "
+                " AND status = 'failed' "
+                " AND COALESCE(error_kind, '') NOT IN ('dismissed')"
+            ),
+            bind_params,
+        ).fetchall()
+    finally:
+        db.close()
+
+    return {
+        "total": total,
+        "paused": paused,
+        "imported_count": int(counts["imp"] or 0) if counts else 0,
+        "failed_count": int(counts["fail"] or 0) if counts else 0,
+        "attention_subscription_ids": [r[0] for r in attention],
+    }
+
+
 def update_source_metadata(
     subscription_id: int,
     *,

@@ -61,6 +61,52 @@ class SubscriptionResponse(BaseModel):
     cooldown_until: str | None = None
     created_at: str
     running: bool = False  # derived from SubscriptionWorker.running_ids
+    # Phase 4 additions; nullable so existing rows that haven't yet
+    # backfilled metadata don't crash response serialisation.
+    avatar_url: str | None = None
+    display_title: str | None = None
+
+
+class SubscriptionPatchRequest(BaseModel):
+    """Partial update for ``PATCH /subscriptions/{id}``.
+
+    All fields optional — Pydantic's default-aware behavior lets the
+    handler distinguish "client did not send this field" from "client
+    sent null" without an extra wrapper. ``folder_path`` may be empty
+    (= drive root) but rejecting None lets the handler use absence as
+    a no-op signal.
+    """
+
+    is_enabled: bool | None = None
+    cooldown_minutes: int | None = None
+    include_no_transcript: bool | None = None
+    folder_path: str | None = None
+    display_title: str | None = None
+
+
+class SubscriptionSummaryResponse(BaseModel):
+    """Aggregate health for the subscriptions dashboard header."""
+
+    total: int
+    paused: int
+    syncing: int
+    healthy: int
+    attention: int  # subscriptions with >0 failed videos
+    imported_count: int
+    failed_count: int
+
+
+class SubscriptionRefreshMetadataResponse(BaseModel):
+    """Outcome of POST /subscriptions/{id}/refresh-metadata.
+
+    ``updated`` is True when the provider returned non-None metadata
+    (avatar / display_title at least one set). False indicates the
+    upstream had nothing fresh to give and DB was left untouched.
+    """
+
+    updated: bool
+    avatar_url: str | None = None
+    display_title: str | None = None
 
 
 class SubscriptionVideoResponse(BaseModel):

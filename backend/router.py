@@ -37,11 +37,15 @@ from .schemas import (
     LoftMetadataResponse,
     SubscriptionCreateRequest,
     SubscriptionEnqueueResponse,
+    SubscriptionPatchRequest,
+    SubscriptionRefreshMetadataResponse,
     SubscriptionResolveRequest,
     SubscriptionResolveResponse,
     SubscriptionResponse,
+    SubscriptionSummaryResponse,
     SubscriptionVideoResponse,
 )
+from .subscription import db as subdb
 from .subscription.registry import find_subscription_provider_by_url
 from .service import (
     loft_manager,
@@ -249,7 +253,31 @@ def _row_to_subscription_response(
         cooldown_until=row.get("cooldown_until"),
         created_at=row["created_at"],
         running=running,
+        avatar_url=row.get("avatar_url"),
+        display_title=row.get("display_title"),
     )
+
+
+def _validate_folder_path(folder_path: str, drive: str) -> None:
+    """Reject folder_path values that escape the drive root.
+
+    Mirrors the check in ``manager._allocate_loft_path`` but at the
+    HTTP boundary so a malicious PATCH cannot persist a poisoned path
+    that the next sync would then trust. Empty string is the drive
+    root, which is always valid.
+    """
+    from pathlib import Path
+
+    if folder_path == "":
+        return
+    drive_path = config.get_drive_path(drive)
+    drive_root = drive_path.resolve()
+    target = (drive_path / folder_path).resolve()
+    if not (target == drive_root or target.is_relative_to(drive_root)):
+        raise HTTPException(
+            status_code=400,
+            detail="folder_path escapes drive root",
+        )
 
 
 def _load_subscription_row(subscription_id: int) -> dict | None:
@@ -356,6 +384,153 @@ def _load_owned_subscription(
         raise HTTPException(status_code=404, detail="Subscription not found")
     check_drive_access(row["drive"], unlocked_groups)
     return row
+
+
+@router.get(
+    "/subscriptions/summary", response_model=SubscriptionSummaryResponse
+)
+async def subscriptions_summary(
+    drive: str = Query(..., description="Drive name (required)"),
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
+) -> SubscriptionSummaryResponse:
+    """Aggregate health for the dashboard header strip.
+
+    Counts come from the DB; ``syncing`` is overlaid from
+    ``SubscriptionWorker.running_ids`` because the worker queue is
+    in-memory and a state column is intentionally not persisted
+    (hako z6wc1bI3g_WQ9_jS0xi69).
+    """
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    if drive != scoped:
+        raise HTTPException(
+            status_code=400,
+            detail="drive query does not match X-Lit-Drive scope",
+        )
+    snap = subdb.summary_for_drive(drive)
+    running = subscription_worker.running_ids
+    # Restrict the running set to subscriptions on this drive — the
+    # worker tracks ids globally, but the summary speaks for one drive.
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            text(
+                "SELECT id FROM subscriptions WHERE drive = :drive"
+            ),
+            {"drive": drive},
+        ).fetchall()
+    finally:
+        db.close()
+    drive_subs = {r[0] for r in rows}
+    syncing_count = sum(1 for sid in running if sid in drive_subs)
+
+    attention = len(snap["attention_subscription_ids"])
+    healthy = max(0, snap["total"] - snap["paused"] - attention)
+    return SubscriptionSummaryResponse(
+        total=snap["total"],
+        paused=snap["paused"],
+        syncing=syncing_count,
+        healthy=healthy,
+        attention=attention,
+        imported_count=snap["imported_count"],
+        failed_count=snap["failed_count"],
+    )
+
+
+@router.patch(
+    "/subscriptions/{subscription_id}", response_model=SubscriptionResponse
+)
+async def patch_subscription(
+    subscription_id: int,
+    patch: SubscriptionPatchRequest,
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
+) -> SubscriptionResponse:
+    """Update subscription settings (Pause / cooldown / folder / etc.).
+
+    cooldown_minutes change clears ``cooldown_until`` so the cron loop
+    re-evaluates eligibility against the new schedule on the next sweep
+    (rather than waiting out a backoff that no longer reflects user
+    intent). is_enabled / include_no_transcript / display_title /
+    folder_path edits leave cooldown_until alone.
+    """
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    sub = _load_owned_subscription(
+        subscription_id, scoped, unlocked_groups
+    )
+
+    folder = patch.folder_path
+    if folder is not None:
+        try:
+            _validate_folder_path(folder, sub["drive"])
+        except HTTPException:
+            raise
+
+    if patch.cooldown_minutes is not None and patch.cooldown_minutes < 1:
+        raise HTTPException(
+            status_code=422,
+            detail="cooldown_minutes must be >= 1",
+        )
+
+    subdb.update_settings(
+        subscription_id,
+        is_enabled=patch.is_enabled,
+        cooldown_minutes=patch.cooldown_minutes,
+        include_no_transcript=patch.include_no_transcript,
+        folder_path=folder,
+        display_title=patch.display_title,
+        clear_cooldown_until=patch.cooldown_minutes is not None,
+    )
+
+    row = _load_subscription_row(subscription_id)
+    assert row is not None
+    running = subscription_id in subscription_worker.running_ids
+    return _row_to_subscription_response(row, running=running)
+
+
+@router.post(
+    "/subscriptions/{subscription_id}/refresh-metadata",
+    response_model=SubscriptionRefreshMetadataResponse,
+)
+async def refresh_subscription_metadata(
+    subscription_id: int,
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
+) -> SubscriptionRefreshMetadataResponse:
+    """Force a re-fetch of avatar / display_title via the provider.
+
+    Goes through the SubscriptionManager which handles the avatar
+    download via the shared helper (contract drift defense from hako
+    ``IpF19kUI3OKoY_ps7iKg1``). yt-dlp can take a few seconds; the
+    handler awaits it on the executor so the HTTP response carries
+    the updated metadata back to the caller in one round trip.
+    """
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    _load_owned_subscription(subscription_id, scoped, unlocked_groups)
+
+    loop = asyncio.get_running_loop()
+    try:
+        updated = await loop.run_in_executor(
+            None,
+            subscription_manager.refresh_source_metadata,
+            subscription_id,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to refresh source metadata for subscription=%s",
+            subscription_id,
+        )
+        raise HTTPException(
+            status_code=500, detail="Failed to refresh metadata"
+        )
+
+    row = _load_subscription_row(subscription_id)
+    assert row is not None
+    return SubscriptionRefreshMetadataResponse(
+        updated=updated,
+        avatar_url=row.get("avatar_url"),
+        display_title=row.get("display_title"),
+    )
 
 
 @router.delete("/subscriptions/{subscription_id}")

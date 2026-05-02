@@ -683,3 +683,358 @@ class TestRetryVideo:
             f"/api/addons/media_import/subscriptions/{sub_id}/videos/missing/retry"
         )
         assert res.status_code == 404
+
+
+# ---- Phase C-1: PATCH / summary / refresh-metadata --------------------
+
+
+class TestPatchSubscription:
+    """Partial-update behavior. Each field can be set independently;
+    cooldown_minutes change resets cooldown_until so the cron loop
+    re-evaluates with the new schedule rather than waiting out a
+    stale backoff."""
+
+    def test_pause_toggle(self, client, media_import_db) -> None:
+        create = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
+        )
+        sub_id = create.json()["id"]
+
+        res = client.patch(
+            f"/api/addons/media_import/subscriptions/{sub_id}",
+            json={"is_enabled": False},
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert body["is_enabled"] is False
+
+        res = client.patch(
+            f"/api/addons/media_import/subscriptions/{sub_id}",
+            json={"is_enabled": True},
+        )
+        assert res.json()["is_enabled"] is True
+
+    def test_cooldown_change_clears_cooldown_until(
+        self, client, media_import_db
+    ) -> None:
+        create = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
+        )
+        sub_id = create.json()["id"]
+
+        # Plant a cooldown_until that PATCH must clear.
+        db = media_import_db()
+        try:
+            db.execute(
+                text(
+                    "UPDATE subscriptions SET cooldown_until = :u "
+                    "WHERE id = :id"
+                ),
+                {"u": "2030-01-01T00:00:00+00:00", "id": sub_id},
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        res = client.patch(
+            f"/api/addons/media_import/subscriptions/{sub_id}",
+            json={"cooldown_minutes": 120},
+        )
+        assert res.status_code == 200
+        assert res.json()["cooldown_minutes"] == 120
+
+        db = media_import_db()
+        try:
+            value = db.execute(
+                text(
+                    "SELECT cooldown_until FROM subscriptions WHERE id = :id"
+                ),
+                {"id": sub_id},
+            ).scalar()
+        finally:
+            db.close()
+        assert value is None
+
+    def test_other_field_changes_do_not_clear_cooldown_until(
+        self, client, media_import_db
+    ) -> None:
+        create = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
+        )
+        sub_id = create.json()["id"]
+        sentinel = "2030-01-01T00:00:00+00:00"
+        db = media_import_db()
+        try:
+            db.execute(
+                text(
+                    "UPDATE subscriptions SET cooldown_until = :u "
+                    "WHERE id = :id"
+                ),
+                {"u": sentinel, "id": sub_id},
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        client.patch(
+            f"/api/addons/media_import/subscriptions/{sub_id}",
+            json={"is_enabled": False},
+        )
+
+        db = media_import_db()
+        try:
+            value = db.execute(
+                text(
+                    "SELECT cooldown_until FROM subscriptions WHERE id = :id"
+                ),
+                {"id": sub_id},
+            ).scalar()
+        finally:
+            db.close()
+        # Pause/resume must not erase the cron backoff state.
+        assert value == sentinel
+
+    def test_invalid_cooldown_minutes_rejected(
+        self, client
+    ) -> None:
+        create = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
+        )
+        sub_id = create.json()["id"]
+
+        res = client.patch(
+            f"/api/addons/media_import/subscriptions/{sub_id}",
+            json={"cooldown_minutes": 0},
+        )
+        assert res.status_code == 422
+
+    def test_folder_traversal_rejected(self, client) -> None:
+        create = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
+        )
+        sub_id = create.json()["id"]
+
+        res = client.patch(
+            f"/api/addons/media_import/subscriptions/{sub_id}",
+            json={"folder_path": "../../etc"},
+        )
+        assert res.status_code == 400
+        assert "escapes" in res.json()["detail"]
+
+    def test_unknown_id_returns_404(self, client) -> None:
+        res = client.patch(
+            "/api/addons/media_import/subscriptions/9999",
+            json={"is_enabled": True},
+        )
+        assert res.status_code == 404
+
+    def test_other_drive_subscription_returns_404(
+        self, client, media_import_db
+    ) -> None:
+        """Subscriptions on a drive other than the X-Lit-Drive scope
+        must 404 — not 403 — to avoid leaking existence."""
+        # Seed a subscription on drive "other" directly.
+        db = media_import_db()
+        try:
+            db.execute(
+                text(
+                    "INSERT INTO subscriptions "
+                    "(provider, source_kind, source_ref, drive, folder_path, "
+                    " is_enabled, cooldown_minutes, include_no_transcript, "
+                    " created_at) "
+                    "VALUES ('fakeyt', 'channel', :ref, 'other', '', "
+                    " 1, 60, 0, '2026-05-01T00:00:00') "
+                    "RETURNING id"
+                ),
+                {"ref": _UC},
+            )
+            sub_id = db.execute(
+                text(
+                    "SELECT id FROM subscriptions WHERE drive = 'other' LIMIT 1"
+                )
+            ).scalar()
+            db.commit()
+        finally:
+            db.close()
+
+        res = client.patch(
+            f"/api/addons/media_import/subscriptions/{sub_id}",
+            json={"is_enabled": False},
+        )
+        assert res.status_code == 404
+
+
+class TestSummary:
+    def test_empty_drive_returns_zeros(self, client) -> None:
+        res = client.get(
+            "/api/addons/media_import/subscriptions/summary?drive=d"
+        )
+        assert res.status_code == 200
+        assert res.json() == {
+            "total": 0, "paused": 0, "syncing": 0,
+            "healthy": 0, "attention": 0,
+            "imported_count": 0, "failed_count": 0,
+        }
+
+    def test_aggregates_counts(
+        self, client, media_import_db
+    ) -> None:
+        create = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
+        )
+        sub_id = create.json()["id"]
+
+        db = media_import_db()
+        try:
+            for item, status, err in (
+                ("v1", "imported", None),
+                ("v2", "imported", None),
+                ("v3", "failed", "rate_limited"),
+                ("v4", "failed", "dismissed"),  # excluded from attention
+            ):
+                db.execute(
+                    text(
+                        "INSERT INTO subscription_videos "
+                        "(subscription_id, item_id, status, error_kind, "
+                        " first_seen_at) "
+                        "VALUES (:sid, :iid, :s, :e, '2026-05-01T00:00:00')"
+                    ),
+                    {"sid": sub_id, "iid": item, "s": status, "e": err},
+                )
+            db.commit()
+        finally:
+            db.close()
+
+        res = client.get(
+            "/api/addons/media_import/subscriptions/summary?drive=d"
+        )
+        body = res.json()
+        assert body["total"] == 1
+        assert body["imported_count"] == 2
+        assert body["failed_count"] == 1  # dismissed excluded
+        assert body["attention"] == 1
+        assert body["healthy"] == 0  # has attention -> not healthy
+        assert body["paused"] == 0
+
+    def test_paused_subtracts_from_healthy(
+        self, client, media_import_db
+    ) -> None:
+        for url_seg in ("UCpaused1aaaaaaaaaaaaaaa", "UChealthy1aaaaaaaaaaaaaa"):
+            client.post(
+                "/api/addons/media_import/subscriptions",
+                json={"url": f"https://fake/channel/{url_seg}", "drive": "d"},
+            )
+        # Pause the first.
+        db = media_import_db()
+        try:
+            db.execute(
+                text("UPDATE subscriptions SET is_enabled = 0 WHERE id = 1")
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        body = client.get(
+            "/api/addons/media_import/subscriptions/summary?drive=d"
+        ).json()
+        assert body["total"] == 2
+        assert body["paused"] == 1
+        assert body["healthy"] == 1
+        assert body["attention"] == 0
+
+    def test_drive_isolation(
+        self, client, media_import_db
+    ) -> None:
+        """Counts must not leak across drives."""
+        client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
+        )
+        # Seed a subscription on a different drive directly.
+        db = media_import_db()
+        try:
+            db.execute(
+                text(
+                    "INSERT INTO subscriptions "
+                    "(provider, source_kind, source_ref, drive, folder_path, "
+                    " is_enabled, cooldown_minutes, include_no_transcript, "
+                    " created_at) "
+                    "VALUES ('fakeyt', 'channel', :ref, 'other', '', "
+                    " 1, 60, 0, '2026-05-01T00:00:00')"
+                ),
+                {"ref": "UCotherdriveaaaaaaaaaaa"},
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        body = client.get(
+            "/api/addons/media_import/subscriptions/summary?drive=d"
+        ).json()
+        assert body["total"] == 1  # other-drive sub excluded
+
+
+class TestRefreshMetadata:
+    def test_provider_returns_metadata_persists_to_db(
+        self, client, media_import_db, fake_provider: _FakeProvider
+    ) -> None:
+        from addons.media_import.subscription.registry import SourceMetadata
+
+        create = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
+        )
+        sub_id = create.json()["id"]
+
+        # Provider hasn't been instructed to return source metadata.
+        # Now wire it up and call the refresh endpoint.
+        fake_provider.fetch_source_metadata = (  # type: ignore[assignment]
+            lambda _ref: SourceMetadata(
+                title="Refreshed",
+                avatar_url="https://example/a.jpg",
+            )
+        )
+
+        with patch(
+            "addons.media_import.subscription.manager."
+            "_save_subscription_avatar",
+            return_value=True,
+        ):
+            res = client.post(
+                f"/api/addons/media_import/subscriptions/{sub_id}/refresh-metadata"
+            )
+        assert res.status_code == 200
+        body = res.json()
+        assert body["updated"] is True
+        assert body["display_title"] == "Refreshed"
+        assert body["avatar_url"] == "https://example/a.jpg"
+
+    def test_provider_yields_none_returns_updated_false(
+        self, client, fake_provider: _FakeProvider
+    ) -> None:
+        create = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
+        )
+        sub_id = create.json()["id"]
+
+        fake_provider.fetch_source_metadata = (  # type: ignore[assignment]
+            lambda _ref: None
+        )
+        res = client.post(
+            f"/api/addons/media_import/subscriptions/{sub_id}/refresh-metadata"
+        )
+        assert res.status_code == 200
+        assert res.json()["updated"] is False
+
+    def test_unknown_id_returns_404(self, client) -> None:
+        res = client.post(
+            "/api/addons/media_import/subscriptions/9999/refresh-metadata"
+        )
+        assert res.status_code == 404
