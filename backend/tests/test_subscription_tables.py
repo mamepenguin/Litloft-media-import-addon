@@ -20,6 +20,11 @@ SUBSCRIPTIONS_COLUMNS = (
     "last_synced_at",
     "cooldown_until",
     "created_at",
+    # Phase 4 additions; nullable so the migration is safe on existing
+    # rows. Filled by the SubscriptionManager via fetch_source_metadata
+    # at create time, and refreshable later via the dedicated route.
+    "avatar_url",
+    "display_title",
 )
 
 SUBSCRIPTION_VIDEOS_COLUMNS = (
@@ -87,6 +92,65 @@ class TestSubscriptionTablesSchema:
         # Fixture has called it once already; calling twice more must not raise.
         _ensure_subscription_tables()
         _ensure_subscription_tables()
+
+    def test_migration_adds_phase4_columns_to_legacy_table(
+        self, media_import_db
+    ) -> None:
+        """Simulates a Phase 2/3 install: table exists without the new
+        columns, then ``_ensure_subscription_tables`` ALTERs them in.
+        Hits the ``OperationalError: duplicate column`` swallow on the
+        second pass to prove idempotency.
+        """
+        from addons.media_import.service import _ensure_subscription_tables
+
+        db = media_import_db()
+        try:
+            db.execute(text("DROP TABLE subscription_videos"))
+            db.execute(text("DROP TABLE subscriptions"))
+            # Recreate without the Phase 4 columns to mimic a legacy install.
+            db.execute(
+                text(
+                    """
+                    CREATE TABLE subscriptions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        provider TEXT NOT NULL,
+                        source_kind TEXT NOT NULL,
+                        source_ref TEXT NOT NULL,
+                        drive TEXT NOT NULL,
+                        folder_path TEXT NOT NULL DEFAULT '',
+                        title TEXT,
+                        is_enabled BOOLEAN NOT NULL DEFAULT 1,
+                        cooldown_minutes INTEGER NOT NULL DEFAULT 60,
+                        include_no_transcript BOOLEAN NOT NULL DEFAULT 0,
+                        last_synced_at TEXT,
+                        cooldown_until TEXT,
+                        created_at TEXT NOT NULL,
+                        UNIQUE(provider, source_kind, source_ref, drive, folder_path)
+                    )
+                    """
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        _ensure_subscription_tables()
+        # Second call must not raise on the ADD COLUMN attempts.
+        _ensure_subscription_tables()
+
+        db = media_import_db()
+        try:
+            cols = {
+                row[1]
+                for row in db.execute(
+                    text("PRAGMA table_info(subscriptions)")
+                ).fetchall()
+            }
+        finally:
+            db.close()
+
+        assert "avatar_url" in cols
+        assert "display_title" in cols
 
 
 class TestSubscriptionsUniqueConstraint:

@@ -746,6 +746,11 @@ def _ensure_subscription_tables() -> None:
     without a follow-up migration; the registry module owns the
     canonical value list.
 
+    Phase 4 adds ``avatar_url`` and ``display_title`` columns. They are
+    appended via ``ALTER TABLE ... ADD COLUMN`` wrapped in try/except so
+    the call stays idempotent on installs that already created the
+    table at Phase 2 schema.
+
     The ``file_id`` FK uses ``ON DELETE SET NULL`` so a user-deleted
     .loft preserves the subscription_videos row (history of seen items),
     while the ``subscription_id`` FK uses ``ON DELETE CASCADE`` so
@@ -770,11 +775,25 @@ def _ensure_subscription_tables() -> None:
                     last_synced_at TEXT,
                     cooldown_until TEXT,
                     created_at TEXT NOT NULL,
+                    avatar_url TEXT,
+                    display_title TEXT,
                     UNIQUE(provider, source_kind, source_ref, drive, folder_path)
                 )
                 """
             )
         )
+        for column_sql in (
+            "ALTER TABLE subscriptions ADD COLUMN avatar_url TEXT",
+            "ALTER TABLE subscriptions ADD COLUMN display_title TEXT",
+        ):
+            try:
+                db.execute(text(column_sql))
+            except Exception:
+                # SQLite raises ``OperationalError: duplicate column``
+                # when the column already exists. Idempotency by
+                # exception swallow mirrors the pattern in
+                # ``_ensure_loft_table``.
+                pass
         db.execute(
             text(
                 """

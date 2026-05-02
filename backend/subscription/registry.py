@@ -32,6 +32,11 @@ ERROR_RATE_LIMITED = "rate_limited"
 ERROR_PERMANENT = "permanent"
 ERROR_NO_TRANSCRIPT = "no_transcript"
 ERROR_PATH_CONFLICT = "path_conflict"
+# User-issued ignore: ``resolve-conflict?action=skip`` flips the row to
+# ``error_kind=ERROR_DISMISSED`` so the retry path treats it as a
+# permanent decision (no retry button surfaces) without polluting the
+# real ``permanent`` semantic.
+ERROR_DISMISSED = "dismissed"
 
 
 @dataclass(frozen=True)
