@@ -117,6 +117,14 @@ class SubscriptionVideoResponse(BaseModel):
     file_id: str | None = None
     first_seen_at: str
     last_attempted_at: str | None = None
+    # Display metadata sourced from the linked .loft (when imported) or
+    # from loft_metadata via provider_item_id (when a .loft was created
+    # then later soft-deleted). All optional — failed items that never
+    # produced a .loft fall back to a generic UI placeholder.
+    title: str | None = None
+    thumbnail_path: str | None = None
+    channel: str | None = None
+    published_at: str | None = None
 
 
 class SubscriptionEnqueueResponse(BaseModel):

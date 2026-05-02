@@ -1,25 +1,24 @@
 /**
- * Tests for the error_kind translation table.
+ * Tests for the error_kind classification table.
  *
- * The dictionary is the single source of truth the UI consults to
- * decide what to show next to a failed item, including whether to
- * surface a retry button.
+ * After the i18n migration the dictionary no longer carries display
+ * text — that lives in messages/{ja,en}.json. We still need to make
+ * sure normalisation and the retryable flag round-trip correctly.
  */
 import { describe, expect, it } from "vitest";
 
 import {
-  describeError,
   isRetryable,
+  normalizeErrorKind,
 } from "@/addons/media_import/lib/errorMessages";
 
-describe("describeError", () => {
+describe("normalizeErrorKind", () => {
   it("returns null for null input", () => {
-    expect(describeError(null)).toBeNull();
+    expect(normalizeErrorKind(null)).toBeNull();
   });
 
   it("returns null for empty string", () => {
-    // Mirrors error_kind being NULL in the DB.
-    expect(describeError("")).toBeNull();
+    expect(normalizeErrorKind("")).toBeNull();
   });
 
   it.each([
@@ -28,17 +27,13 @@ describe("describeError", () => {
     "no_transcript",
     "path_conflict",
     "dismissed",
-  ])("has a label and hint for %s", (kind) => {
-    const msg = describeError(kind);
-    expect(msg).not.toBeNull();
-    expect(msg!.label.length).toBeGreaterThan(0);
-    expect(msg!.hint.length).toBeGreaterThan(0);
+    "fetch_failed",
+  ])("preserves the canonical kind %s", (kind) => {
+    expect(normalizeErrorKind(kind)).toBe(kind);
   });
 
-  it("falls back to a generic message for unknown kinds", () => {
-    const msg = describeError("future_failure_mode");
-    expect(msg).not.toBeNull();
-    expect(msg!.retryable).toBe(true);
+  it("falls back to 'unknown' for unrecognised kinds", () => {
+    expect(normalizeErrorKind("future_failure_mode")).toBe("unknown");
   });
 });
 
@@ -59,5 +54,9 @@ describe("isRetryable", () => {
 
   it("returns false when error_kind is null", () => {
     expect(isRetryable(null)).toBe(false);
+  });
+
+  it("treats unrecognised kinds as retryable (the 'unknown' bucket)", () => {
+    expect(isRetryable("future_failure_mode")).toBe(true);
   });
 });

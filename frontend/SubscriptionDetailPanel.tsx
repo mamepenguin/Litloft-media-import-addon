@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import { Loader2, RefreshCw, Trash2, X } from "lucide-react";
 
 import { useWebSocket } from "@/hooks/useWebSocket";
@@ -32,32 +33,15 @@ interface Props {
 /**
  * Right-slide panel showing one subscription's full state.
  *
- * Sections:
- *   header   — avatar / display title / status pill / close
- *   actions  — Pause/Resume, Sync now, Refresh metadata
- *   schedule — cooldown_minutes editor + next-sync hint
- *   options  — include_no_transcript checkbox
- *   items    — failed first (grouped), then imported (recent)
- *   danger   — delete with item-count warning
+ * Layout follows DESIGN.md §6 sidebar conventions:
+ *   - rounded-2xl, bg-bg-card, divided by border-bg-border
+ *   - sticky header with avatar + display title + status pill
+ *   - sections separated by ``border-t border-bg-border``
  *
  * Items are refetched on ``subscription.sync_completed`` events for
  * this id, so retries and conflict resolutions reflect without
  * collapsing+reopening the panel.
  */
-
-function nextSyncHint(sub: Subscription): string {
-  if (!sub.is_enabled) return "Paused — automatic sync disabled";
-  if (sub.cooldown_until) {
-    const cooldown = new Date(sub.cooldown_until);
-    if (cooldown > new Date()) {
-      return `Backoff until ${cooldown.toLocaleString()}`;
-    }
-  }
-  if (!sub.last_synced_at) return "Will sync on the next cron sweep";
-  const last = new Date(sub.last_synced_at);
-  const next = new Date(last.getTime() + sub.cooldown_minutes * 60_000);
-  return `Next sync around ${next.toLocaleString()}`;
-}
 
 export default function SubscriptionDetailPanel({
   drive,
@@ -65,6 +49,8 @@ export default function SubscriptionDetailPanel({
   onClose,
   onChanged,
 }: Props) {
+  const t = useTranslations("mediaImport.detail");
+
   const [subscription, setSubscription] = useState(initial);
   const [videos, setVideos] = useState<SubscriptionVideo[]>([]);
   const [loadingVideos, setLoadingVideos] = useState(true);
@@ -79,6 +65,22 @@ export default function SubscriptionDetailPanel({
   const completedEvent = useWebSocket(
     "media_import.subscription.sync_completed",
   );
+
+  function nextSyncHint(sub: Subscription): string {
+    if (!sub.is_enabled) return t("schedule.paused");
+    if (sub.cooldown_until) {
+      const cooldown = new Date(sub.cooldown_until);
+      if (cooldown > new Date()) {
+        return t("schedule.backoffUntil", {
+          when: cooldown.toLocaleString(),
+        });
+      }
+    }
+    if (!sub.last_synced_at) return t("schedule.willSyncNext");
+    const last = new Date(sub.last_synced_at);
+    const next = new Date(last.getTime() + sub.cooldown_minutes * 60_000);
+    return t("schedule.nextAround", { when: next.toLocaleString() });
+  }
 
   async function loadVideos() {
     setLoadingVideos(true);
@@ -117,7 +119,7 @@ export default function SubscriptionDetailPanel({
       setSubscription(updated);
       onChanged(updated);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Update failed");
+      setError(e instanceof Error ? e.message : t("errors.updateFailed"));
     } finally {
       setBusy(false);
     }
@@ -129,7 +131,7 @@ export default function SubscriptionDetailPanel({
     try {
       await syncSubscription(drive, subscription.id);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Sync failed");
+      setError(e instanceof Error ? e.message : t("errors.syncFailed"));
     } finally {
       setBusy(false);
     }
@@ -140,10 +142,9 @@ export default function SubscriptionDetailPanel({
     setError(null);
     try {
       await refreshSubscriptionMetadata(drive, subscription.id);
-      // The avatar URL on the server may have changed; force <img> re-fetch.
       setSubscription((s) => ({ ...s }));
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Refresh failed");
+      setError(e instanceof Error ? e.message : t("errors.refreshFailed"));
     } finally {
       setBusy(false);
     }
@@ -151,10 +152,10 @@ export default function SubscriptionDetailPanel({
 
   async function handleDelete() {
     const importedCount = videos.filter((v) => v.status === "imported").length;
-    const message =
-      `Delete "${subscription.display_title || subscription.source_ref}" ` +
-      `subscription? ${importedCount} imported file${importedCount === 1 ? "" : "s"} ` +
-      `will stay; new uploads will stop being tracked.`;
+    const message = t("danger.confirm", {
+      title: subscription.display_title || subscription.source_ref,
+      count: importedCount,
+    });
     if (!confirm(message)) return;
 
     setBusy(true);
@@ -164,7 +165,7 @@ export default function SubscriptionDetailPanel({
       onChanged(null);
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Delete failed");
+      setError(e instanceof Error ? e.message : t("errors.deleteFailed"));
       setBusy(false);
     }
   }
@@ -174,7 +175,7 @@ export default function SubscriptionDetailPanel({
     try {
       await retrySubscriptionVideo(drive, subscription.id, itemId);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Retry failed");
+      setError(e instanceof Error ? e.message : t("errors.retryFailed"));
     } finally {
       setRetrying((prev) => {
         const next = new Set(prev);
@@ -184,7 +185,6 @@ export default function SubscriptionDetailPanel({
     }
   }
 
-  // Group failed first, then imported.
   const failed = videos.filter(
     (v) => v.status === "failed" && v.error_kind !== "dismissed",
   );
@@ -195,6 +195,9 @@ export default function SubscriptionDetailPanel({
 
   const status = deriveStatus(subscription, failed.length);
   const importedCount = imported.length;
+  const displayTitle =
+    subscription.display_title || subscription.source_ref;
+  const isPlaylist = subscription.source_kind === "playlist";
 
   return (
     <div
@@ -203,12 +206,16 @@ export default function SubscriptionDetailPanel({
       data-testid="detail-panel"
     >
       <aside
-        className="h-full w-full max-w-md overflow-y-auto bg-bg-card shadow-xl"
+        className="flex h-full w-full max-w-md flex-col overflow-y-auto border-l border-bg-border bg-bg-card"
         onClick={(e) => e.stopPropagation()}
       >
-        <header className="flex items-start justify-between gap-3 border-b border-border-primary px-5 py-4">
+        <header className="flex items-start justify-between gap-3 border-b border-bg-border px-5 py-4">
           <div className="flex items-start gap-3 min-w-0">
-            <div className="size-12 shrink-0 overflow-hidden rounded-full bg-bg-hover">
+            <div
+              className={`size-12 shrink-0 overflow-hidden bg-bg-elevated ${
+                isPlaylist ? "rounded-xl" : "rounded-full"
+              }`}
+            >
               {subscription.avatar_url && (
                 <img
                   src={subscriptionAvatarUrl(subscription.id)}
@@ -222,14 +229,12 @@ export default function SubscriptionDetailPanel({
             </div>
             <div className="min-w-0">
               <h2 className="truncate text-base font-semibold text-text-primary">
-                {subscription.display_title || subscription.source_ref}
+                {displayTitle}
               </h2>
-              <div className="mt-0.5 flex items-center gap-2 text-xs text-text-secondary">
-                <span>{subscription.provider}</span>
+              <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-text-muted">
+                <span className="capitalize">{subscription.provider}</span>
                 <span>·</span>
-                <span>{subscription.source_kind}</span>
-                <span>·</span>
-                <span>{importedCount} imported</span>
+                <span className="capitalize">{subscription.source_kind}</span>
               </div>
               <div className="mt-2">
                 <SubscriptionStatusPill status={status} />
@@ -239,47 +244,52 @@ export default function SubscriptionDetailPanel({
           <button
             type="button"
             onClick={onClose}
-            className="text-text-muted hover:text-text-primary"
-            aria-label="Close"
+            className="rounded-full p-1 text-text-muted hover:bg-bg-elevated hover:text-text-primary"
+            aria-label={t("close")}
           >
             <X size={18} />
           </button>
         </header>
 
-        <section className="border-b border-border-primary px-5 py-4">
+        <section className="border-b border-bg-border px-5 py-4">
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
               onClick={() => applyPatch({ is_enabled: !subscription.is_enabled })}
               disabled={busy}
-              className="flex items-center gap-1 rounded-lg border border-border-primary px-3 py-1.5 text-xs text-text-primary hover:bg-bg-hover disabled:opacity-50"
+              className="flex items-center gap-1 rounded-2xl bg-sand px-3 py-1.5 text-xs text-text-primary hover:bg-sand-hover disabled:opacity-50"
               data-testid="action-pause"
             >
-              {subscription.is_enabled ? "Pause" : "Resume"}
+              {subscription.is_enabled
+                ? t("actions.pause")
+                : t("actions.resume")}
             </button>
             <button
               type="button"
               onClick={handleSync}
               disabled={busy || subscription.running}
-              className="flex items-center gap-1 rounded-lg border border-border-primary px-3 py-1.5 text-xs text-text-primary hover:bg-bg-hover disabled:opacity-50"
+              className="flex items-center gap-1 rounded-2xl bg-sand px-3 py-1.5 text-xs text-text-primary hover:bg-sand-hover disabled:opacity-50"
               data-testid="action-sync"
             >
-              <RefreshCw size={12} className={subscription.running ? "animate-spin" : ""} />
-              Sync now
+              <RefreshCw
+                size={12}
+                className={subscription.running ? "animate-spin" : ""}
+              />
+              {t("actions.syncNow")}
             </button>
             <button
               type="button"
               onClick={handleRefreshMetadata}
               disabled={busy}
-              className="flex items-center gap-1 rounded-lg border border-border-primary px-3 py-1.5 text-xs text-text-primary hover:bg-bg-hover disabled:opacity-50"
+              className="flex items-center gap-1 rounded-2xl bg-sand px-3 py-1.5 text-xs text-text-primary hover:bg-sand-hover disabled:opacity-50"
               data-testid="action-refresh-metadata"
             >
-              Refresh metadata
+              {t("actions.refreshMetadata")}
             </button>
           </div>
           {error && (
             <div
-              className="mt-3 rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger"
+              className="mt-3 rounded-2xl bg-danger/10 px-3 py-2 text-xs text-danger"
               data-testid="panel-error"
             >
               {error}
@@ -287,12 +297,16 @@ export default function SubscriptionDetailPanel({
           )}
         </section>
 
-        <section className="border-b border-border-primary px-5 py-4">
-          <h3 className="text-xs font-medium text-text-secondary">Schedule</h3>
-          <p className="mt-1 text-xs text-text-muted">{nextSyncHint(subscription)}</p>
+        <section className="border-b border-bg-border px-5 py-4">
+          <h3 className="text-[11px] font-semibold uppercase text-text-muted">
+            {t("schedule.heading")}
+          </h3>
+          <p className="mt-1.5 text-xs text-text-muted">
+            {nextSyncHint(subscription)}
+          </p>
           <div className="mt-3 flex items-center gap-2">
             <label className="text-xs text-text-muted">
-              Cooldown (min):
+              {t("schedule.cooldownLabel")}
             </label>
             <input
               type="number"
@@ -301,7 +315,7 @@ export default function SubscriptionDetailPanel({
               onChange={(e) =>
                 setEditingCooldown(Math.max(1, Number(e.target.value) || 1))
               }
-              className="w-20 rounded-lg border border-border-primary bg-bg-primary px-2 py-1 text-xs text-text-primary focus:border-accent-cta focus:outline-none"
+              className="w-20 rounded-2xl border border-bg-border bg-bg-primary px-3 py-1 text-xs text-text-primary focus:border-focus-ring focus:outline-none"
               data-testid="cooldown-input"
             />
             <button
@@ -310,25 +324,29 @@ export default function SubscriptionDetailPanel({
                 applyPatch({ cooldown_minutes: editingCooldown })
               }
               disabled={busy || editingCooldown === subscription.cooldown_minutes}
-              className="rounded px-2 py-1 text-xs text-text-secondary hover:bg-bg-hover disabled:opacity-50"
+              className="rounded-2xl bg-sand px-3 py-1 text-xs text-text-primary hover:bg-sand-hover disabled:opacity-50"
               data-testid="cooldown-save"
             >
-              Save
+              {t("schedule.cooldownSave")}
             </button>
           </div>
         </section>
 
-        <section className="border-b border-border-primary px-5 py-4">
-          <h3 className="text-xs font-medium text-text-secondary">Destination</h3>
-          <div className="mt-1 text-xs text-text-primary">
+        <section className="border-b border-bg-border px-5 py-4">
+          <h3 className="text-[11px] font-semibold uppercase text-text-muted">
+            {t("destination.heading")}
+          </h3>
+          <div className="mt-1.5 break-anywhere text-xs text-text-primary">
             {subscription.folder_path
               ? `/${subscription.folder_path}`
-              : "drive root"}
+              : "/"}
           </div>
         </section>
 
-        <section className="border-b border-border-primary px-5 py-4">
-          <h3 className="text-xs font-medium text-text-secondary">Options</h3>
+        <section className="border-b border-bg-border px-5 py-4">
+          <h3 className="text-[11px] font-semibold uppercase text-text-muted">
+            {t("options.heading")}
+          </h3>
           <label className="mt-2 flex items-center gap-2 text-xs text-text-primary">
             <input
               type="checkbox"
@@ -339,29 +357,29 @@ export default function SubscriptionDetailPanel({
               disabled={busy}
               data-testid="include-no-transcript"
             />
-            Try to fetch transcripts even when none reported
+            {t("options.includeNoTranscript")}
           </label>
         </section>
 
-        <section className="border-b border-border-primary px-5 py-4">
-          <h3 className="mb-2 text-xs font-medium text-text-secondary">Items</h3>
+        <section className="border-b border-bg-border px-5 py-4">
+          <h3 className="mb-2 text-[11px] font-semibold uppercase text-text-muted">
+            {t("items.heading")}
+          </h3>
           {loadingVideos ? (
             <div className="flex items-center gap-2 text-xs text-text-muted">
               <Loader2 size={12} className="animate-spin" />
-              Loading...
+              {t("items.loading")}
             </div>
           ) : videos.length === 0 ? (
-            <div className="text-xs text-text-muted">
-              No items yet. Run a sync.
-            </div>
+            <div className="text-xs text-text-muted">{t("items.empty")}</div>
           ) : (
             <div className="-mx-5">
               {failed.length > 0 && (
                 <div data-testid="items-failed-group">
-                  <div className="px-5 pb-1 text-[11px] font-semibold uppercase tracking-wide text-warning">
-                    Needs attention ({failed.length})
+                  <div className="px-5 pb-1 text-[11px] font-semibold uppercase text-accent-amber">
+                    {t("items.groupAttention", { count: failed.length })}
                   </div>
-                  <ul className="divide-y divide-border-primary">
+                  <ul className="divide-y divide-bg-border">
                     {failed.map((v) => (
                       <SubscriptionItemRow
                         key={v.item_id}
@@ -376,10 +394,10 @@ export default function SubscriptionDetailPanel({
               )}
               {imported.length > 0 && (
                 <div data-testid="items-imported-group">
-                  <div className="mt-3 px-5 pb-1 text-[11px] font-semibold uppercase tracking-wide text-text-muted">
-                    Imported ({imported.length})
+                  <div className="mt-3 px-5 pb-1 text-[11px] font-semibold uppercase text-text-muted">
+                    {t("items.groupImported", { count: imported.length })}
                   </div>
-                  <ul className="divide-y divide-border-primary">
+                  <ul className="divide-y divide-bg-border">
                     {imported.slice(0, 50).map((v) => (
                       <SubscriptionItemRow
                         key={v.item_id}
@@ -394,8 +412,8 @@ export default function SubscriptionDetailPanel({
               )}
               {dismissed.length > 0 && (
                 <div data-testid="items-dismissed-group">
-                  <div className="mt-3 px-5 pb-1 text-[11px] font-semibold uppercase tracking-wide text-text-muted">
-                    Skipped ({dismissed.length})
+                  <div className="mt-3 px-5 pb-1 text-[11px] font-semibold uppercase text-text-muted">
+                    {t("items.groupSkipped", { count: dismissed.length })}
                   </div>
                 </div>
               )}
@@ -404,16 +422,18 @@ export default function SubscriptionDetailPanel({
         </section>
 
         <section className="px-5 py-4">
-          <h3 className="text-xs font-medium text-danger">Danger zone</h3>
+          <h3 className="text-[11px] font-semibold uppercase text-danger">
+            {t("danger.heading")}
+          </h3>
           <button
             type="button"
             onClick={handleDelete}
             disabled={busy}
-            className="mt-2 flex items-center gap-1 rounded-lg border border-danger/40 px-3 py-1.5 text-xs text-danger hover:bg-danger/10 disabled:opacity-50"
+            className="mt-2 flex items-center gap-1 rounded-2xl border border-danger/40 px-3 py-1.5 text-xs text-danger hover:bg-danger/10 disabled:opacity-50"
             data-testid="action-delete"
           >
             <Trash2 size={12} />
-            Delete subscription
+            {t("danger.delete")}
           </button>
         </section>
       </aside>

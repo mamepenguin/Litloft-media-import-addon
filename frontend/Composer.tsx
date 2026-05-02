@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useTranslations } from "next-intl";
 import {
   ChevronDown,
   ChevronRight,
@@ -80,6 +81,7 @@ export default function Composer({
   initialExpanded,
   onCreated,
 }: Props) {
+  const t = useTranslations("mediaImport");
   const [expanded, setExpanded] = useState(initialExpanded);
   const [url, setUrl] = useState("");
   const [kind, setKind] = useState<SubscriptionKind>("unknown");
@@ -102,15 +104,12 @@ export default function Composer({
 
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Keep folder list in sync with the current breadcrumb.
   useEffect(() => {
     if (!drive) return;
     const path = folderStack.length ? folderStack[folderStack.length - 1] : undefined;
     getFolders(drive, path).then(setFolders);
   }, [drive, folderStack]);
 
-  // Debounced classification: as the user pastes, ask the backend
-  // whether this URL points at a subscription source.
   useEffect(() => {
     const trimmed = url.trim();
     if (!trimmed) {
@@ -125,9 +124,6 @@ export default function Composer({
         .then((res) => {
           setKind(res.kind);
           setProvider(res.provider);
-          // Apply smart-folder default whenever the provider/kind
-          // changes — but only when the user hasn't already typed
-          // a folder for this submission.
           if (
             res.provider
             && (res.kind === "channel" || res.kind === "playlist" || res.kind === "video")
@@ -193,10 +189,6 @@ export default function Composer({
         };
         setRecent((prev) => [next, ...prev].slice(0, 5));
       }
-      // Memorize the destination so the next paste of the same kind
-      // pre-fills it. Only memorize when the provider was recognised
-      // — "unknown" passes through as a single import and we don't
-      // know which bucket to file the memory under.
       if (provider) {
         rememberFolder(drive, provider, kind, selectedFolder);
       }
@@ -206,7 +198,7 @@ export default function Composer({
       onCreated();
       inputRef.current?.focus();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to import");
+      setError(e instanceof Error ? e.message : t("composer.errorFallback"));
     } finally {
       setSubmitting(false);
     }
@@ -244,26 +236,36 @@ export default function Composer({
 
   const showSubscriptionFields = isSubscriptionKind(kind);
   const submitLabel = submitting
-    ? "..."
+    ? t("composer.submitting")
     : showSubscriptionFields
-      ? "Subscribe"
-      : "Import";
+      ? t("composer.submitSubscribe")
+      : t("composer.submitImport");
 
-  // Collapsed state: render a compact "Add" button.
+  const kindHint = (() => {
+    if (resolving) return t("composer.kind.detecting");
+    switch (kind) {
+      case "video": return t("composer.kind.video");
+      case "channel": return t("composer.kind.channel");
+      case "playlist": return t("composer.kind.playlist");
+      case "feed": return t("composer.kind.feed");
+      default: return t("composer.kind.unknown");
+    }
+  })();
+
   if (!expanded) {
     return (
-      <div data-testid="composer-collapsed">
+      <div className="mx-auto w-full max-w-3xl" data-testid="composer-collapsed">
         <button
           type="button"
           onClick={() => {
             setExpanded(true);
             setTimeout(() => inputRef.current?.focus(), 0);
           }}
-          className="flex w-full items-center gap-2 rounded-lg border border-dashed border-border-primary bg-bg-card px-3 py-2.5 text-sm text-text-secondary hover:bg-bg-hover"
+          className="flex w-full items-center gap-2 rounded-2xl border border-bg-border bg-bg-card px-4 py-3 text-sm text-text-muted transition-colors hover:bg-bg-elevated"
           data-testid="composer-expand"
         >
           <Plus size={16} />
-          <span>Add a source — paste a URL or drop a link</span>
+          <span>{t("composer.addSourceCollapsed")}</span>
         </button>
       </div>
     );
@@ -271,31 +273,33 @@ export default function Composer({
 
   return (
     <div
-      className="relative"
+      className="relative mx-auto w-full max-w-3xl"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       data-testid="composer-expanded"
     >
       {dragOver && (
-        <div className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center rounded-xl border-2 border-dashed border-accent-cta bg-accent-cta/10">
-          <div className="flex flex-col items-center gap-2 text-accent-cta">
+        <div className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center rounded-xl border-2 border-dashed border-accent bg-accent/10">
+          <div className="flex flex-col items-center gap-2 text-accent">
             <LinkIcon size={48} />
-            <span className="text-lg font-medium">Drop URL to import</span>
+            <span className="text-lg font-medium">{t("composer.dropOverlay")}</span>
           </div>
         </div>
       )}
 
-      <div className="space-y-4 rounded-lg border border-border-primary bg-bg-card p-4">
+      <div className="space-y-4 rounded-xl border border-bg-border bg-bg-card p-5">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-medium text-text-secondary">Add a source</h2>
+          <h2 className="text-sm font-semibold text-text-primary">
+            {t("composer.heading")}
+          </h2>
           <button
             type="button"
             onClick={() => setExpanded(false)}
             className="text-xs text-text-muted hover:text-text-primary"
             data-testid="composer-collapse"
           >
-            Collapse
+            {t("composer.collapse")}
           </button>
         </div>
 
@@ -305,8 +309,8 @@ export default function Composer({
             type="text"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            placeholder="https://..."
-            className="w-full rounded-lg border border-border-primary bg-bg-primary px-3 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-accent-cta focus:outline-none"
+            placeholder={t("composer.urlPlaceholder")}
+            className="w-full rounded-2xl border border-bg-border bg-bg-primary px-4 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-focus-ring focus:outline-none"
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                 e.preventDefault();
@@ -316,20 +320,10 @@ export default function Composer({
           />
           {url.trim() && (
             <p
-              className="mt-1 text-xs text-text-muted"
+              className="mt-1.5 text-xs text-text-muted"
               data-testid="composer-url-hint"
             >
-              {resolving
-                ? "Detecting URL type..."
-                : kind === "video"
-                  ? "Single video — will create a single .loft"
-                  : kind === "channel"
-                    ? "YouTube channel — subscribe to track new uploads"
-                    : kind === "playlist"
-                      ? "YouTube playlist — subscribe to track all items"
-                      : kind === "feed"
-                        ? "Feed — subscribe"
-                        : "Single import (unrecognized provider)"}
+              {kindHint}
             </p>
           )}
         </div>
@@ -338,16 +332,16 @@ export default function Composer({
           <button
             type="button"
             onClick={() => setFolderPickerOpen((v) => !v)}
-            className="flex w-full items-center justify-between rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm text-text-primary hover:bg-bg-hover"
+            className="flex w-full items-center justify-between rounded-2xl border border-bg-border bg-bg-primary px-4 py-2.5 text-sm text-text-primary hover:bg-bg-elevated"
             data-testid="composer-folder-toggle"
           >
-            <span className="flex items-center gap-2 text-text-secondary">
+            <span className="flex items-center gap-2">
               <FolderIcon size={14} className="text-text-muted" />
-              <span className="text-text-muted">Save to:</span>
-              <span className="text-text-primary">
+              <span className="text-text-muted">{t("composer.saveTo")}</span>
+              <span>
                 {selectedFolder
                   ? `/${selectedFolder}`
-                  : <span className="text-text-muted">drive root</span>}
+                  : <span className="text-text-muted">{t("composer.driveRoot")}</span>}
               </span>
             </span>
             {folderPickerOpen
@@ -356,8 +350,8 @@ export default function Composer({
           </button>
 
           {folderPickerOpen && (
-            <div className="mt-2 rounded-lg border border-border-primary bg-bg-primary">
-              <div className="flex items-center gap-1 border-b border-border-primary px-3 py-2 text-xs text-text-secondary">
+            <div className="mt-2 rounded-xl border border-bg-border bg-bg-primary">
+              <div className="flex items-center gap-1 border-b border-bg-border px-3 py-2 text-xs text-text-muted">
                 <button
                   type="button"
                   onClick={() => handleBreadcrumbClick(-1)}
@@ -368,7 +362,7 @@ export default function Composer({
                 </button>
                 {breadcrumbParts.map((name, i) => (
                   <span key={i} className="flex items-center gap-1">
-                    <ChevronRight size={12} className="text-text-muted" />
+                    <ChevronRight size={12} />
                     <button
                       type="button"
                       onClick={() => handleBreadcrumbClick(i)}
@@ -381,14 +375,16 @@ export default function Composer({
               </div>
               <div className="max-h-44 overflow-y-auto">
                 {folders.length === 0 ? (
-                  <div className="px-3 py-3 text-sm text-text-muted">No subfolders</div>
+                  <div className="px-3 py-3 text-sm text-text-muted">
+                    {t("composer.noSubfolders")}
+                  </div>
                 ) : (
                   folders.map((f) => (
                     <button
                       key={f.path}
                       type="button"
                       onClick={() => handleFolderClick(f)}
-                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-text-primary hover:bg-bg-hover"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-text-primary hover:bg-bg-elevated"
                     >
                       <FolderIcon size={14} className="shrink-0 text-text-muted" />
                       {f.name}
@@ -409,25 +405,25 @@ export default function Composer({
               data-testid="composer-advanced-toggle"
             >
               {advanced ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-              Advanced
+              {t("composer.advanced")}
             </button>
             {advanced && (
-              <div className="mt-2 space-y-3 rounded-lg border border-border-primary bg-bg-primary p-3">
+              <div className="mt-2 space-y-3 rounded-xl border border-bg-border bg-bg-primary p-4">
                 <div>
-                  <label className="mb-1 block text-xs text-text-secondary">
-                    Backfill (initial import count)
+                  <label className="mb-1 block text-xs text-text-muted">
+                    {t("composer.backfill")}
                   </label>
                   <input
                     type="number"
                     min={1}
                     value={backfill}
                     onChange={(e) => setBackfill(Math.max(1, Number(e.target.value) || 1))}
-                    className="w-full rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm text-text-primary focus:border-accent-cta focus:outline-none"
+                    className="w-full rounded-2xl border border-bg-border bg-bg-primary px-3 py-2 text-sm text-text-primary focus:border-focus-ring focus:outline-none"
                   />
                   <p className="mt-1 text-xs text-text-muted">
                     {kind === "channel"
-                      ? "Most-recent N uploads."
-                      : "Items from the start of the playlist."}
+                      ? t("composer.backfillHintChannel")
+                      : t("composer.backfillHintPlaylist")}
                   </p>
                 </div>
                 <label className="flex items-center gap-2 text-xs text-text-primary">
@@ -436,7 +432,7 @@ export default function Composer({
                     checked={includeNoTranscript}
                     onChange={(e) => setIncludeNoTranscript(e.target.checked)}
                   />
-                  Try to fetch transcripts even when the video reports none
+                  {t("composer.includeNoTranscript")}
                 </label>
               </div>
             )}
@@ -444,7 +440,10 @@ export default function Composer({
         )}
 
         {error && (
-          <div className="rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger" data-testid="composer-error">
+          <div
+            className="rounded-2xl bg-danger/10 px-3 py-2 text-sm text-danger"
+            data-testid="composer-error"
+          >
             {error}
           </div>
         )}
@@ -453,7 +452,7 @@ export default function Composer({
           <button
             onClick={handleSubmit}
             disabled={!url.trim() || !drive || submitting}
-            className="rounded-lg bg-accent-cta px-5 py-2.5 text-sm font-medium text-white disabled:opacity-50 hover:opacity-90"
+            className="rounded-2xl bg-accent px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
             data-testid="composer-submit"
           >
             {submitLabel}
@@ -462,20 +461,19 @@ export default function Composer({
       </div>
 
       {recent.length > 0 && (
-        <div className="mt-4">
-          <h3 className="mb-2 text-xs font-medium text-text-muted">
-            Just imported
+        <div className="mt-5">
+          <h3 className="mb-2 text-[11px] font-semibold uppercase text-text-muted">
+            {t("composer.justImportedHeading")}
           </h3>
-          <ul className="space-y-1">
+          <ul className="space-y-1.5">
             {recent.map((item) => (
               <li
                 key={item.fileId}
-                className="rounded-lg border border-border-primary bg-bg-card px-3 py-2 text-xs"
+                className="rounded-xl border border-bg-border bg-bg-card px-4 py-2.5 text-sm text-text-primary"
               >
-                <div className="font-medium text-text-primary">
-                  {item.filename}
-                </div>
-                <div className="truncate text-text-muted">{item.url}</div>
+                {item.filename.endsWith(".loft")
+                  ? item.filename.slice(0, -".loft".length)
+                  : item.filename}
               </li>
             ))}
           </ul>

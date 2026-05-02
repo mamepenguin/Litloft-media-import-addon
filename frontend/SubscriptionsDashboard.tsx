@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
 import { AlertTriangle, CheckCircle2, Loader2, Pause } from "lucide-react";
 
 import { useWebSocket } from "@/hooks/useWebSocket";
@@ -18,34 +19,30 @@ import SubscriptionDetailPanel from "./SubscriptionDetailPanel";
 
 type Filter = "all" | "channel" | "playlist" | "attention" | "paused";
 
+const FILTERS: Filter[] = ["all", "channel", "playlist", "attention", "paused"];
+
 interface Props {
   drive: string;
   /** Bumped by the parent (Composer) when a new subscription was created. */
   refreshKey: number;
 }
 
-const FILTER_LABELS: Record<Filter, string> = {
-  all: "All",
-  channel: "Channels",
-  playlist: "Playlists",
-  attention: "Needs attention",
-  paused: "Paused",
-};
-
 /**
  * Subscriptions dashboard: summary header + filter chips + cards +
  * detail side panel.
  *
- * The summary numbers come from the dedicated /summary endpoint
- * (one DB scan with the failure counts) so the header strip stays
- * cheap. Per-card imported/failed counts come from a per-id roll-up
- * over subscription_videos rows, refetched with the list.
+ * Cards live on a responsive grid (1/2/3 columns) so the dashboard
+ * scales from phone to wide desktop without forcing a list-scan UX.
  */
 
 export default function SubscriptionsDashboard({
   drive,
   refreshKey,
 }: Props) {
+  const t = useTranslations("mediaImport.dashboard");
+  const tFilter = useTranslations("mediaImport.dashboard.filter");
+  const tSummary = useTranslations("mediaImport.dashboard.summary");
+
   const [subs, setSubs] = useState<Subscription[]>([]);
   const [counts, setCounts] = useState<
     Record<number, { imported: number; failed: number }>
@@ -76,9 +73,6 @@ export default function SubscriptionsDashboard({
       setSubs(rows);
       setSummary(sum);
 
-      // Per-card counts: parallel video fetches. Acceptable for the
-      // expected ~tens-of-subscriptions scale; will revisit if the
-      // dashboard grows beyond that.
       const entries = await Promise.all(
         rows.map(async (s) => {
           try {
@@ -91,17 +85,16 @@ export default function SubscriptionsDashboard({
       );
       setCounts(Object.fromEntries(entries));
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load");
+      setError(e instanceof Error ? e.message : t("loadFailed"));
     } finally {
       setLoading(false);
     }
-  }, [drive]);
+  }, [drive, t]);
 
   useEffect(() => {
     load();
   }, [load, refreshKey]);
 
-  // WS-driven incremental updates.
   useEffect(() => {
     if (!startedEvent) return;
     const sid = startedEvent.data?.subscription_id as number | undefined;
@@ -115,7 +108,6 @@ export default function SubscriptionsDashboard({
     if (!completedEvent) return;
     const sid = completedEvent.data?.subscription_id as number | undefined;
     if (typeof sid !== "number") return;
-    // Refetch list (running flag + cooldown_until + counts may all change).
     load();
   }, [completedEvent, load]);
 
@@ -150,49 +142,59 @@ export default function SubscriptionsDashboard({
   const selected = subs.find((s) => s.id === selectedId) ?? null;
 
   return (
-    <section data-testid="subscriptions-dashboard">
-      <SummaryHeader summary={summary} onJumpAttention={() => setFilter("attention")} />
+    <section data-testid="subscriptions-dashboard" className="space-y-4">
+      <SummaryHeader
+        summary={summary}
+        onJumpAttention={() => setFilter("attention")}
+        tSummary={tSummary}
+      />
 
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        {(Object.keys(FILTER_LABELS) as Filter[]).map((f) => (
+      <div className="flex flex-wrap items-center gap-2">
+        {FILTERS.map((f) => (
           <button
             key={f}
             type="button"
             onClick={() => setFilter(f)}
-            className={`rounded-full border px-3 py-1 text-xs ${
+            className={`rounded-full border px-3 py-1 text-xs transition-colors ${
               filter === f
-                ? "border-accent-cta bg-accent-cta/10 text-accent-cta"
-                : "border-border-primary text-text-secondary hover:bg-bg-hover"
+                ? "border-accent bg-accent/10 text-accent"
+                : "border-bg-border text-text-muted hover:bg-bg-elevated"
             }`}
             data-testid={`filter-${f}`}
           >
-            {FILTER_LABELS[f]}
+            {tFilter(f)}
           </button>
         ))}
         <input
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search subscriptions..."
-          className="ml-auto w-56 rounded-lg border border-border-primary bg-bg-primary px-3 py-1 text-xs text-text-primary placeholder:text-text-muted focus:border-accent-cta focus:outline-none"
+          placeholder={t("searchPlaceholder")}
+          className="ml-auto w-56 rounded-2xl border border-bg-border bg-bg-card px-3 py-1.5 text-xs text-text-primary placeholder:text-text-muted focus:border-focus-ring focus:outline-none"
         />
       </div>
 
-      <div className="mt-3">
+      <div>
         {error && (
-          <div className="mb-3 rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">
+          <div className="mb-3 rounded-2xl bg-danger/10 px-3 py-2 text-sm text-danger">
             {error}
           </div>
         )}
         {loading ? (
-          <div className="flex items-center gap-2 py-8 text-sm text-text-muted" data-testid="dashboard-loading">
+          <div
+            className="flex items-center gap-2 py-8 text-sm text-text-muted"
+            data-testid="dashboard-loading"
+          >
             <Loader2 size={14} className="animate-spin" />
-            Loading subscriptions...
+            {t("loading")}
           </div>
         ) : filtered.length === 0 ? (
           <EmptyState filter={filter} hasAny={subs.length > 0} />
         ) : (
-          <ul className="grid gap-2" data-testid="card-grid">
+          <ul
+            className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3"
+            data-testid="card-grid"
+          >
             {filtered.map((s) => (
               <li key={s.id}>
                 <SubscriptionCard
@@ -214,7 +216,6 @@ export default function SubscriptionsDashboard({
           onClose={() => setSelectedId(null)}
           onChanged={(updated) => {
             if (updated === null) {
-              // Deleted.
               setSubs((prev) => prev.filter((s) => s.id !== selectedId));
               setSelectedId(null);
               load();
@@ -243,49 +244,53 @@ function summariseVideos(videos: SubscriptionVideo[]): {
   return { imported, failed };
 }
 
+type SummaryTranslator = ReturnType<typeof useTranslations<"mediaImport.dashboard.summary">>;
+
 function SummaryHeader({
   summary,
   onJumpAttention,
+  tSummary,
 }: {
   summary: SubscriptionSummary | null;
   onJumpAttention: () => void;
+  tSummary: SummaryTranslator;
 }) {
   if (!summary || summary.total === 0) {
     return null;
   }
   return (
     <div
-      className="flex flex-wrap items-center gap-3 rounded-lg border border-border-primary bg-bg-card px-4 py-3 text-sm"
+      className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-bg-border bg-bg-card px-4 py-3 text-sm"
       data-testid="dashboard-summary"
     >
-      <span className="font-medium text-text-primary">
-        {summary.total} subscription{summary.total === 1 ? "" : "s"}
+      <span className="font-semibold text-text-primary">
+        {tSummary("subscriptions", { count: summary.total })}
       </span>
       <span className="flex items-center gap-1 text-text-muted">
-        <CheckCircle2 size={14} className="text-success" />
-        {summary.imported_count} imported
+        <CheckCircle2 size={14} className="text-accent-teal" />
+        {tSummary("imported", { count: summary.imported_count })}
       </span>
       {summary.attention > 0 && (
         <button
           type="button"
           onClick={onJumpAttention}
-          className="flex items-center gap-1 text-warning hover:underline"
+          className="flex items-center gap-1 text-accent-amber hover:underline"
           data-testid="summary-attention"
         >
           <AlertTriangle size={14} />
-          {summary.attention} need{summary.attention === 1 ? "s" : ""} attention
+          {tSummary("attentionPlural", { count: summary.attention })}
         </button>
       )}
       {summary.paused > 0 && (
         <span className="flex items-center gap-1 text-text-muted">
           <Pause size={14} />
-          {summary.paused} paused
+          {tSummary("paused", { count: summary.paused })}
         </span>
       )}
       {summary.syncing > 0 && (
-        <span className="flex items-center gap-1 text-accent-cta">
+        <span className="flex items-center gap-1 text-accent">
           <Loader2 size={14} className="animate-spin" />
-          {summary.syncing} syncing
+          {tSummary("syncing", { count: summary.syncing })}
         </span>
       )}
     </div>
@@ -299,19 +304,21 @@ function EmptyState({
   filter: Filter;
   hasAny: boolean;
 }) {
+  const t = useTranslations("mediaImport.dashboard");
+  const tFilter = useTranslations("mediaImport.dashboard.filter");
   if (!hasAny) {
     return (
       <div
-        className="rounded-lg border border-dashed border-border-primary px-4 py-8 text-center text-sm text-text-muted"
+        className="rounded-xl border border-dashed border-bg-border px-4 py-10 text-center text-sm text-text-muted"
         data-testid="dashboard-empty"
       >
-        No subscriptions yet. Paste a YouTube channel or playlist URL above to start tracking it.
+        {t("emptyAll")}
       </div>
     );
   }
   return (
-    <div className="rounded-lg border border-dashed border-border-primary px-4 py-6 text-center text-sm text-text-muted">
-      No subscriptions match this filter ({FILTER_LABELS[filter]}).
+    <div className="rounded-xl border border-dashed border-bg-border px-4 py-8 text-center text-sm text-text-muted">
+      {t("emptyFiltered", { filter: tFilter(filter) })}
     </div>
   );
 }

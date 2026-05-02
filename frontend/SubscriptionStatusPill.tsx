@@ -1,6 +1,7 @@
 "use client";
 
 import { AlertTriangle, CheckCircle2, Loader2, Pause } from "lucide-react";
+import { useTranslations } from "next-intl";
 
 import type { Subscription } from "./api";
 
@@ -40,40 +41,36 @@ interface Props {
 }
 
 const STYLES: Record<SubscriptionStatus, string> = {
-  healthy: "bg-success/10 text-success",
-  attention: "bg-warning/10 text-warning",
-  paused: "bg-bg-hover text-text-muted",
-  syncing: "bg-accent-cta/10 text-accent-cta",
+  healthy: "bg-accent-teal/15 text-accent-teal",
+  attention: "bg-accent-amber/15 text-accent-amber",
+  paused: "bg-bg-elevated text-text-muted",
+  syncing: "bg-accent/10 text-accent",
 };
 
-const LABELS: Record<SubscriptionStatus, string> = {
-  healthy: "Healthy",
-  attention: "Needs attention",
-  paused: "Paused",
-  syncing: "Syncing",
+const ICONS: Record<SubscriptionStatus, typeof CheckCircle2> = {
+  healthy: CheckCircle2,
+  attention: AlertTriangle,
+  paused: Pause,
+  syncing: Loader2,
 };
 
 export default function SubscriptionStatusPill({
   status,
   className = "",
 }: Props) {
-  const Icon = ({
-    healthy: CheckCircle2,
-    attention: AlertTriangle,
-    paused: Pause,
-    syncing: Loader2,
-  } as const)[status];
+  const t = useTranslations("mediaImport.status");
+  const Icon = ICONS[status];
 
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${STYLES[status]} ${className}`}
+      className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${STYLES[status]} ${className}`}
       data-testid={`status-pill-${status}`}
     >
       <Icon
         size={12}
         className={status === "syncing" ? "animate-spin" : ""}
       />
-      {LABELS[status]}
+      {t(status)}
     </span>
   );
 }

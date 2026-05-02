@@ -1,10 +1,11 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { ExternalLink, RefreshCw } from "lucide-react";
 
 import type { SubscriptionVideo } from "./api";
-import { describeError, isRetryable } from "./lib/errorMessages";
+import { isRetryable, normalizeErrorKind } from "./lib/errorMessages";
 
 interface Props {
   video: SubscriptionVideo;
@@ -16,13 +17,12 @@ interface Props {
 /**
  * One row in the items list inside the subscription detail panel.
  *
- * Surfaces:
- *   - Status (imported / failed / pending), color-coded
- *   - error_kind translated to user-language via errorMessages dictionary
- *   - Retry button only when isRetryable() (so dismissed / permanent
- *     suppress it)
- *   - Resolve-conflict link for path_conflict specifically
- *   - Click-through to the file detail page when imported
+ * Shows the imported video's title (sourced from loft_metadata via the
+ * server-side JOIN) instead of the raw provider item id. Falls back to
+ * a localized "untitled video" placeholder for items that never produced
+ * a .loft (e.g. permanent failures before allocation). The provider id
+ * itself stays out of the visible UI; if a developer needs it it lives
+ * on the row's data-testid for inspection.
  */
 
 export default function SubscriptionItemRow({
@@ -32,7 +32,10 @@ export default function SubscriptionItemRow({
   onResolveConflict,
 }: Props) {
   const router = useRouter();
-  const error = describeError(video.error_kind);
+  const tItem = useTranslations("mediaImport.item");
+  const tError = useTranslations("mediaImport.errorKind");
+
+  const errorKind = normalizeErrorKind(video.error_kind);
   const showRetry =
     video.status === "failed" && isRetryable(video.error_kind);
   const showResolveConflict =
@@ -40,37 +43,51 @@ export default function SubscriptionItemRow({
 
   const statusBg =
     video.status === "imported"
-      ? "bg-success/10 text-success"
+      ? "bg-accent-teal/15 text-accent-teal"
       : video.status === "failed"
         ? "bg-danger/10 text-danger"
-        : "bg-warning/10 text-warning";
+        : "bg-accent-amber/15 text-accent-amber";
+
+  const statusLabel =
+    video.status === "imported"
+      ? tItem("statusImported")
+      : video.status === "failed"
+        ? errorKind
+          ? tError(`${errorKind}.label`)
+          : tItem("statusFailed")
+        : tItem("statusPending");
+
+  const title = video.title ?? tItem("untitled");
 
   return (
     <li
-      className="flex items-start gap-3 px-4 py-2 text-sm"
+      className="flex items-start gap-3 px-5 py-2.5 text-sm"
       data-testid={`item-row-${video.item_id}`}
     >
       <span
-        className={`shrink-0 rounded px-2 py-0.5 text-xs font-medium ${statusBg}`}
+        className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${statusBg}`}
       >
-        {video.status === "imported"
-          ? "Imported"
-          : video.status === "failed"
-            ? error?.label ?? "Failed"
-            : "Pending"}
+        {statusLabel}
       </span>
       <div className="flex-1 min-w-0">
-        <div className="truncate text-text-primary">{video.item_id}</div>
-        {error && video.status === "failed" && (
-          <p className="mt-0.5 text-xs text-text-muted">{error.hint}</p>
+        <div className="truncate text-text-primary">{title}</div>
+        {video.channel && (
+          <div className="mt-0.5 truncate text-xs text-text-muted">
+            {video.channel}
+          </div>
+        )}
+        {errorKind && video.status === "failed" && (
+          <p className="mt-1 text-xs text-text-muted">
+            {tError(`${errorKind}.hint`)}
+          </p>
         )}
       </div>
       {video.status === "imported" && video.file_id && (
         <button
           type="button"
           onClick={() => router.push(`/files/${video.file_id}`)}
-          className="shrink-0 rounded p-1 text-text-muted hover:text-text-primary"
-          aria-label="Open file"
+          className="shrink-0 rounded-full p-1.5 text-text-muted hover:bg-bg-elevated hover:text-text-primary"
+          aria-label={tItem("openFile")}
         >
           <ExternalLink size={14} />
         </button>
@@ -79,10 +96,10 @@ export default function SubscriptionItemRow({
         <button
           type="button"
           onClick={onResolveConflict}
-          className="shrink-0 rounded px-2 py-1 text-xs text-text-secondary hover:bg-bg-hover"
+          className="shrink-0 rounded-full px-2.5 py-1 text-xs text-text-muted hover:bg-bg-elevated hover:text-text-primary"
           data-testid={`resolve-conflict-${video.item_id}`}
         >
-          Resolve…
+          {tItem("resolveConflict")}
         </button>
       )}
       {showRetry && !showResolveConflict && (
@@ -90,11 +107,11 @@ export default function SubscriptionItemRow({
           type="button"
           onClick={onRetry}
           disabled={retrying}
-          className="shrink-0 flex items-center gap-1 rounded px-2 py-1 text-xs text-text-secondary hover:bg-bg-hover disabled:opacity-50"
+          className="shrink-0 flex items-center gap-1 rounded-full px-2.5 py-1 text-xs text-text-muted hover:bg-bg-elevated hover:text-text-primary disabled:opacity-50"
           data-testid={`retry-${video.item_id}`}
         >
           <RefreshCw size={12} className={retrying ? "animate-spin" : ""} />
-          Retry
+          {tItem("retry")}
         </button>
       )}
     </li>

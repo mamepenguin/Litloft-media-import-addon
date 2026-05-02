@@ -1,6 +1,7 @@
 "use client";
 
 import { Loader2 } from "lucide-react";
+import { useTranslations } from "next-intl";
 
 import {
   subscriptionAvatarUrl,
@@ -12,9 +13,7 @@ import SubscriptionStatusPill, {
 
 interface Props {
   subscription: Subscription;
-  /** Imported count for the badge under the title. */
   importedCount: number;
-  /** Failed (non-dismissed) count, used for the status pill. */
   failedCount: number;
   onClick: () => void;
 }
@@ -24,26 +23,28 @@ interface Props {
  *
  * Status-first layout: the pill is rendered prominently right next
  * to the avatar so users notice "Needs attention" before reading
- * any text. Avatar falls back to a gradient placeholder via the
- * onError handler when the cached jpeg is missing (Phase 2 installs
- * with no display_title / avatar yet).
+ * any text. Avatar shape signals provider intent — channel = round
+ * (matches the YouTube channel avatar convention), playlist = rounded
+ * square (matches a stack of items).
  */
 
-function nextSyncSummary(sub: Subscription): string {
-  if (!sub.is_enabled) return "Paused";
+type SyncTranslator = ReturnType<typeof useTranslations<"mediaImport.card.nextSync">>;
+
+function nextSyncSummary(sub: Subscription, t: SyncTranslator): string {
+  if (!sub.is_enabled) return t("paused");
   if (sub.cooldown_until && new Date(sub.cooldown_until) > new Date()) {
-    return "Backoff active";
+    return t("backoff");
   }
-  if (!sub.last_synced_at) return "Pending first sync";
+  if (!sub.last_synced_at) return t("pendingFirst");
   const last = new Date(sub.last_synced_at);
   const next = new Date(last.getTime() + sub.cooldown_minutes * 60_000);
   const ms = next.getTime() - Date.now();
-  if (ms < 0) return "Sync due";
+  if (ms < 0) return t("due");
   const minutes = Math.round(ms / 60_000);
-  if (minutes < 60) return `Next: ${minutes}m`;
+  if (minutes < 60) return t("minutes", { n: minutes });
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `Next: ${hours}h`;
-  return `Next: ${Math.round(hours / 24)}d`;
+  if (hours < 24) return t("hours", { n: hours });
+  return t("days", { n: Math.round(hours / 24) });
 }
 
 export default function SubscriptionCard({
@@ -54,62 +55,67 @@ export default function SubscriptionCard({
 }: Props) {
   const status = deriveStatus(subscription, failedCount);
   const isPlaylist = subscription.source_kind === "playlist";
+  const tCard = useTranslations("mediaImport.card");
+  const tSync = useTranslations("mediaImport.card.nextSync");
+  const displayTitle =
+    subscription.display_title || subscription.source_ref;
 
   return (
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center gap-3 rounded-lg border border-border-primary bg-bg-card p-3 text-left hover:bg-bg-hover focus:border-accent-cta focus:outline-none"
+      className="flex w-full flex-col gap-3 rounded-xl border border-bg-border bg-bg-card p-4 text-left transition-colors hover:bg-bg-elevated focus:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
       data-testid={`subscription-card-${subscription.id}`}
     >
-      <div
-        className={`size-12 shrink-0 overflow-hidden bg-bg-hover ${
-          isPlaylist ? "rounded-lg" : "rounded-full"
-        }`}
-      >
-        {subscription.avatar_url && (
-          <img
-            src={subscriptionAvatarUrl(subscription.id)}
-            alt=""
-            className="size-full object-cover"
-            onError={(e) => {
-              (e.target as HTMLImageElement).style.display = "none";
-            }}
-          />
-        )}
-      </div>
-
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <SubscriptionStatusPill status={status} />
-          {subscription.running && status !== "syncing" && (
-            <Loader2 size={12} className="animate-spin text-accent-cta" />
+      <div className="flex items-start gap-3">
+        <div
+          className={`size-12 shrink-0 overflow-hidden bg-bg-elevated ${
+            isPlaylist ? "rounded-xl" : "rounded-full"
+          }`}
+        >
+          {subscription.avatar_url && (
+            <img
+              src={subscriptionAvatarUrl(subscription.id)}
+              alt=""
+              className="size-full object-cover"
+              onError={(e) => {
+                (e.target as HTMLImageElement).style.display = "none";
+              }}
+            />
           )}
         </div>
-        <div className="mt-1 truncate text-sm font-medium text-text-primary">
-          {subscription.display_title || subscription.source_ref}
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <SubscriptionStatusPill status={status} />
+            {subscription.running && status !== "syncing" && (
+              <Loader2 size={12} className="animate-spin text-accent" />
+            )}
+          </div>
+          <div className="mt-1.5 truncate text-sm font-semibold text-text-primary">
+            {displayTitle}
+          </div>
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 truncate text-xs text-text-muted">
+            <span className="capitalize">{subscription.provider}</span>
+            <span>·</span>
+            <span className="capitalize">{subscription.source_kind}</span>
+          </div>
         </div>
-        <div className="mt-0.5 flex items-center gap-2 truncate text-xs text-text-muted">
-          <span className="capitalize">{subscription.provider}</span>
-          <span>·</span>
-          <span className="capitalize">{subscription.source_kind}</span>
-          <span>·</span>
-          <span>{importedCount} imported</span>
+      </div>
+
+      <div className="flex items-center justify-between gap-2 text-xs text-text-muted">
+        <div className="flex items-center gap-2 truncate">
+          <span>{tCard("imported", { count: importedCount })}</span>
           {failedCount > 0 && (
             <>
               <span>·</span>
-              <span className="text-warning">{failedCount} failed</span>
+              <span className="text-accent-amber">
+                {tCard("failed", { count: failedCount })}
+              </span>
             </>
           )}
         </div>
-        <div className="mt-1 flex items-center justify-between gap-2 text-xs text-text-muted">
-          <span className="truncate">
-            {subscription.folder_path
-              ? `/${subscription.folder_path}`
-              : "drive root"}
-          </span>
-          <span className="shrink-0">{nextSyncSummary(subscription)}</span>
-        </div>
+        <span className="shrink-0">{nextSyncSummary(subscription, tSync)}</span>
       </div>
     </button>
   );

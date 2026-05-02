@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { Loader2, Rss } from "lucide-react";
 
 import { useWebSocket } from "@/hooks/useWebSocket";
@@ -13,23 +14,24 @@ import {
 
 interface Props {
   drive: string;
-  /** Bumped by the parent on Composer success or sync completion. */
   refreshKey: number;
 }
 
 /**
- * Unified import-activity feed for the bottom of the dashboard.
- *
- * One row per loft file on the drive (single imports + subscription
- * imports together), grouped by day, ordered created_at-DESC. The
- * source badge tells the user "this came in via subscription X" vs
- * "you pasted this manually" without scattering the information.
- *
- * Refetches when the parent bumps refreshKey (new compose / new
- * subscription) or when files.updated lands over the WebSocket.
+ * Unified import-activity feed. One row per .loft on the drive (single
+ * imports + subscription imports together), grouped by day, ordered
+ * by created_at DESC. SourceBadge tells the user where the row came
+ * from without scattering that information across two lists.
  */
 
-function formatDayHeading(d: Date): string {
+function trimLoftExt(name: string): string {
+  return name.endsWith(".loft") ? name.slice(0, -".loft".length) : name;
+}
+
+function formatDayHeading(
+  d: Date,
+  t: (key: string) => string,
+): string {
   const today = new Date();
   const yesterday = new Date();
   yesterday.setDate(today.getDate() - 1);
@@ -37,25 +39,31 @@ function formatDayHeading(d: Date): string {
     a.getFullYear() === b.getFullYear() &&
     a.getMonth() === b.getMonth() &&
     a.getDate() === b.getDate();
-  if (sameDay(d, today)) return "Today";
-  if (sameDay(d, yesterday)) return "Yesterday";
+  if (sameDay(d, today)) return t("today");
+  if (sameDay(d, yesterday)) return t("yesterday");
   return d.toLocaleDateString();
 }
 
 function groupByDay(
   entries: ActivityEntry[],
+  t: (key: string) => string,
 ): { day: string; items: ActivityEntry[] }[] {
   const buckets: Record<string, ActivityEntry[]> = {};
+  const order: string[] = [];
   for (const e of entries) {
     const d = new Date(e.created_at);
-    const key = formatDayHeading(d);
-    if (!buckets[key]) buckets[key] = [];
+    const key = formatDayHeading(d, t);
+    if (!buckets[key]) {
+      buckets[key] = [];
+      order.push(key);
+    }
     buckets[key].push(e);
   }
-  return Object.entries(buckets).map(([day, items]) => ({ day, items }));
+  return order.map((day) => ({ day, items: buckets[day] }));
 }
 
 export default function ActivityFeed({ drive, refreshKey }: Props) {
+  const t = useTranslations("mediaImport.activity");
   const [entries, setEntries] = useState<ActivityEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -71,7 +79,7 @@ export default function ActivityFeed({ drive, refreshKey }: Props) {
       const rows = await listActivity(drive, 50);
       setEntries(rows);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load activity");
+      setError(e instanceof Error ? e.message : t("loadFailed"));
     } finally {
       setLoading(false);
     }
@@ -82,8 +90,6 @@ export default function ActivityFeed({ drive, refreshKey }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drive, refreshKey]);
 
-  // Files-updated events on this drive are rare enough that a full
-  // refetch is fine.
   useEffect(() => {
     if (!filesUpdated) return;
     if (filesUpdated.data?.drive !== drive) return;
@@ -98,14 +104,14 @@ export default function ActivityFeed({ drive, refreshKey }: Props) {
         data-testid="activity-loading"
       >
         <Loader2 size={14} className="animate-spin" />
-        Loading recent activity...
+        {t("loading")}
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">
+      <div className="rounded-2xl bg-danger/10 px-3 py-2 text-sm text-danger">
         {error}
       </div>
     );
@@ -114,36 +120,36 @@ export default function ActivityFeed({ drive, refreshKey }: Props) {
   if (entries.length === 0) {
     return (
       <div
-        className="rounded-lg border border-dashed border-border-primary px-4 py-6 text-center text-sm text-text-muted"
+        className="rounded-xl border border-dashed border-bg-border px-4 py-8 text-center text-sm text-text-muted"
         data-testid="activity-empty"
       >
-        No imports on this drive yet.
+        {t("empty")}
       </div>
     );
   }
 
-  const groups = groupByDay(entries);
+  const groups = groupByDay(entries, t);
 
   return (
-    <div data-testid="activity-feed" className="space-y-4">
+    <div data-testid="activity-feed" className="space-y-5">
       {groups.map(({ day, items }) => (
         <section key={day}>
-          <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-text-muted">
+          <h3 className="mb-2 text-[11px] font-semibold uppercase text-text-muted">
             {day}
           </h3>
-          <ul className="divide-y divide-border-primary rounded-lg border border-border-primary bg-bg-card">
+          <ul className="divide-y divide-bg-border rounded-xl border border-bg-border bg-bg-card">
             {items.map((e) => (
               <li
                 key={e.file_id}
-                className="flex items-center gap-3 px-3 py-2"
+                className="flex items-center gap-3 px-4 py-2.5"
                 data-testid={`activity-row-${e.file_id}`}
               >
                 <button
                   type="button"
                   onClick={() => router.push(`/files/${e.file_id}`)}
-                  className="flex flex-1 items-center gap-3 text-left"
+                  className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left"
                 >
-                  <div className="size-12 shrink-0 overflow-hidden rounded bg-bg-hover">
+                  <div className="size-12 shrink-0 overflow-hidden rounded-lg bg-bg-elevated">
                     {e.thumbnail_path && (
                       <img
                         src={`/api/files/${e.file_id}/thumbnail`}
@@ -157,7 +163,7 @@ export default function ActivityFeed({ drive, refreshKey }: Props) {
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-medium text-text-primary">
-                      {e.filename}
+                      {trimLoftExt(e.filename)}
                     </div>
                     <div className="mt-0.5 flex items-center gap-1.5 truncate text-xs text-text-muted">
                       <SourceBadge entry={e} />
@@ -180,23 +186,24 @@ export default function ActivityFeed({ drive, refreshKey }: Props) {
 }
 
 function SourceBadge({ entry }: { entry: ActivityEntry }) {
+  const t = useTranslations("mediaImport.activity.source");
   if (entry.source === "subscription") {
     return (
       <span
-        className="inline-flex items-center gap-1 rounded bg-accent-cta/10 px-1.5 py-0.5 text-[10px] font-medium text-accent-cta"
+        className="inline-flex items-center gap-1 rounded-full bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent"
         data-testid="source-badge-subscription"
       >
         <Rss size={10} />
-        {entry.subscription_title || "Subscription"}
+        {entry.subscription_title || t("subscription")}
       </span>
     );
   }
   return (
     <span
-      className="inline-flex items-center rounded bg-bg-hover px-1.5 py-0.5 text-[10px] font-medium text-text-muted"
+      className="inline-flex items-center rounded-full bg-bg-elevated px-2 py-0.5 text-[10px] font-medium text-text-muted"
       data-testid="source-badge-single"
     >
-      Single import
+      {t("single")}
     </span>
   );
 }

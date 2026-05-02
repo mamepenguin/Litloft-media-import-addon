@@ -151,6 +151,13 @@ export interface SubscriptionVideo {
   file_id: string | null;
   first_seen_at: string;
   last_attempted_at: string | null;
+  // Display metadata (Phase 5). Server-side JOIN on files +
+  // loft_metadata; nullable for items where the .loft was never
+  // produced (e.g. permanent failures before allocation).
+  title: string | null;
+  thumbnail_path: string | null;
+  channel: string | null;
+  published_at: string | null;
 }
 
 export interface SubscriptionEnqueueResult {

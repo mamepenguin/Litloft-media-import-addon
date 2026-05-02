@@ -481,6 +481,80 @@ class TestListVideos:
         assert len(body) == 2
         statuses = {v["status"] for v in body}
         assert statuses == {"imported", "failed"}
+        # Display metadata fields are present (nullable when there is
+        # no linked .loft yet).
+        for v in body:
+            assert "title" in v
+            assert "thumbnail_path" in v
+            assert "channel" in v
+            assert "published_at" in v
+
+    def test_returns_loft_metadata_for_imported_video(
+        self, client, media_import_db, fake_provider: _FakeProvider
+    ) -> None:
+        """When a row has file_id set, JOINing files+loft_metadata yields
+        the human-readable title and thumbnail path so the UI does not
+        have to expose the raw item_id."""
+        create = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
+        )
+        sub_id = create.json()["id"]
+
+        db = media_import_db()
+        try:
+            from app.models import File as FileModel
+
+            db.add(
+                FileModel(
+                    id="f1",
+                    filename="My Video.loft",
+                    title="My Video",
+                    drive="d",
+                    folder_path="",
+                    file_path="/d/My Video.loft",
+                    file_size=0,
+                    file_type="other",
+                    mime_type="application/vnd.litloft.loft+json",
+                    thumbnail_path="/thumbs/f1.jpg",
+                )
+            )
+            db.flush()
+            db.execute(
+                text(
+                    "INSERT INTO loft_metadata "
+                    "(file_id, provider, provider_item_id, url, "
+                    " channel, published_at, has_captions, "
+                    " captions_downloaded) "
+                    "VALUES ('f1', 'fakeyt', 'v1', 'https://fake/v/v1', "
+                    " 'My Channel', '2026-04-01', 1, 1)"
+                )
+            )
+            db.execute(
+                text(
+                    "INSERT INTO subscription_videos "
+                    "(subscription_id, item_id, status, file_id, "
+                    " first_seen_at) "
+                    "VALUES (:sid, 'v1', 'imported', 'f1', "
+                    " '2026-05-01T00:00:00')"
+                ),
+                {"sid": sub_id},
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        res = client.get(
+            f"/api/addons/media_import/subscriptions/{sub_id}/videos"
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert len(body) == 1
+        v = body[0]
+        assert v["title"] == "My Video"
+        assert v["thumbnail_path"] == "/thumbs/f1.jpg"
+        assert v["channel"] == "My Channel"
+        assert v["published_at"] == "2026-04-01"
 
 
 # ---- drive auth ---------------------------------------------------

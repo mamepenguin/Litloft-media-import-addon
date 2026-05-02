@@ -102,8 +102,8 @@ describe("SubscriptionsDashboard", () => {
 
     render(<SubscriptionsDashboard drive="d" refreshKey={0} />);
     await waitFor(() => {
-      expect(screen.getByTestId("dashboard-summary")).toHaveTextContent("1 subscription");
-      expect(screen.getByTestId("dashboard-summary")).toHaveTextContent("12 imported");
+      expect(screen.getByTestId("dashboard-summary")).toHaveTextContent("1 件の購読");
+      expect(screen.getByTestId("dashboard-summary")).toHaveTextContent("12 件取り込み済み");
       expect(screen.getByTestId("summary-attention")).toBeInTheDocument();
     });
   });
@@ -167,7 +167,19 @@ describe("SubscriptionsDashboard", () => {
       total: 1, attention: 1,
     }));
     mockListVideos.mockResolvedValue([
-      { subscription_id: 1, item_id: "vid", status: "failed", error_kind: "rate_limited", file_id: null, first_seen_at: "2026-05-01T00:00:00", last_attempted_at: null },
+      {
+        subscription_id: 1,
+        item_id: "vid",
+        status: "failed",
+        error_kind: "rate_limited",
+        file_id: null,
+        first_seen_at: "2026-05-01T00:00:00",
+        last_attempted_at: null,
+        title: null,
+        thumbnail_path: null,
+        channel: null,
+        published_at: null,
+      },
     ]);
 
     render(<SubscriptionsDashboard drive="d" refreshKey={0} />);
@@ -180,7 +192,7 @@ describe("SubscriptionsDashboard", () => {
     await waitFor(() => {
       // Filter chip "attention" should now be the active one.
       const chip = screen.getByTestId("filter-attention");
-      expect(chip.className).toContain("border-accent-cta");
+      expect(chip.className).toContain("border-accent");
     });
   });
 });

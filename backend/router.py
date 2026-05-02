@@ -612,17 +612,59 @@ async def list_subscription_videos(
     try:
         rows = db.execute(
             text(
-                "SELECT subscription_id, item_id, status, error_kind, "
-                " file_id, first_seen_at, last_attempted_at "
-                "FROM subscription_videos "
-                "WHERE subscription_id = :sid "
-                "ORDER BY first_seen_at DESC"
+                "SELECT sv.subscription_id, sv.item_id, sv.status, "
+                " sv.error_kind, sv.file_id, sv.first_seen_at, "
+                " sv.last_attempted_at, "
+                " f.filename AS filename, "
+                " f.thumbnail_path AS thumbnail_path, "
+                " m.channel AS channel, "
+                " m.published_at AS published_at "
+                "FROM subscription_videos sv "
+                "LEFT JOIN subscriptions s ON s.id = sv.subscription_id "
+                "LEFT JOIN files f "
+                "  ON f.id = sv.file_id "
+                "  AND f.deleted_at IS NULL "
+                "  AND f.missing_since IS NULL "
+                "LEFT JOIN loft_metadata m "
+                "  ON m.provider = s.provider "
+                "  AND m.provider_item_id = sv.item_id "
+                "WHERE sv.subscription_id = :sid "
+                "ORDER BY sv.first_seen_at DESC"
             ),
             {"sid": subscription_id},
         ).mappings().all()
     finally:
         db.close()
-    return [SubscriptionVideoResponse(**dict(r)) for r in rows]
+    return [
+        SubscriptionVideoResponse(
+            subscription_id=r["subscription_id"],
+            item_id=r["item_id"],
+            status=r["status"],
+            error_kind=r["error_kind"],
+            file_id=r["file_id"],
+            first_seen_at=r["first_seen_at"],
+            last_attempted_at=r["last_attempted_at"],
+            title=_title_from_filename(r.get("filename")),
+            thumbnail_path=r.get("thumbnail_path"),
+            channel=r.get("channel"),
+            published_at=r.get("published_at"),
+        )
+        for r in rows
+    ]
+
+
+def _title_from_filename(filename: str | None) -> str | None:
+    """Strip the trailing ``.loft`` extension for display.
+
+    .loft files use ``<sanitized_title>.loft`` as canonical naming
+    (see service.py allocator). The bare title is more readable than
+    the raw filename in the UI item list.
+    """
+    if not filename:
+        return None
+    if filename.endswith(".loft"):
+        return filename[: -len(".loft")]
+    return filename
 
 
 @router.post(
