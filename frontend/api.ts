@@ -95,6 +95,52 @@ export interface Subscription {
   // Derived from SubscriptionWorker.running_ids on the server. True
   // while a sync job for this subscription is currently executing.
   running: boolean;
+  // Phase 4 additions; nullable on Phase 2/3 installs that haven't
+  // backfilled metadata yet.
+  avatar_url: string | null;
+  display_title: string | null;
+}
+
+export interface SubscriptionPatch {
+  is_enabled?: boolean;
+  cooldown_minutes?: number;
+  include_no_transcript?: boolean;
+  folder_path?: string;
+  display_title?: string;
+}
+
+export interface SubscriptionSummary {
+  total: number;
+  paused: number;
+  syncing: number;
+  healthy: number;
+  attention: number;
+  imported_count: number;
+  failed_count: number;
+}
+
+export interface SubscriptionRefreshMetadataResult {
+  updated: boolean;
+  avatar_url: string | null;
+  display_title: string | null;
+}
+
+export interface ActivityEntry {
+  file_id: string;
+  filename: string;
+  thumbnail_path: string | null;
+  channel: string | null;
+  published_at: string | null;
+  created_at: string;
+  source: "single" | "subscription";
+  subscription_id: number | null;
+  subscription_title: string | null;
+}
+
+export type ConflictAction = "skip" | "rename" | "overwrite";
+
+export interface ResolveConflictResult {
+  status: "dismissed" | "requeued";
 }
 
 export interface SubscriptionVideo {
@@ -226,4 +272,79 @@ export async function retrySubscriptionVideo(
     },
   );
   return _json<SubscriptionEnqueueResult>(res);
+}
+
+// ---- Phase 4 additions: PATCH / summary / refresh / activity / conflict ----
+
+export async function patchSubscription(
+  drive: string,
+  id: number,
+  patch: SubscriptionPatch,
+): Promise<Subscription> {
+  const res = await fetch(`${BASE}/subscriptions/${id}`, {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", ...driveHeaders(drive) },
+    body: JSON.stringify(patch),
+  });
+  return _json<Subscription>(res);
+}
+
+export async function getSubscriptionSummary(
+  drive: string,
+): Promise<SubscriptionSummary> {
+  const res = await fetch(
+    `${BASE}/subscriptions/summary?drive=${encodeURIComponent(drive)}`,
+    { credentials: "include", headers: driveHeaders(drive) },
+  );
+  return _json<SubscriptionSummary>(res);
+}
+
+export async function refreshSubscriptionMetadata(
+  drive: string,
+  id: number,
+): Promise<SubscriptionRefreshMetadataResult> {
+  const res = await fetch(
+    `${BASE}/subscriptions/${id}/refresh-metadata`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: driveHeaders(drive),
+    },
+  );
+  return _json<SubscriptionRefreshMetadataResult>(res);
+}
+
+export function subscriptionAvatarUrl(id: number): string {
+  // Endpoint planned for D-3; here so callers can pre-bind the URL.
+  return `${BASE}/subscriptions/${id}/avatar`;
+}
+
+export async function listActivity(
+  drive: string,
+  limit = 50,
+): Promise<ActivityEntry[]> {
+  const res = await fetch(
+    `${BASE}/activity?drive=${encodeURIComponent(drive)}&limit=${limit}`,
+    { credentials: "include", headers: driveHeaders(drive) },
+  );
+  return _json<ActivityEntry[]>(res);
+}
+
+export async function resolveConflict(
+  drive: string,
+  id: number,
+  itemId: string,
+  action: ConflictAction,
+): Promise<ResolveConflictResult> {
+  const res = await fetch(
+    `${BASE}/subscriptions/${id}/videos/${encodeURIComponent(itemId)}/resolve-conflict`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", ...driveHeaders(drive) },
+      body: JSON.stringify({ action }),
+    },
+  );
+  return _json<ResolveConflictResult>(res);
 }
