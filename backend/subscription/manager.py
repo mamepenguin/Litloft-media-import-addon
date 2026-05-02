@@ -17,6 +17,10 @@ that came in via either flow ends up in the same DB shape. Captions are
 stored next to the .loft; that location is what
 ``LoftManager._retry_failed_captions`` already polls, so subscription
 items inherit the standard caption-recovery behavior for free.
+
+DB persistence lives in :mod:`subscription.db`. Manager methods stay
+as thin wrappers so existing tests that call ``mgr._set_cooldown_until``
+etc. keep working.
 """
 from __future__ import annotations
 
@@ -26,14 +30,11 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from sqlalchemy import text
-
 import app.config as config
-from app.database import SessionLocal
-from app.services.scanner import register_single_file
 from app.services.ws import broadcast_from_thread
 
 from ..service import _save_loft_thumbnail
+from . import db as subdb
 from .registry import (
     REF_KIND_CHANNEL,
     REF_KIND_VIDEO,
@@ -87,29 +88,6 @@ def _resolve_channel_id_via_yt_dlp(url: str) -> str | None:
 # ---- File path helpers --------------------------------------------
 
 
-def _parse_iso(value: str | None) -> datetime | None:
-    """Best-effort ``datetime.fromisoformat`` that returns None on failure."""
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value)
-    except ValueError:
-        return None
-
-
-def _cron_due(row: dict, now: datetime) -> bool:
-    """Pure predicate for cron eligibility, factored out for testability."""
-    cooldown_until = _parse_iso(row.get("cooldown_until"))
-    if cooldown_until is not None and cooldown_until > now:
-        return False
-    last_synced_at = _parse_iso(row.get("last_synced_at"))
-    if last_synced_at is None:
-        return True
-    cooldown_minutes = int(row.get("cooldown_minutes") or 0)
-    elapsed_seconds = (now - last_synced_at).total_seconds()
-    return elapsed_seconds >= cooldown_minutes * 60
-
-
 def _sanitize_filename(title: str) -> str:
     """Mirror service.py — kept local to avoid a cross-module import cycle."""
     import re
@@ -145,6 +123,11 @@ def _allocate_loft_path(
         candidate = target / f"{safe} ({counter}).loft"
         counter += 1
     return candidate
+
+
+def _save_vtt(loft_path: Path, vtt_text: str) -> None:
+    vtt_path = loft_path.with_suffix(".vtt")
+    vtt_path.write_text(vtt_text, encoding="utf-8")
 
 
 # ---- Manager ------------------------------------------------------
@@ -186,35 +169,15 @@ class SubscriptionManager:
         if ref.kind == REF_KIND_CHANNEL and not ref.ref.startswith("UC"):
             ref = self._canonicalize_channel(ref)
 
-        now = datetime.now(UTC).isoformat()
-        db = SessionLocal()
-        try:
-            result = db.execute(
-                text(
-                    "INSERT INTO subscriptions "
-                    "(provider, source_kind, source_ref, drive, folder_path, "
-                    " is_enabled, cooldown_minutes, include_no_transcript, "
-                    " created_at) "
-                    "VALUES (:provider, :kind, :ref, :drive, :folder, "
-                    " 1, :cd, :inc, :created_at) "
-                    "RETURNING id"
-                ),
-                {
-                    "provider": provider.name,
-                    "kind": ref.kind,
-                    "ref": ref.ref,
-                    "drive": drive,
-                    "folder": folder_path,
-                    "cd": cooldown_minutes,
-                    "inc": int(include_no_transcript),
-                    "created_at": now,
-                },
-            )
-            sub_id = result.scalar_one()
-            db.commit()
-            return int(sub_id)
-        finally:
-            db.close()
+        return subdb.insert_subscription(
+            provider=provider.name,
+            source_kind=ref.kind,
+            source_ref=ref.ref,
+            drive=drive,
+            folder_path=folder_path,
+            cooldown_minutes=cooldown_minutes,
+            include_no_transcript=include_no_transcript,
+        )
 
     def _canonicalize_channel(
         self, ref: SubscriptionRef
@@ -235,15 +198,7 @@ class SubscriptionManager:
     # ---- delete ---------------------------------------------------
 
     def delete(self, subscription_id: int) -> None:
-        db = SessionLocal()
-        try:
-            db.execute(
-                text("DELETE FROM subscriptions WHERE id = :id"),
-                {"id": subscription_id},
-            )
-            db.commit()
-        finally:
-            db.close()
+        subdb.delete_subscription(subscription_id)
 
     # ---- sync (single entry, called from worker) -----------------
 
@@ -346,22 +301,12 @@ class SubscriptionManager:
         self, subscription_id, sub, provider, ref, item_id
     ) -> dict:
         # Confirm the row exists before any network work.
-        db = SessionLocal()
-        try:
-            existing = db.execute(
-                text(
-                    "SELECT first_seen_at FROM subscription_videos "
-                    "WHERE subscription_id = :sid AND item_id = :iid"
-                ),
-                {"sid": subscription_id, "iid": item_id},
-            ).first()
-        finally:
-            db.close()
+        existing = subdb.load_video_row(subscription_id, item_id)
         if existing is None:
             raise SubscriptionNotFound(
                 f"video not found: ({subscription_id}, {item_id})"
             )
-        first_seen = existing[0]
+        first_seen = existing["first_seen_at"]
 
         try:
             outcome = self._import_one_item(
@@ -395,38 +340,16 @@ class SubscriptionManager:
             "total_new": 1,
         }
 
-    # ---- DB helpers ----------------------------------------------
+    # ---- DB helpers (thin delegations to subscription.db) --------
 
     def _load_subscription(self, subscription_id: int) -> dict:
-        db = SessionLocal()
-        try:
-            row = db.execute(
-                text(
-                    "SELECT provider, source_kind, source_ref, drive, "
-                    " folder_path, include_no_transcript "
-                    "FROM subscriptions WHERE id = :id"
-                ),
-                {"id": subscription_id},
-            ).mappings().first()
-        finally:
-            db.close()
+        row = subdb.load_subscription(subscription_id)
         if row is None:
             raise SubscriptionNotFound(subscription_id)
-        return dict(row)
+        return row
 
     def _load_seen_item_ids(self, subscription_id: int) -> set[str]:
-        db = SessionLocal()
-        try:
-            rows = db.execute(
-                text(
-                    "SELECT item_id FROM subscription_videos "
-                    "WHERE subscription_id = :id"
-                ),
-                {"id": subscription_id},
-            ).fetchall()
-        finally:
-            db.close()
-        return {r[0] for r in rows}
+        return subdb.load_seen_item_ids(subscription_id)
 
     def _record_video_safe(
         self,
@@ -438,7 +361,7 @@ class SubscriptionManager:
         first_seen: str,
         error_kind: str | None = None,
     ) -> None:
-        """``_record_video`` wrapper that swallows write errors.
+        """``upsert_video_row`` wrapper that swallows write errors.
 
         Called from the per-item loop after the .loft / DB rows are
         already committed. A subscription_videos write failure here
@@ -448,7 +371,7 @@ class SubscriptionManager:
         loudly instead of failing the batch.
         """
         try:
-            self._record_video(
+            subdb.upsert_video_row(
                 subscription_id, item_id,
                 status=status, file_id=file_id,
                 first_seen=first_seen, error_kind=error_kind,
@@ -471,51 +394,14 @@ class SubscriptionManager:
         first_seen: str,
         error_kind: str | None = None,
     ) -> None:
-        now = datetime.now(UTC).isoformat()
-        db = SessionLocal()
-        try:
-            db.execute(
-                text(
-                    "INSERT INTO subscription_videos "
-                    "(subscription_id, item_id, status, error_kind, "
-                    " file_id, first_seen_at, last_attempted_at) "
-                    "VALUES (:sid, :iid, :status, :err, :fid, :first, :last) "
-                    "ON CONFLICT(subscription_id, item_id) DO UPDATE SET "
-                    " status = excluded.status, "
-                    " error_kind = excluded.error_kind, "
-                    " file_id = excluded.file_id, "
-                    " last_attempted_at = excluded.last_attempted_at"
-                ),
-                {
-                    "sid": subscription_id,
-                    "iid": item_id,
-                    "status": status,
-                    "err": error_kind,
-                    "fid": file_id,
-                    "first": first_seen,
-                    "last": now,
-                },
-            )
-            db.commit()
-        finally:
-            db.close()
+        subdb.upsert_video_row(
+            subscription_id, item_id,
+            status=status, file_id=file_id,
+            first_seen=first_seen, error_kind=error_kind,
+        )
 
     def _touch_last_synced_at(self, subscription_id: int) -> None:
-        db = SessionLocal()
-        try:
-            db.execute(
-                text(
-                    "UPDATE subscriptions SET last_synced_at = :ts "
-                    "WHERE id = :id"
-                ),
-                {
-                    "ts": datetime.now(UTC).isoformat(),
-                    "id": subscription_id,
-                },
-            )
-            db.commit()
-        finally:
-            db.close()
+        subdb.touch_last_synced_at(subscription_id)
 
     # ---- Cron eligibility & backoff ------------------------------
 
@@ -527,67 +413,16 @@ class SubscriptionManager:
         - ``last_synced_at`` is NULL, or
           ``now - last_synced_at >= cooldown_minutes``
         - ``cooldown_until`` is NULL or already in the past
-
-        Filtering happens in Python rather than SQL because the timestamp
-        column is stored as ISO-8601 with timezone offset (
-        ``datetime.now(UTC).isoformat()``) and the SQLite ``datetime()``
-        modifier output drops the offset, making string comparison
-        unreliable. Subscription cardinality is small, so a full scan is
-        cheaper than the workaround.
         """
-        db = SessionLocal()
-        try:
-            rows = db.execute(
-                text(
-                    "SELECT id, cooldown_minutes, last_synced_at, "
-                    " cooldown_until "
-                    "FROM subscriptions "
-                    "WHERE is_enabled = 1 "
-                    "ORDER BY id"
-                )
-            ).mappings().all()
-        finally:
-            db.close()
-
-        eligible: list[int] = []
-        for row in rows:
-            if not _cron_due(row, now):
-                continue
-            eligible.append(row["id"])
-        return eligible
+        return subdb.load_eligible_cron_rows(now, subdb.cron_due)
 
     def _set_cooldown_until(
         self, subscription_id: int, until: datetime
     ) -> None:
-        db = SessionLocal()
-        try:
-            db.execute(
-                text(
-                    "UPDATE subscriptions SET cooldown_until = :u "
-                    "WHERE id = :id"
-                ),
-                {
-                    "u": until.astimezone(UTC).isoformat(),
-                    "id": subscription_id,
-                },
-            )
-            db.commit()
-        finally:
-            db.close()
+        subdb.set_cooldown_until(subscription_id, until)
 
     def _clear_cooldown_until(self, subscription_id: int) -> None:
-        db = SessionLocal()
-        try:
-            db.execute(
-                text(
-                    "UPDATE subscriptions SET cooldown_until = NULL "
-                    "WHERE id = :id"
-                ),
-                {"id": subscription_id},
-            )
-            db.commit()
-        finally:
-            db.close()
+        subdb.clear_cooldown_until(subscription_id)
 
     def _next_backoff_minutes(self, subscription_id: int) -> int:
         """Pick the next ladder rung from existing timestamps.
@@ -599,22 +434,10 @@ class SubscriptionManager:
         the last entry. With no prior cooldown recorded the first rung
         applies.
         """
-        db = SessionLocal()
-        try:
-            row = db.execute(
-                text(
-                    "SELECT last_synced_at, cooldown_until "
-                    "FROM subscriptions WHERE id = :id"
-                ),
-                {"id": subscription_id},
-            ).mappings().first()
-        finally:
-            db.close()
-        if row is None:
+        state = subdb.load_cooldown_state(subscription_id)
+        if state is None:
             raise SubscriptionNotFound(subscription_id)
-
-        cu = _parse_iso(row.get("cooldown_until"))
-        ls = _parse_iso(row.get("last_synced_at"))
+        ls, cu = state
         if cu is None or ls is None:
             return self.BACKOFF_LADDER_MINUTES[0]
 
@@ -636,7 +459,9 @@ class SubscriptionManager:
         folder_path: str,
         include_no_transcript: bool,
     ) -> "_ImportOutcome":
-        existing = _lookup_dedup(drive, folder_path, provider.name, item_id)
+        existing = subdb.lookup_dedup(
+            drive, folder_path, provider.name, item_id
+        )
         if existing is not None:
             return _ImportOutcome(
                 file_id=existing, reused=True, transcript_error=None
@@ -651,7 +476,7 @@ class SubscriptionManager:
         )
 
         try:
-            file_id = _register_loft_in_db(drive, loft_path, provider, meta)
+            file_id = subdb.register_loft(drive, loft_path, provider.name, meta)
         except Exception:
             if loft_path.exists():
                 loft_path.unlink()
@@ -678,10 +503,10 @@ class SubscriptionManager:
             )
             if tr.vtt_text is not None:
                 _save_vtt(loft_path, tr.vtt_text)
-                _update_caption_state(file_id, ok=True, error_kind=None)
+                subdb.update_caption_state(file_id, ok=True, error_kind=None)
             else:
                 transcript_error = tr.error_kind
-                _update_caption_state(
+                subdb.update_caption_state(
                     file_id, ok=False, error_kind=transcript_error
                 )
 
@@ -711,124 +536,6 @@ class _ImportOutcome:
         self.file_id = file_id
         self.reused = reused
         self.transcript_error = transcript_error
-
-
-# ---- DB helpers (module-level for clarity) -----------------------
-
-
-def _lookup_dedup(
-    drive: str, folder_path: str, provider_name: str, item_id: str
-) -> str | None:
-    """Return file_id of an existing .loft for the same dedup tuple, or None.
-
-    Per hako ``FSrqtHVrv9B8NW3n2vb22``, dedup key is
-    (drive, folder_path, provider, provider_item_id). The query joins
-    loft_metadata with files to honor the drive + folder filter and
-    skips soft-deleted / missing files (those should not be reused —
-    the user removed them on purpose).
-    """
-    db = SessionLocal()
-    try:
-        row = db.execute(
-            text(
-                "SELECT m.file_id FROM loft_metadata m "
-                "JOIN files f ON f.id = m.file_id "
-                "WHERE m.provider = :provider "
-                "  AND m.provider_item_id = :iid "
-                "  AND f.drive = :drive "
-                "  AND f.folder_path = :folder "
-                "  AND f.deleted_at IS NULL "
-                "  AND f.missing_since IS NULL "
-                "LIMIT 1"
-            ),
-            {
-                "provider": provider_name,
-                "iid": item_id,
-                "drive": drive,
-                "folder": folder_path,
-            },
-        ).first()
-    finally:
-        db.close()
-    return row[0] if row else None
-
-
-_ALLOWED_LOFT_URL_SCHEMES: tuple[str, ...] = ("http://", "https://")
-
-
-def _register_loft_in_db(
-    drive: str,
-    loft_path: Path,
-    provider: SubscriptionProvider,
-    meta,
-) -> str:
-    """INSERT files + loft_metadata rows for the freshly written .loft."""
-    # The ``SubscriptionProvider`` Protocol does not enforce that
-    # ``canonical_url`` is HTTP(S). YouTubeProvider always builds
-    # ``https://www.youtube.com/...``, but a future provider could
-    # return ``javascript:...`` and downstream `<a href={url}>` would
-    # then fire on click. Reject at the persistence boundary so any
-    # bad data in DB is detectable.
-    if not meta.canonical_url.startswith(_ALLOWED_LOFT_URL_SCHEMES):
-        raise ValueError(
-            f"refusing to persist non-HTTP canonical_url: {meta.canonical_url!r}"
-        )
-    now_iso = datetime.now(UTC).isoformat()
-    db = SessionLocal()
-    try:
-        file_id = register_single_file(db, drive, loft_path)
-        db.execute(
-            text(
-                "INSERT INTO loft_metadata "
-                "(file_id, provider, provider_item_id, url, description, "
-                " channel, published_at, language, has_captions, "
-                " captions_downloaded, fetched_at) "
-                "VALUES (:fid, :provider, :iid, :url, :desc, :channel, "
-                " :pub, :lang, :hc, 0, :fetched)"
-            ),
-            {
-                "fid": file_id,
-                "provider": provider.name,
-                "iid": meta.item_id,
-                "url": meta.canonical_url,
-                "desc": (meta.description or "")[:2000],
-                "channel": meta.channel,
-                "pub": meta.published_at,
-                "lang": meta.language,
-                "hc": int(bool(meta.has_captions)),
-                "fetched": now_iso,
-            },
-        )
-        db.commit()
-        return file_id
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        db.close()
-
-
-def _save_vtt(loft_path: Path, vtt_text: str) -> None:
-    vtt_path = loft_path.with_suffix(".vtt")
-    vtt_path.write_text(vtt_text, encoding="utf-8")
-
-
-def _update_caption_state(
-    file_id: str, *, ok: bool, error_kind: str | None
-) -> None:
-    db = SessionLocal()
-    try:
-        db.execute(
-            text(
-                "UPDATE loft_metadata "
-                "SET captions_downloaded = :ok, caption_error_kind = :kind "
-                "WHERE file_id = :fid"
-            ),
-            {"ok": int(ok), "kind": None if ok else error_kind, "fid": file_id},
-        )
-        db.commit()
-    finally:
-        db.close()
 
 
 # Module-level singleton — router imports this for use in route handlers.

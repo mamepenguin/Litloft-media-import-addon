@@ -43,12 +43,13 @@ def media_import_db(tmp_path, monkeypatch):
     # Patch each call site so per-test isolation actually applies.
     import addons.media_import.service as service
     import addons.media_import.router as router
+    import addons.media_import.subscription.db as subdb
     import addons.media_import.subscription.manager as manager_mod
     import addons.media_import.subscription.worker as worker_mod
 
     monkeypatch.setattr(service, "SessionLocal", TestSession)
     monkeypatch.setattr(router, "SessionLocal", TestSession)
-    monkeypatch.setattr(manager_mod, "SessionLocal", TestSession)
+    monkeypatch.setattr(subdb, "SessionLocal", TestSession)
 
     # Materialize loft_metadata via the addon's own migration helper so
     # the schema under test is the production schema.
