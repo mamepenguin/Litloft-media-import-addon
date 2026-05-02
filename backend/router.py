@@ -32,9 +32,12 @@ from app.auth import check_drive_access, get_unlocked_groups
 from app.database import SessionLocal
 
 from .schemas import (
+    ActivityEntry,
     LoftCreateRequest,
     LoftCreateResponse,
     LoftMetadataResponse,
+    ResolveConflictRequest,
+    ResolveConflictResponse,
     SubscriptionCreateRequest,
     SubscriptionEnqueueResponse,
     SubscriptionPatchRequest,
@@ -633,3 +636,92 @@ async def retry_subscription_video(
     return SubscriptionEnqueueResponse(
         status="queued" if queued else "already_queued"
     )
+
+
+# ---- Phase C-2: Activity feed + path-conflict resolution -----------
+
+
+@router.get("/activity", response_model=list[ActivityEntry])
+async def list_activity(
+    drive: str = Query(..., description="Drive name (required)"),
+    limit: int = Query(50, ge=1, le=200),
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
+) -> list[ActivityEntry]:
+    """Unified import-activity feed for the dashboard's bottom section.
+
+    One JOIN, drive-scoped, missing/trash files excluded — see
+    ``subdb.list_activity`` for the SQL. ``source`` is derived from
+    the LEFT JOIN to subscription_videos: if the row is present, the
+    file came in via a subscription, otherwise via the single /link
+    flow.
+    """
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    if drive != scoped:
+        raise HTTPException(
+            status_code=400,
+            detail="drive query does not match X-Lit-Drive scope",
+        )
+    rows = subdb.list_activity(drive, limit)
+    out: list[ActivityEntry] = []
+    for r in rows:
+        sub_id = r.get("subscription_id")
+        title = (
+            r.get("subscription_display_title")
+            or r.get("subscription_source_ref")
+            if sub_id is not None
+            else None
+        )
+        out.append(
+            ActivityEntry(
+                file_id=r["file_id"],
+                filename=r["filename"],
+                thumbnail_path=r.get("thumbnail_path"),
+                channel=r.get("channel"),
+                published_at=r.get("published_at"),
+                created_at=str(r["created_at"]),
+                source="subscription" if sub_id is not None else "single",
+                subscription_id=sub_id,
+                subscription_title=title,
+            )
+        )
+    return out
+
+
+@router.post(
+    "/subscriptions/{subscription_id}/videos/{item_id}/resolve-conflict",
+    response_model=ResolveConflictResponse,
+)
+async def resolve_video_conflict(
+    subscription_id: int,
+    item_id: str,
+    request: ResolveConflictRequest,
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
+) -> ResolveConflictResponse:
+    """User-issued resolution for a path_conflict row.
+
+    Three actions: ``skip`` marks the row dismissed (retry button
+    suppressed); ``rename`` and ``overwrite`` clear the error and
+    re-enqueue the item. Today the manager's ``_allocate_loft_path``
+    auto-renames so both retry actions converge on the same outcome
+    — the distinction is preserved for forward compatibility with a
+    future strict-collision mode.
+    """
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    _load_owned_subscription(subscription_id, scoped, unlocked_groups)
+
+    if request.action == "skip":
+        ok = subdb.mark_video_dismissed(subscription_id, item_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="video not found")
+        return ResolveConflictResponse(status="dismissed")
+
+    # rename / overwrite both clear error_kind and re-queue.
+    ok = subdb.reset_video_for_retry(subscription_id, item_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="video not found")
+    await subscription_worker.enqueue_sync(
+        subscription_id, kind="retry", item_id=item_id
+    )
+    return ResolveConflictResponse(status="requeued")

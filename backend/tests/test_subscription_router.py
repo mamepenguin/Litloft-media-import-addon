@@ -1038,3 +1038,347 @@ class TestRefreshMetadata:
             "/api/addons/media_import/subscriptions/9999/refresh-metadata"
         )
         assert res.status_code == 404
+
+
+# ---- Phase C-2: Activity / resolve-conflict ------------------------
+
+
+def _seed_loft_file(
+    db, *, file_id: str, drive: str, filename: str,
+    created_at: str, provider: str = "fakeyt",
+    provider_item_id: str | None = None,
+    channel: str | None = None,
+) -> None:
+    """Insert a files row + matching loft_metadata row for activity tests."""
+    db.execute(
+        text(
+            "INSERT INTO files "
+            "(id, filename, title, description, drive, folder_path, "
+            " file_path, file_size, file_type, mime_type, "
+            " thumbnail_path, created_at, updated_at) "
+            "VALUES (:id, :name, :name, '', :drive, '', "
+            " :path, 0, 'other', 'application/x-loft', "
+            " :thumb, :ts, :ts)"
+        ),
+        {
+            "id": file_id, "name": filename, "drive": drive,
+            "path": f"/tmp/{filename}",
+            "thumb": f"thumbs/{file_id}.jpg",
+            "ts": created_at,
+        },
+    )
+    db.execute(
+        text(
+            "INSERT INTO loft_metadata "
+            "(file_id, provider, provider_item_id, url, channel, "
+            " has_captions, captions_downloaded) "
+            "VALUES (:fid, :prov, :iid, :url, :chan, 0, 0)"
+        ),
+        {
+            "fid": file_id, "prov": provider,
+            "iid": provider_item_id, "url": f"https://x/{file_id}",
+            "chan": channel,
+        },
+    )
+
+
+class TestActivity:
+    def test_returns_loft_files_in_created_at_desc(
+        self, client, media_import_db
+    ) -> None:
+        db = media_import_db()
+        try:
+            _seed_loft_file(
+                db, file_id="f1", drive="d", filename="A.loft",
+                created_at="2026-05-01T10:00:00",
+            )
+            _seed_loft_file(
+                db, file_id="f2", drive="d", filename="B.loft",
+                created_at="2026-05-02T10:00:00",
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        res = client.get("/api/addons/media_import/activity?drive=d")
+        assert res.status_code == 200
+        body = res.json()
+        assert [e["file_id"] for e in body] == ["f2", "f1"]
+
+    def test_subscription_imports_carry_subscription_metadata(
+        self, client, media_import_db
+    ) -> None:
+        # Create a subscription with display_title set.
+        create = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
+        )
+        sub_id = create.json()["id"]
+
+        db = media_import_db()
+        try:
+            db.execute(
+                text(
+                    "UPDATE subscriptions SET display_title = 'My Channel' "
+                    "WHERE id = :id"
+                ),
+                {"id": sub_id},
+            )
+            _seed_loft_file(
+                db, file_id="f1", drive="d", filename="V.loft",
+                created_at="2026-05-01T10:00:00",
+                provider_item_id="vid_a",
+            )
+            db.execute(
+                text(
+                    "INSERT INTO subscription_videos "
+                    "(subscription_id, item_id, status, file_id, first_seen_at) "
+                    "VALUES (:sid, 'vid_a', 'imported', 'f1', "
+                    " '2026-05-01T10:00:00')"
+                ),
+                {"sid": sub_id},
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        body = client.get(
+            "/api/addons/media_import/activity?drive=d"
+        ).json()
+        entry = body[0]
+        assert entry["source"] == "subscription"
+        assert entry["subscription_id"] == sub_id
+        assert entry["subscription_title"] == "My Channel"
+
+    def test_single_imports_have_source_single(
+        self, client, media_import_db
+    ) -> None:
+        db = media_import_db()
+        try:
+            _seed_loft_file(
+                db, file_id="f1", drive="d", filename="S.loft",
+                created_at="2026-05-01T10:00:00",
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        body = client.get(
+            "/api/addons/media_import/activity?drive=d"
+        ).json()
+        assert body[0]["source"] == "single"
+        assert body[0]["subscription_id"] is None
+        assert body[0]["subscription_title"] is None
+
+    def test_drive_isolation(
+        self, client, media_import_db
+    ) -> None:
+        db = media_import_db()
+        try:
+            _seed_loft_file(
+                db, file_id="f1", drive="d", filename="A.loft",
+                created_at="2026-05-01T10:00:00",
+            )
+            _seed_loft_file(
+                db, file_id="f2", drive="other", filename="B.loft",
+                created_at="2026-05-02T10:00:00",
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        body = client.get(
+            "/api/addons/media_import/activity?drive=d"
+        ).json()
+        assert {e["file_id"] for e in body} == {"f1"}
+
+    def test_excludes_soft_deleted(
+        self, client, media_import_db
+    ) -> None:
+        db = media_import_db()
+        try:
+            _seed_loft_file(
+                db, file_id="f1", drive="d", filename="A.loft",
+                created_at="2026-05-01T10:00:00",
+            )
+            db.execute(
+                text(
+                    "UPDATE files SET deleted_at = '2026-05-02T00:00:00' "
+                    "WHERE id = 'f1'"
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        body = client.get(
+            "/api/addons/media_import/activity?drive=d"
+        ).json()
+        assert body == []
+
+    def test_limit_clamps(
+        self, client, media_import_db
+    ) -> None:
+        db = media_import_db()
+        try:
+            for i in range(5):
+                _seed_loft_file(
+                    db, file_id=f"f{i}", drive="d",
+                    filename=f"F{i}.loft",
+                    created_at=f"2026-05-{i+1:02d}T10:00:00",
+                )
+            db.commit()
+        finally:
+            db.close()
+
+        body = client.get(
+            "/api/addons/media_import/activity?drive=d&limit=2"
+        ).json()
+        assert len(body) == 2
+
+    def test_drive_query_required_to_match_scope(
+        self, client
+    ) -> None:
+        res = client.get("/api/addons/media_import/activity?drive=other")
+        assert res.status_code == 400
+
+
+class TestResolveConflict:
+    def _seed_conflict(
+        self, client, media_import_db
+    ) -> tuple[int, str]:
+        create = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
+        )
+        sub_id = create.json()["id"]
+
+        db = media_import_db()
+        try:
+            db.execute(
+                text(
+                    "INSERT INTO subscription_videos "
+                    "(subscription_id, item_id, status, error_kind, "
+                    " first_seen_at) "
+                    "VALUES (:sid, 'vid_a', 'failed', 'path_conflict', "
+                    " '2026-05-01T00:00:00')"
+                ),
+                {"sid": sub_id},
+            )
+            db.commit()
+        finally:
+            db.close()
+        return sub_id, "vid_a"
+
+    def test_skip_marks_dismissed(
+        self, client, media_import_db
+    ) -> None:
+        sub_id, item_id = self._seed_conflict(client, media_import_db)
+
+        res = client.post(
+            f"/api/addons/media_import/subscriptions/{sub_id}/"
+            f"videos/{item_id}/resolve-conflict",
+            json={"action": "skip"},
+        )
+        assert res.status_code == 200
+        assert res.json() == {"status": "dismissed"}
+
+        db = media_import_db()
+        try:
+            row = db.execute(
+                text(
+                    "SELECT error_kind FROM subscription_videos "
+                    "WHERE subscription_id = :sid AND item_id = :iid"
+                ),
+                {"sid": sub_id, "iid": item_id},
+            ).mappings().first()
+        finally:
+            db.close()
+        assert row["error_kind"] == "dismissed"
+
+    def test_rename_clears_error_and_requeues(
+        self, client, media_import_db, fake_provider: _FakeProvider
+    ) -> None:
+        sub_id, item_id = self._seed_conflict(client, media_import_db)
+        # Stage a successful import for the retry.
+        fake_provider.items = {
+            item_id: ItemMetadata(
+                item_id=item_id,
+                canonical_url=f"https://fake/v/{item_id}",
+                title="V One",
+                has_captions=False,
+            ),
+        }
+
+        res = client.post(
+            f"/api/addons/media_import/subscriptions/{sub_id}/"
+            f"videos/{item_id}/resolve-conflict",
+            json={"action": "rename"},
+        )
+        assert res.status_code == 200
+        assert res.json() == {"status": "requeued"}
+
+        _drain_worker()
+
+        db = media_import_db()
+        try:
+            row = db.execute(
+                text(
+                    "SELECT status, error_kind, file_id "
+                    "FROM subscription_videos "
+                    "WHERE subscription_id = :sid AND item_id = :iid"
+                ),
+                {"sid": sub_id, "iid": item_id},
+            ).mappings().first()
+        finally:
+            db.close()
+        assert row["status"] == "imported"
+        assert row["error_kind"] is None
+        assert row["file_id"] is not None
+
+    def test_overwrite_takes_same_path_as_rename(
+        self, client, media_import_db, fake_provider: _FakeProvider
+    ) -> None:
+        sub_id, item_id = self._seed_conflict(client, media_import_db)
+        fake_provider.items = {
+            item_id: ItemMetadata(
+                item_id=item_id,
+                canonical_url=f"https://fake/v/{item_id}",
+                title="V One",
+                has_captions=False,
+            ),
+        }
+
+        res = client.post(
+            f"/api/addons/media_import/subscriptions/{sub_id}/"
+            f"videos/{item_id}/resolve-conflict",
+            json={"action": "overwrite"},
+        )
+        assert res.status_code == 200
+        assert res.json() == {"status": "requeued"}
+
+    def test_invalid_action_rejected(
+        self, client, media_import_db
+    ) -> None:
+        sub_id, item_id = self._seed_conflict(client, media_import_db)
+
+        res = client.post(
+            f"/api/addons/media_import/subscriptions/{sub_id}/"
+            f"videos/{item_id}/resolve-conflict",
+            json={"action": "purge"},
+        )
+        assert res.status_code == 422
+
+    def test_unknown_video_returns_404(self, client) -> None:
+        create = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
+        )
+        sub_id = create.json()["id"]
+
+        res = client.post(
+            f"/api/addons/media_import/subscriptions/{sub_id}/"
+            f"videos/missing/resolve-conflict",
+            json={"action": "skip"},
+        )
+        assert res.status_code == 404

@@ -138,3 +138,50 @@ class SubscriptionResolveResponse(BaseModel):
     kind: str  # "video" / "channel" / "playlist" / "feed" / "unknown"
     provider: str | None = None
     ref: str | None = None
+
+
+# ---- Phase C-2: Activity / resolve-conflict ------------------------
+
+
+class ActivityEntry(BaseModel):
+    """One row in the unified import-activity feed.
+
+    Both single imports (POST /link) and subscription imports surface
+    here — the frontend uses ``source`` to render a badge instead of
+    splitting into two lists. Sourced from
+    ``files JOIN loft_metadata LEFT JOIN subscription_videos`` so the
+    timeline is naturally ordered by ``files.created_at``.
+    """
+
+    file_id: str
+    filename: str
+    thumbnail_path: str | None = None
+    channel: str | None = None
+    published_at: str | None = None
+    created_at: str
+    source: Literal["single", "subscription"]
+    subscription_id: int | None = None
+    subscription_title: str | None = None
+
+
+class ResolveConflictRequest(BaseModel):
+    """User-issued resolution for a path_conflict subscription_videos row.
+
+    Three actions:
+
+    - ``skip``: stop trying. Row's error_kind becomes ``'dismissed'`` so
+      the retry button is suppressed (user-issued ignore vs. provider
+      ``permanent`` failure).
+    - ``rename``: enqueue a fresh import attempt. The manager's
+      ``_allocate_loft_path`` auto-appends a ``(N)`` suffix on collision
+      so the new .loft lands under a unique name.
+    - ``overwrite``: same retry path. Distinguished today only for the
+      audit trail / future strict-conflict mode; auto-rename means both
+      reach the same outcome.
+    """
+
+    action: Literal["skip", "rename", "overwrite"]
+
+
+class ResolveConflictResponse(BaseModel):
+    status: Literal["dismissed", "requeued"]

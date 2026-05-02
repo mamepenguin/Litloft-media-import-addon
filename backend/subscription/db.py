@@ -230,6 +230,98 @@ def summary_for_drive(drive: str) -> dict:
     }
 
 
+def list_activity(drive: str, limit: int) -> list[dict]:
+    """Unified import-activity feed for a drive.
+
+    Joins ``files`` to ``loft_metadata`` (only loft files appear; the
+    addon's responsibility ends at .loft creation) and LEFT JOINs to
+    ``subscription_videos`` so single imports surface alongside
+    subscription imports. The optional join to ``subscriptions``
+    populates the ``subscription_title`` field for the UI badge.
+
+    Excludes soft-deleted / missing files because those are not the
+    user's "recent" — restoring brings them back into view via the
+    same query.
+    """
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            text(
+                "SELECT "
+                " f.id AS file_id, "
+                " f.filename AS filename, "
+                " f.thumbnail_path AS thumbnail_path, "
+                " f.created_at AS created_at, "
+                " m.channel AS channel, "
+                " m.published_at AS published_at, "
+                " sv.subscription_id AS subscription_id, "
+                " s.display_title AS subscription_display_title, "
+                " s.source_ref AS subscription_source_ref "
+                "FROM files f "
+                "JOIN loft_metadata m ON m.file_id = f.id "
+                "LEFT JOIN subscription_videos sv "
+                "  ON sv.file_id = f.id "
+                "LEFT JOIN subscriptions s "
+                "  ON s.id = sv.subscription_id "
+                "WHERE f.drive = :drive "
+                "  AND f.deleted_at IS NULL "
+                "  AND f.missing_since IS NULL "
+                "ORDER BY f.created_at DESC "
+                "LIMIT :limit"
+            ),
+            {"drive": drive, "limit": limit},
+        ).mappings().all()
+    finally:
+        db.close()
+    return [dict(r) for r in rows]
+
+
+def reset_video_for_retry(
+    subscription_id: int, item_id: str
+) -> bool:
+    """Clear ``error_kind`` so the row can re-enter the import flow.
+
+    Used by ``resolve-conflict?action in (rename, overwrite)``: after
+    the user acknowledges the conflict, we wipe the failure marker
+    and let the worker re-attempt. Returns False when the row does
+    not exist so the route can 404.
+    """
+    db = SessionLocal()
+    try:
+        result = db.execute(
+            text(
+                "UPDATE subscription_videos "
+                "SET error_kind = NULL, status = 'failed' "
+                "WHERE subscription_id = :sid AND item_id = :iid"
+            ),
+            {"sid": subscription_id, "iid": item_id},
+        )
+        db.commit()
+        return result.rowcount > 0
+    finally:
+        db.close()
+
+
+def mark_video_dismissed(
+    subscription_id: int, item_id: str
+) -> bool:
+    """Set ``error_kind='dismissed'`` so retry buttons disappear."""
+    db = SessionLocal()
+    try:
+        result = db.execute(
+            text(
+                "UPDATE subscription_videos "
+                "SET error_kind = 'dismissed', status = 'failed' "
+                "WHERE subscription_id = :sid AND item_id = :iid"
+            ),
+            {"sid": subscription_id, "iid": item_id},
+        )
+        db.commit()
+        return result.rowcount > 0
+    finally:
+        db.close()
+
+
 def update_source_metadata(
     subscription_id: int,
     *,
