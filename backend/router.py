@@ -22,8 +22,9 @@ On startup:
 """
 import asyncio
 import logging
+from urllib.parse import unquote
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import text
 
 import app.config as config
@@ -71,6 +72,43 @@ ADDON_META = {
 router = APIRouter(prefix="/api/addons/media_import", tags=["media_import"])
 
 
+def _scoped_drive(
+    x_lit_drive: str | None,
+    unlocked_groups: list[str],
+) -> str:
+    """Resolve and authorise the drive scope from the X-Lit-Drive header.
+
+    media_import is ``scope=drive``; addon_proxy enforces the header for
+    external addons but in-process addons bypass that path, so each
+    handler must validate the header itself. Returns the verified drive
+    name. 400 when the header is missing (malformed client), 404 when
+    the caller cannot see the drive (existence-hiding per
+    design-decisions.md).
+    """
+    if not x_lit_drive:
+        raise HTTPException(status_code=400, detail="Drive context required")
+    drive = unquote(x_lit_drive)
+    try:
+        config.get_drive_path(drive)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Drive not found")
+    check_drive_access(drive, unlocked_groups)
+    return drive
+
+
+def _require_body_drive_matches(scoped: str, body_drive: str) -> None:
+    """Reject requests whose body asserts a different drive than the
+    URL-scoped one. Cross-drive writes from a drive-scoped page are a
+    boundary violation regardless of whether the caller has access to
+    both drives.
+    """
+    if body_drive != scoped:
+        raise HTTPException(
+            status_code=400,
+            detail="drive in body does not match X-Lit-Drive scope",
+        )
+
+
 async def on_startup() -> None:
     register_media_import_providers()
     register_subscription_providers()
@@ -86,11 +124,13 @@ async def on_startup() -> None:
 
 
 @router.post("/link", response_model=LoftCreateResponse)
-async def create_loft(request: LoftCreateRequest) -> LoftCreateResponse:
-    try:
-        config.get_drive_path(request.drive)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Drive not found")
+async def create_loft(
+    request: LoftCreateRequest,
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
+) -> LoftCreateResponse:
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    _require_body_drive_matches(scoped, request.drive)
 
     if not request.url.strip():
         raise HTTPException(status_code=422, detail="URL is required")
@@ -161,14 +201,21 @@ async def refresh_loft(file_id: str) -> dict:
 )
 async def resolve_subscription_url(
     request: SubscriptionResolveRequest,
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
 ) -> SubscriptionResolveResponse:
     """Classify a pasted URL without persisting anything.
 
     Frontend uses this to decide whether to show the single-import flow
     (kind=video / kind=unknown → existing /link path) or the
     subscription creation flow (kind=channel / kind=playlist → backfill
-    picker etc.). Pure parsing, no DB / network.
+    picker etc.). Pure parsing, no DB / network — but still drive-scoped
+    because the frontend only ever calls this from
+    /drive/{name}/addons/media_import and we want to match the
+    access-control posture of the create/list routes the caller will
+    fire next.
     """
+    _scoped_drive(x_lit_drive, unlocked_groups)
     url = request.url.strip()
     if not url:
         return SubscriptionResolveResponse(kind="unknown")
@@ -222,18 +269,13 @@ def _load_subscription_row(subscription_id: int) -> dict | None:
 )
 async def create_subscription(
     request: SubscriptionCreateRequest,
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
     unlocked_groups: list[str] = Depends(get_unlocked_groups),
 ) -> SubscriptionResponse:
     if not request.url.strip():
         raise HTTPException(status_code=422, detail="URL is required")
-    try:
-        config.get_drive_path(request.drive)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Drive not found")
-    # in-process addons bypass addon_proxy's X-Lit-Drive enforcement; we
-    # must validate drive access in the handler. Returns 404 (not 403)
-    # to keep existence hidden, per design-decisions.md.
-    check_drive_access(request.drive, unlocked_groups)
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    _require_body_drive_matches(scoped, request.drive)
 
     loop = asyncio.get_running_loop()
     try:
@@ -267,10 +309,15 @@ async def create_subscription(
 )
 async def list_subscriptions(
     drive: str = Query(..., description="Drive name (required)"),
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
     unlocked_groups: list[str] = Depends(get_unlocked_groups),
 ) -> list[SubscriptionResponse]:
-    # 404 the drive itself when caller cannot see it, hiding existence.
-    check_drive_access(drive, unlocked_groups)
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    if drive != scoped:
+        raise HTTPException(
+            status_code=400,
+            detail="drive query does not match X-Lit-Drive scope",
+        )
     db = SessionLocal()
     try:
         rows = db.execute(
@@ -290,16 +337,22 @@ async def list_subscriptions(
 
 
 def _load_owned_subscription(
-    subscription_id: int, unlocked_groups: list[str]
+    subscription_id: int,
+    scoped_drive: str,
+    unlocked_groups: list[str],
 ) -> dict:
     """Load a subscription row or 404 if absent / inaccessible.
 
     Centralizes the per-id auth check so every subscription endpoint
     enforces the same drive-boundary rule. Always returns 404 (never
     403) — per design-decisions.md, locked drives must hide existence.
+    Subscriptions on a drive other than the scoped one are 404'd too:
+    the URL the caller is on is the boundary, not their wider access.
     """
     row = _load_subscription_row(subscription_id)
     if row is None:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    if row["drive"] != scoped_drive:
         raise HTTPException(status_code=404, detail="Subscription not found")
     check_drive_access(row["drive"], unlocked_groups)
     return row
@@ -308,9 +361,11 @@ def _load_owned_subscription(
 @router.delete("/subscriptions/{subscription_id}")
 async def delete_subscription(
     subscription_id: int,
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
     unlocked_groups: list[str] = Depends(get_unlocked_groups),
 ) -> dict:
-    _load_owned_subscription(subscription_id, unlocked_groups)
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    _load_owned_subscription(subscription_id, scoped, unlocked_groups)
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(
         None, subscription_manager.delete, subscription_id
@@ -327,9 +382,11 @@ async def sync_subscription(
     backfill: int | None = Query(
         None, ge=1, description="Limit upstream items considered (default: all)"
     ),
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
     unlocked_groups: list[str] = Depends(get_unlocked_groups),
 ) -> SubscriptionEnqueueResponse:
-    _load_owned_subscription(subscription_id, unlocked_groups)
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    _load_owned_subscription(subscription_id, scoped, unlocked_groups)
     queued = await subscription_worker.enqueue_sync(
         subscription_id, kind="manual", backfill=backfill
     )
@@ -344,9 +401,11 @@ async def sync_subscription(
 )
 async def list_subscription_videos(
     subscription_id: int,
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
     unlocked_groups: list[str] = Depends(get_unlocked_groups),
 ) -> list[SubscriptionVideoResponse]:
-    _load_owned_subscription(subscription_id, unlocked_groups)
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    _load_owned_subscription(subscription_id, scoped, unlocked_groups)
     db = SessionLocal()
     try:
         rows = db.execute(
@@ -371,9 +430,11 @@ async def list_subscription_videos(
 async def retry_subscription_video(
     subscription_id: int,
     item_id: str,
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
     unlocked_groups: list[str] = Depends(get_unlocked_groups),
 ) -> SubscriptionEnqueueResponse:
-    _load_owned_subscription(subscription_id, unlocked_groups)
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    _load_owned_subscription(subscription_id, scoped, unlocked_groups)
     # Eager existence check: the worker's _sync_blocking would also raise
     # SubscriptionNotFound for an unknown item, but by then the route has
     # already returned 200 and the frontend has no per-click failure

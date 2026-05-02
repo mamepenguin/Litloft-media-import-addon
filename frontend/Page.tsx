@@ -5,10 +5,10 @@
 import "./players/registerMediaImportPlayers";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { ChevronRight, FolderIcon, Link as LinkIcon } from "lucide-react";
-import { getDrives, getFolders } from "@/lib/api";
-import type { Drive, Folder } from "@/types";
+import { getFolders } from "@/lib/api";
+import type { Folder } from "@/types";
 import {
   createLoft,
   createSubscription,
@@ -45,9 +45,15 @@ function isSubscriptionKind(kind: SubscriptionKind): boolean {
 
 export default function MediaImportPage() {
   const router = useRouter();
+  const params = useParams();
+  // The addon is scope=drive and is mounted under
+  // /drive/{name}/addons/media_import — the URL is the single source
+  // of truth for which drive we operate on. We never let the user pick
+  // another drive from this page (would cross-pollinate drive
+  // boundaries and bypass per-drive access control).
+  const currentDrive = decodeURIComponent((params?.name as string) ?? "");
+
   const [url, setUrl] = useState("");
-  const [drives, setDrives] = useState<Drive[]>([]);
-  const [selectedDrive, setSelectedDrive] = useState("");
   const [folders, setFolders] = useState<Folder[]>([]);
   const [selectedFolder, setSelectedFolder] = useState("");
   const [folderStack, setFolderStack] = useState<string[]>([]);
@@ -65,19 +71,15 @@ export default function MediaImportPage() {
   const [includeNoTranscript, setIncludeNoTranscript] = useState(false);
 
   useEffect(() => {
-    getDrives().then((d) => {
-      setDrives(d);
-      if (d.length > 0) setSelectedDrive(d[0].name);
-    });
     inputRef.current?.focus();
   }, []);
 
   useEffect(() => {
-    if (!selectedDrive) return;
+    if (!currentDrive) return;
     const currentPath =
       folderStack.length > 0 ? folderStack[folderStack.length - 1] : undefined;
-    getFolders(selectedDrive, currentPath).then(setFolders);
-  }, [selectedDrive, folderStack]);
+    getFolders(currentDrive, currentPath).then(setFolders);
+  }, [currentDrive, folderStack]);
 
   // Debounced URL classification: when the URL settles, ask backend
   // whether it points at a subscription source so we can swap UI modes.
@@ -87,21 +89,16 @@ export default function MediaImportPage() {
       setKind("unknown");
       return;
     }
+    if (!currentDrive) return;
     setResolving(true);
     const handle = setTimeout(() => {
-      resolveSubscriptionUrl(trimmed)
+      resolveSubscriptionUrl(trimmed, currentDrive)
         .then((res) => setKind(res.kind))
         .catch(() => setKind("unknown"))
         .finally(() => setResolving(false));
     }, 400);
     return () => clearTimeout(handle);
-  }, [url]);
-
-  function handleDriveChange(drive: string) {
-    setSelectedDrive(drive);
-    setSelectedFolder("");
-    setFolderStack([]);
-  }
+  }, [url, currentDrive]);
 
   function handleFolderClick(folder: Folder) {
     setFolderStack((prev) => [...prev, folder.path]);
@@ -121,14 +118,14 @@ export default function MediaImportPage() {
 
   async function handleSubmit() {
     const trimmed = url.trim();
-    if (!trimmed || !selectedDrive || submitting) return;
+    if (!trimmed || !currentDrive || submitting) return;
     setSubmitting(true);
     setError(null);
     try {
       if (isSubscriptionKind(kind)) {
         const sub = await createSubscription({
           url: trimmed,
-          drive: selectedDrive,
+          drive: currentDrive,
           folder_path: selectedFolder,
           include_no_transcript: includeNoTranscript,
         });
@@ -136,11 +133,11 @@ export default function MediaImportPage() {
         // worker stream progress via WS. The form unblocks immediately
         // — completion will surface in SubscriptionsList via the
         // ``subscription.sync_completed`` event.
-        await syncSubscription(sub.id, backfill);
+        await syncSubscription(currentDrive, sub.id, backfill);
         setSubsListVersion((v) => v + 1);
       } else {
         const result = await createLoft(
-          trimmed, selectedDrive, selectedFolder,
+          trimmed, currentDrive, selectedFolder,
         );
         const next: PendingItem = {
           url: trimmed,
@@ -248,29 +245,15 @@ export default function MediaImportPage() {
         </div>
 
         <div>
-          <label className="mb-1.5 block text-sm font-medium text-text-secondary">Drive</label>
-          <select
-            value={selectedDrive}
-            onChange={(e) => handleDriveChange(e.target.value)}
-            className="w-full rounded-lg border border-border-primary bg-bg-primary px-3 py-2.5 text-sm text-text-primary focus:border-accent-cta focus:outline-none"
-          >
-            {drives.map((d) => (
-              <option key={d.name} value={d.name}>
-                {d.name}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div>
           <label className="mb-1.5 block text-sm font-medium text-text-secondary">Save to</label>
 
           <div className="mb-2 flex items-center gap-1 text-sm text-text-secondary">
             <button
               onClick={() => handleBreadcrumbClick(-1)}
               className="hover:text-text-primary"
+              data-testid="breadcrumb-drive"
             >
-              {selectedDrive || "..."}
+              {currentDrive || "..."}
             </button>
             {breadcrumbParts.map((name, i) => (
               <span key={i} className="flex items-center gap-1">
@@ -345,7 +328,7 @@ export default function MediaImportPage() {
         <div className="flex items-center justify-end">
           <button
             onClick={handleSubmit}
-            disabled={!url.trim() || !selectedDrive || submitting}
+            disabled={!url.trim() || !currentDrive || submitting}
             className="rounded-lg bg-accent-cta px-5 py-2.5 text-sm font-medium text-white disabled:opacity-50 hover:opacity-90"
           >
             {submitLabel}
@@ -381,12 +364,12 @@ export default function MediaImportPage() {
         </div>
       )}
 
-      {selectedDrive && (
+      {currentDrive && (
         <div className="mt-10">
           <h2 className="mb-3 text-sm font-medium text-text-secondary">
-            Subscriptions on {selectedDrive}
+            Subscriptions on {currentDrive}
           </h2>
-          <SubscriptionsList key={`${selectedDrive}-${subsListVersion}`} drive={selectedDrive} />
+          <SubscriptionsList key={`${currentDrive}-${subsListVersion}`} drive={currentDrive} />
         </div>
       )}
 

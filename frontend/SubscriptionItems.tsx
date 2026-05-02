@@ -10,6 +10,7 @@ import {
 } from "./api";
 
 interface Props {
+  drive: string;
   subscriptionId: number;
 }
 
@@ -19,7 +20,7 @@ const STATUS_LABELS: Record<SubscriptionVideo["status"], string> = {
   pending: "Pending",
 };
 
-export default function SubscriptionItems({ subscriptionId }: Props) {
+export default function SubscriptionItems({ drive, subscriptionId }: Props) {
   const [videos, setVideos] = useState<SubscriptionVideo[]>([]);
   const [loading, setLoading] = useState(true);
   const [retrying, setRetrying] = useState<Set<string>>(new Set());
@@ -28,7 +29,7 @@ export default function SubscriptionItems({ subscriptionId }: Props) {
   async function load() {
     setLoading(true);
     try {
-      const v = await listSubscriptionVideos(subscriptionId);
+      const v = await listSubscriptionVideos(drive, subscriptionId);
       setVideos(v);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load items");
@@ -57,7 +58,7 @@ export default function SubscriptionItems({ subscriptionId }: Props) {
     setRetrying((prev) => new Set(prev).add(itemId));
     setError(null);
     try {
-      await retrySubscriptionVideo(subscriptionId, itemId);
+      await retrySubscriptionVideo(drive, subscriptionId, itemId);
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Retry failed");

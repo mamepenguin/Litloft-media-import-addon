@@ -119,6 +119,11 @@ def client(media_import_db, drive_path, fake_provider):
     app = FastAPI(lifespan=lifespan)
     app.include_router(router)
     with TestClient(app) as c:
+        # The addon is scope=drive: every drive-scoped endpoint now
+        # requires X-Lit-Drive. The vast majority of these tests operate
+        # on drive "d", so set the header as the default and let the few
+        # locked-drive cases override it per request.
+        c.headers["X-Lit-Drive"] = "d"
         yield c
 
 
@@ -502,6 +507,7 @@ class TestDriveAccessControl:
         res = client.post(
             "/api/addons/media_import/subscriptions",
             json={"url": f"https://fake/channel/{_UC}", "drive": "secret"},
+            headers={"X-Lit-Drive": "secret"},
         )
         assert res.status_code == 404
 
@@ -510,7 +516,8 @@ class TestDriveAccessControl:
     ) -> None:
         self._lock_drive(monkeypatch, "secret", "vip")
         res = client.get(
-            "/api/addons/media_import/subscriptions?drive=secret"
+            "/api/addons/media_import/subscriptions?drive=secret",
+            headers={"X-Lit-Drive": "secret"},
         )
         assert res.status_code == 404
 
@@ -546,7 +553,9 @@ class TestDriveAccessControl:
             ("POST", "/api/addons/media_import/subscriptions/1/videos/x/retry"),
         ]
         for method, path in endpoints:
-            res = client.request(method, path)
+            res = client.request(
+                method, path, headers={"X-Lit-Drive": "secret"},
+            )
             assert res.status_code == 404, (
                 f"{method} {path} should 404 on locked drive, "
                 f"got {res.status_code}"

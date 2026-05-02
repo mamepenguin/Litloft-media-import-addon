@@ -10,10 +10,13 @@ import { act, render, fireEvent, waitFor, screen } from "@testing-library/react"
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
+  // The Page is mounted at /drive/{name}/addons/media_import; the URL is
+  // the single source of truth for the drive scope, so useParams must
+  // resolve to the test's drive name. No more getDrives() / dropdown.
+  useParams: () => ({ name: "media" }),
 }));
 
 vi.mock("@/lib/api", () => ({
-  getDrives: vi.fn(async () => [{ name: "media", path: "/media" }]),
   getFolders: vi.fn(async () => []),
 }));
 
@@ -138,9 +141,9 @@ describe("MediaImportPage URL branching", () => {
         include_no_transcript: false,
       }),
     );
-    // syncSubscription is called with the subscription id and the
-    // default backfill (15) shown in the UI.
-    expect(mediaApi.syncSubscription).toHaveBeenCalledWith(7, 15);
+    // syncSubscription is called with the URL-scoped drive, the
+    // subscription id and the default backfill (15) shown in the UI.
+    expect(mediaApi.syncSubscription).toHaveBeenCalledWith("media", 7, 15);
     expect(mediaApi.createLoft).not.toHaveBeenCalled();
   });
 

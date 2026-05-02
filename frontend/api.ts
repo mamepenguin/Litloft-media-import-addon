@@ -1,5 +1,12 @@
 const BASE = "/api/addons/media_import";
 
+// Header values are ISO-8859-1 only, but drive names may contain
+// non-ASCII (e.g. Japanese). Percent-encode here so the host's
+// addon-proxy convention (X-Lit-Drive) round-trips safely.
+function driveHeaders(drive: string): Record<string, string> {
+  return { "X-Lit-Drive": encodeURIComponent(drive) };
+}
+
 export interface LoftCreateResponse {
   file_id: string;
   filename: string;
@@ -29,7 +36,7 @@ export async function createLoft(
   const res = await fetch(`${BASE}/link`, {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...driveHeaders(drive) },
     body: JSON.stringify({ url, drive, folder_path }),
   });
   if (!res.ok) {
@@ -114,11 +121,12 @@ async function _json<T>(res: Response): Promise<T> {
 
 export async function resolveSubscriptionUrl(
   url: string,
+  drive: string,
 ): Promise<SubscriptionResolveResponse> {
   const res = await fetch(`${BASE}/subscriptions/resolve`, {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...driveHeaders(drive) },
     body: JSON.stringify({ url }),
   });
   return _json<SubscriptionResolveResponse>(res);
@@ -138,7 +146,10 @@ export async function createSubscription(
   const res = await fetch(`${BASE}/subscriptions`, {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...driveHeaders(input.drive),
+    },
     body: JSON.stringify({
       url: input.url,
       drive: input.drive,
@@ -155,15 +166,19 @@ export async function listSubscriptions(
 ): Promise<Subscription[]> {
   const res = await fetch(
     `${BASE}/subscriptions?drive=${encodeURIComponent(drive)}`,
-    { credentials: "include" },
+    { credentials: "include", headers: driveHeaders(drive) },
   );
   return _json<Subscription[]>(res);
 }
 
-export async function deleteSubscription(id: number): Promise<void> {
+export async function deleteSubscription(
+  drive: string,
+  id: number,
+): Promise<void> {
   const res = await fetch(`${BASE}/subscriptions/${id}`, {
     method: "DELETE",
     credentials: "include",
+    headers: driveHeaders(drive),
   });
   if (!res.ok) {
     const data = await res.json().catch(() => null);
@@ -172,6 +187,7 @@ export async function deleteSubscription(id: number): Promise<void> {
 }
 
 export async function syncSubscription(
+  drive: string,
   id: number,
   backfill?: number,
 ): Promise<SubscriptionEnqueueResult> {
@@ -180,20 +196,24 @@ export async function syncSubscription(
   const res = await fetch(`${BASE}/subscriptions/${id}/sync${qs}`, {
     method: "POST",
     credentials: "include",
+    headers: driveHeaders(drive),
   });
   return _json<SubscriptionEnqueueResult>(res);
 }
 
 export async function listSubscriptionVideos(
+  drive: string,
   id: number,
 ): Promise<SubscriptionVideo[]> {
   const res = await fetch(`${BASE}/subscriptions/${id}/videos`, {
     credentials: "include",
+    headers: driveHeaders(drive),
   });
   return _json<SubscriptionVideo[]>(res);
 }
 
 export async function retrySubscriptionVideo(
+  drive: string,
   id: number,
   itemId: string,
 ): Promise<SubscriptionEnqueueResult> {
@@ -202,6 +222,7 @@ export async function retrySubscriptionVideo(
     {
       method: "POST",
       credentials: "include",
+      headers: driveHeaders(drive),
     },
   );
   return _json<SubscriptionEnqueueResult>(res);

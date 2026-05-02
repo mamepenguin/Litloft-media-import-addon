@@ -96,7 +96,7 @@ describe("SubscriptionsList", () => {
 
     fireEvent.click(screen.getByTestId("sync-7"));
     await waitFor(() =>
-      expect(api.syncSubscription).toHaveBeenCalledWith(7),
+      expect(api.syncSubscription).toHaveBeenCalledWith("media", 7),
     );
     // Optimistic Syncing badge appears even before the WS event lands.
     await waitFor(() =>
@@ -178,7 +178,7 @@ describe("SubscriptionsList", () => {
 
     fireEvent.click(screen.getByTestId("delete-9"));
     await waitFor(() =>
-      expect(api.deleteSubscription).toHaveBeenCalledWith(9),
+      expect(api.deleteSubscription).toHaveBeenCalledWith("media", 9),
     );
 
     confirmSpy.mockRestore();
@@ -216,7 +216,7 @@ describe("SubscriptionsList", () => {
     fireEvent.click(toggle!);
 
     await waitFor(() =>
-      expect(api.listSubscriptionVideos).toHaveBeenCalledWith(3),
+      expect(api.listSubscriptionVideos).toHaveBeenCalledWith("media", 3),
     );
   });
 });

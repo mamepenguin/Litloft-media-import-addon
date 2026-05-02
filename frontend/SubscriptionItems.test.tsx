@@ -44,7 +44,7 @@ beforeEach(() => {
 describe("SubscriptionItems", () => {
   it("renders the empty state when no items exist", async () => {
     vi.mocked(api.listSubscriptionVideos).mockResolvedValue([]);
-    render(<SubscriptionItems subscriptionId={1} />);
+    render(<SubscriptionItems drive="media" subscriptionId={1} />);
     await waitFor(() =>
       expect(screen.getByText("No items yet. Run a sync.")).toBeTruthy(),
     );
@@ -55,7 +55,7 @@ describe("SubscriptionItems", () => {
       video({ item_id: "a" }),
       video({ item_id: "b", status: "failed", error_kind: "rate_limited" }),
     ]);
-    render(<SubscriptionItems subscriptionId={1} />);
+    render(<SubscriptionItems drive="media" subscriptionId={1} />);
     await waitFor(() =>
       expect(screen.getByTestId("video-row-a")).toBeTruthy(),
     );
@@ -68,7 +68,7 @@ describe("SubscriptionItems", () => {
       video({ item_id: "rl", status: "failed", error_kind: "rate_limited" }),
       video({ item_id: "perm", status: "failed", error_kind: "permanent" }),
     ]);
-    render(<SubscriptionItems subscriptionId={1} />);
+    render(<SubscriptionItems drive="media" subscriptionId={1} />);
     await waitFor(() =>
       expect(screen.getByTestId("video-row-ok")).toBeTruthy(),
     );
@@ -87,14 +87,14 @@ describe("SubscriptionItems", () => {
       status: "queued",
     });
 
-    render(<SubscriptionItems subscriptionId={42} />);
+    render(<SubscriptionItems drive="media" subscriptionId={42} />);
     await waitFor(() =>
       expect(screen.getByTestId("retry-rl")).toBeTruthy(),
     );
 
     fireEvent.click(screen.getByTestId("retry-rl"));
     await waitFor(() =>
-      expect(api.retrySubscriptionVideo).toHaveBeenCalledWith(42, "rl"),
+      expect(api.retrySubscriptionVideo).toHaveBeenCalledWith("media", 42, "rl"),
     );
     // Items list re-loads after retry.
     expect(api.listSubscriptionVideos).toHaveBeenCalledTimes(2);

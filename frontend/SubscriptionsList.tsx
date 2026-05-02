@@ -101,7 +101,7 @@ export default function SubscriptionsList({ drive }: Props) {
     setBusyId(id);
     setError(null);
     try {
-      await syncSubscription(id);
+      await syncSubscription(drive, id);
       // Worker will broadcast sync_started shortly; mark optimistically
       // so the badge appears even if the WS event lands a tick later.
       setSyncing((prev) => {
@@ -121,7 +121,7 @@ export default function SubscriptionsList({ drive }: Props) {
     setBusyId(id);
     setError(null);
     try {
-      await deleteSubscription(id);
+      await deleteSubscription(drive, id);
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Delete failed");
@@ -240,7 +240,7 @@ export default function SubscriptionsList({ drive }: Props) {
               </div>
               {isExpanded && (
                 <div className="border-t border-border-primary">
-                  <SubscriptionItems subscriptionId={s.id} />
+                  <SubscriptionItems drive={drive} subscriptionId={s.id} />
                 </div>
               )}
             </li>

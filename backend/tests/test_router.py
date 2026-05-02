@@ -21,7 +21,12 @@ def client(media_import_db, drive_path):
 
     app = FastAPI()
     app.include_router(router)
-    return TestClient(app)
+    c = TestClient(app)
+    # POST /link is now scope=drive: it requires X-Lit-Drive matching
+    # the drive in the body. All current tests operate on drive "drv";
+    # locked-drive tests can override per-request.
+    c.headers["X-Lit-Drive"] = "drv"
+    return c
 
 
 class TestCreateLoftEndpoint:
