@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { extractVimeoId } from "../VimeoEmbed";
+import { render } from "@testing-library/react";
+import VimeoEmbed, { extractVimeoId } from "../VimeoEmbed";
 
 describe("extractVimeoId", () => {
   it("extracts id from standard vimeo.com URL", () => {
@@ -37,5 +38,30 @@ describe("extractVimeoId", () => {
   it("returns null for malformed URL", () => {
     expect(extractVimeoId("not-a-url")).toBeNull();
     expect(extractVimeoId("")).toBeNull();
+  });
+});
+
+describe("VimeoEmbed iframe src — citation jump", () => {
+  it("appends #t=Ns when initialTime is provided", () => {
+    const { container } = render(
+      <VimeoEmbed
+        fileId="f1"
+        url="https://vimeo.com/123456"
+        initialTime={754}
+      />,
+    );
+    const iframe = container.querySelector("iframe");
+    expect(iframe?.getAttribute("src")).toBe(
+      "https://player.vimeo.com/video/123456#t=754s",
+    );
+  });
+
+  it("omits the time fragment when initialTime is missing or zero", () => {
+    const { container } = render(
+      <VimeoEmbed fileId="f1" url="https://vimeo.com/123456" />,
+    );
+    expect(container.querySelector("iframe")?.getAttribute("src")).toBe(
+      "https://player.vimeo.com/video/123456",
+    );
   });
 });

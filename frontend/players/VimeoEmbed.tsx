@@ -28,12 +28,20 @@ export function extractVimeoId(url: string): string | null {
   return null;
 }
 
-export default function VimeoEmbed({ url }: LoftEmbedProps) {
+export default function VimeoEmbed({ url, initialTime }: LoftEmbedProps) {
   const videoId = useMemo(() => extractVimeoId(url), [url]);
 
   if (!videoId) return null;
 
-  const src = `https://player.vimeo.com/video/${videoId}`;
+  // Vimeo's player honours `#t=<seconds>s` in the iframe URL on initial
+  // load. We don't currently embed @vimeo/player for runtime seeks,
+  // so a same-file ?t= change requires a remount — which is what the
+  // file detail page already does when its searchParams change.
+  const seekFrag =
+    Number.isFinite(initialTime) && (initialTime ?? 0) > 0
+      ? `#t=${Math.floor(initialTime as number)}s`
+      : "";
+  const src = `https://player.vimeo.com/video/${videoId}${seekFrag}`;
 
   return (
     <div

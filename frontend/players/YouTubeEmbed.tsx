@@ -53,6 +53,7 @@ export default function YouTubeEmbed({
   fileId,
   url,
   onMediaController,
+  initialTime,
 }: LoftEmbedProps) {
   const videoId = extractYouTubeId(url);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -112,22 +113,39 @@ export default function YouTubeEmbed({
               controllerRef.current = mc;
               onMediaController?.(mc);
 
-              try {
-                const saved = hasProfile
-                  ? (await getWatchProgress(fileId)).position
-                  : getSavedProgress(fileId);
-                if (cancelled) return;
-                const duration = target.getDuration();
-                const upperOk =
-                  !Number.isFinite(duration) ||
-                  duration <= 0 ||
-                  saved < duration - RESUME_THRESHOLD;
-                if (saved > RESUME_THRESHOLD && upperOk) {
-                  target.seekTo(saved, true);
-                  lastSavedRef.current = saved;
+              // Citation jump (intelligence Ask `?t=`) wins over the
+              // saved-progress resume. The user explicitly clicked a
+              // timestamped citation, so silently snapping back to
+              // wherever they last left off would be an obvious bug
+              // — exactly what was reported. Skip the resume read
+              // entirely in that case so we don't even pay the API
+              // round-trip.
+              if (Number.isFinite(initialTime) && (initialTime ?? 0) > 0) {
+                try {
+                  target.seekTo(initialTime as number, true);
+                  lastSavedRef.current = initialTime as number;
+                } catch {
+                  // Player may still be warming up; seekTo will be
+                  // retried implicitly when the buffer catches up.
                 }
-              } catch {
-                // Fire-and-forget: don't block playback.
+              } else {
+                try {
+                  const saved = hasProfile
+                    ? (await getWatchProgress(fileId)).position
+                    : getSavedProgress(fileId);
+                  if (cancelled) return;
+                  const duration = target.getDuration();
+                  const upperOk =
+                    !Number.isFinite(duration) ||
+                    duration <= 0 ||
+                    saved < duration - RESUME_THRESHOLD;
+                  if (saved > RESUME_THRESHOLD && upperOk) {
+                    target.seekTo(saved, true);
+                    lastSavedRef.current = saved;
+                  }
+                } catch {
+                  // Fire-and-forget: don't block playback.
+                }
               }
               if (cancelled) return;
 
@@ -194,7 +212,32 @@ export default function YouTubeEmbed({
       }
       playerRef.current = null;
     };
+    // initialTime is read inside the onReady closure but intentionally
+    // excluded from this effect's dependency list — re-creating the
+    // YT.Player just to honour a new ?t= would tear the iframe down
+    // mid-playback and reset the watch session. A second effect below
+    // reseeks the live player when initialTime changes, so the
+    // citation-jump flow still works for same-file ?t= updates.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fileId, videoId, hasProfile, onMediaController]);
+
+  // Reseek when ?t= changes on the current iframe. Triggered when the
+  // user clicks a second citation for the same .loft file (different
+  // timestamp) — the file detail page updates `initialTime` without
+  // remounting LoftPlayer, so we need to seek the existing player
+  // rather than wait for an onReady that will never fire again.
+  useEffect(() => {
+    if (!Number.isFinite(initialTime) || (initialTime ?? 0) <= 0) return;
+    const p = playerRef.current;
+    if (!p) return;
+    try {
+      p.seekTo(initialTime as number, true);
+      lastSavedRef.current = initialTime as number;
+    } catch {
+      // Player not in a seekable state yet; the onReady handler will
+      // pick up `initialTime` on first mount.
+    }
+  }, [initialTime]);
 
   useShortcuts("loft-player", tsc("loftPlayer"), [
     { key: "space",      label: tsc("play"),          handler: () => controllerRef.current?.togglePlay() },
