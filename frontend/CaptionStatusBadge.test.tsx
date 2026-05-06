@@ -13,14 +13,14 @@ import type { LoftMetadata } from "@/addons/media_import/api";
 
 const messages = {
   captionStatus: {
-    noCaptions: "YouTube に字幕がありません",
-    rateLimited: "字幕の取得を再試行します（一時的なエラー）",
+    noCaptions: "YouTube has no captions for this video",
+    rateLimited: "Retrying caption download (temporary error)",
     permanent:
-      "字幕を取得できません（動画が非公開・削除・地域制限の可能性）",
-    failed: "字幕の取得に失敗しました",
-    notAttempted: "字幕情報を取得していません",
-    retryHint: "クリックで再試行",
-    retrying: "再試行中...",
+      "Captions unavailable (video may be private, removed, or region-locked)",
+    failed: "Failed to download captions",
+    notAttempted: "Caption status not yet checked",
+    retryHint: "Click to retry",
+    retrying: "Retrying...",
   },
 };
 
@@ -64,14 +64,14 @@ describe("CaptionStatusBadge", () => {
     const { getByText } = renderBadge(
       makeMetadata({ fetched_at: null, has_captions: false }),
     );
-    expect(getByText("字幕情報を取得していません")).toBeTruthy();
+    expect(getByText("Caption status not yet checked")).toBeTruthy();
   });
 
   it("shows the no-captions label when YouTube has no captions", () => {
     const { getByText } = renderBadge(
       makeMetadata({ has_captions: false }),
     );
-    expect(getByText("YouTube に字幕がありません")).toBeTruthy();
+    expect(getByText("YouTube has no captions for this video")).toBeTruthy();
   });
 
   it("shows the permanent-failure label when caption_error_kind is 'permanent'", () => {
@@ -80,7 +80,7 @@ describe("CaptionStatusBadge", () => {
     );
     expect(
       getByText(
-        "字幕を取得できません（動画が非公開・削除・地域制限の可能性）",
+        "Captions unavailable (video may be private, removed, or region-locked)",
       ),
     ).toBeTruthy();
   });
@@ -90,7 +90,7 @@ describe("CaptionStatusBadge", () => {
       makeMetadata({ caption_error_kind: "rate_limited" }),
     );
     expect(
-      getByText("字幕の取得を再試行します（一時的なエラー）"),
+      getByText("Retrying caption download (temporary error)"),
     ).toBeTruthy();
   });
 
@@ -102,7 +102,7 @@ describe("CaptionStatusBadge", () => {
         caption_error_kind: null,
       }),
     );
-    expect(getByText("字幕の取得に失敗しました")).toBeTruthy();
+    expect(getByText("Failed to download captions")).toBeTruthy();
   });
 
   it("prioritises captions_downloaded=true over every other state", () => {
@@ -182,7 +182,7 @@ describe("CaptionStatusBadge", () => {
       );
       const btn = getByRole("button") as HTMLButtonElement;
       expect(btn.disabled).toBe(true);
-      expect(getByText("再試行中...")).toBeTruthy();
+      expect(getByText("Retrying...")).toBeTruthy();
       fireEvent.click(btn);
       expect(onRetry).not.toHaveBeenCalled();
     });

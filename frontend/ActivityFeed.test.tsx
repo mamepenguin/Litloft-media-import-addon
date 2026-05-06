@@ -65,8 +65,8 @@ describe("ActivityFeed", () => {
     render(<ActivityFeed drive="d" refreshKey={0} />);
 
     await waitFor(() => {
-      expect(screen.getByText("今日")).toBeInTheDocument();
-      expect(screen.getByText("昨日")).toBeInTheDocument();
+      expect(screen.getByText("Today")).toBeInTheDocument();
+      expect(screen.getByText("Yesterday")).toBeInTheDocument();
     });
   });
 

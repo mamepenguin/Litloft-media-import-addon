@@ -89,7 +89,7 @@ describe("Composer collapse / expand", () => {
 });
 
 describe("Composer URL classification", () => {
-  it("renders '単一の動画' hint when kind=video", async () => {
+  it("renders 'Single video' hint when kind=video", async () => {
     mockResolveUrl.mockResolvedValue({
       kind: "video", provider: "youtube", ref: "abc",
     });
@@ -101,12 +101,12 @@ describe("Composer URL classification", () => {
     );
     await waitFor(() => {
       expect(screen.getByTestId("composer-url-hint")).toHaveTextContent(
-        "単一の動画",
+        "Single video",
       );
     });
   });
 
-  it("switches CTA to '購読する' for channel URLs", async () => {
+  it("switches CTA to 'Subscribe' for channel URLs", async () => {
     mockResolveUrl.mockResolvedValue({
       kind: "channel", provider: "youtube", ref: "UCabc",
     });
@@ -118,7 +118,7 @@ describe("Composer URL classification", () => {
     );
     await waitFor(() => {
       expect(screen.getByTestId("composer-submit")).toHaveTextContent(
-        "購読する",
+        "Subscribe",
       );
     });
   });
@@ -188,7 +188,7 @@ describe("Composer submit dispatch", () => {
     );
     await waitFor(() => {
       expect(screen.getByTestId("composer-submit")).toHaveTextContent(
-        "購読する",
+        "Subscribe",
       );
     });
 
@@ -221,7 +221,7 @@ describe("Composer submit dispatch", () => {
     );
     await waitFor(() => {
       expect(screen.getByTestId("composer-submit")).toHaveTextContent(
-        "購読する",
+        "Subscribe",
       );
     });
 

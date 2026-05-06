@@ -51,6 +51,81 @@ def _extract_title_sync(url: str) -> str:
     return url.split("/")[-1]
 
 
+# YouTube canonical thumbnail variants in descending quality. The picker
+# below prefers ids matching this list before falling back to area-sorted
+# anonymous frames.
+_CANONICAL_THUMBNAIL_IDS: tuple[str, ...] = (
+    "maxresdefault",
+    "sddefault",
+    "hqdefault",
+    "mqdefault",
+    "default",
+)
+
+# Localized-id suffix: ``_en``, ``_en-US``, ``_pt-BR`` etc. yt-dlp tags
+# YouTube's auto-translated title overlay variants this way and the
+# matching ``/vi_lc/`` URL 404s for most videos.
+_LOCALIZED_THUMBNAIL_ID = re.compile(r"_[a-z]{2}(?:-[A-Za-z]{2,3})?$", re.IGNORECASE)
+
+_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def _is_localized_thumbnail(thumb: dict) -> bool:
+    url = thumb.get("url")
+    if isinstance(url, str) and "/vi_lc/" in url:
+        return True
+    tid = thumb.get("id")
+    return bool(isinstance(tid, str) and _LOCALIZED_THUMBNAIL_ID.search(tid))
+
+
+def _pick_video_thumbnail_url(info: dict) -> str | None:
+    """Return a downloadable thumbnail URL from yt-dlp ``info``.
+
+    yt-dlp's ``info["thumbnail"]`` sometimes points at YouTube's
+    ``/vi_lc/<id>/maxresdefault_en-US.jpg`` variant — a localized-captions
+    overlay that 404s on videos without translated titles. Walk
+    ``info["thumbnails"]`` first so a canonical variant wins, and fall
+    back to the top-level ``thumbnail`` only when it is not the broken
+    ``vi_lc`` form.
+    """
+    thumbnails = info.get("thumbnails") or []
+    candidates = [
+        t for t in thumbnails
+        if isinstance(t, dict)
+        and isinstance(t.get("url"), str)
+        and not _is_localized_thumbnail(t)
+    ]
+    if candidates:
+        by_id = {t.get("id"): t for t in candidates}
+        for preferred in _CANONICAL_THUMBNAIL_IDS:
+            t = by_id.get(preferred)
+            if t:
+                return t["url"]
+        candidates.sort(
+            key=lambda t: (t.get("width") or 0) * (t.get("height") or 0),
+            reverse=True,
+        )
+        return candidates[0]["url"]
+    fallback = info.get("thumbnail")
+    if isinstance(fallback, str) and "/vi_lc/" not in fallback:
+        return fallback
+    return None
+
+
+def _youtube_thumbnail_fallbacks(video_id: str) -> list[str]:
+    """Canonical ``i.ytimg.com/vi/<id>/...`` URLs in quality order.
+
+    Used when the primary URL from yt-dlp 404s. ``maxresdefault`` is
+    not guaranteed to exist on every video; ``default.jpg`` always does.
+    """
+    if not isinstance(video_id, str) or not _VIDEO_ID_RE.match(video_id):
+        return []
+    return [
+        f"https://i.ytimg.com/vi/{video_id}/{name}.jpg"
+        for name in _CANONICAL_THUMBNAIL_IDS
+    ]
+
+
 def _fetch_metadata_sync(url: str) -> dict:
     """Synchronously fetch full metadata via yt-dlp (no download)."""
     import yt_dlp
@@ -66,7 +141,7 @@ def _fetch_metadata_sync(url: str) -> dict:
             "channel": info.get("uploader") or info.get("channel"),
             "published_at": info.get("upload_date"),
             "language": info.get("language"),
-            "thumbnail_url": info.get("thumbnail"),
+            "thumbnail_url": _pick_video_thumbnail_url(info),
             "has_captions": bool(info.get("subtitles") or info.get("automatic_captions")),
         }
 
@@ -325,12 +400,20 @@ def _save_loft_thumbnail(
     folder_path: str,
     filename: str,
     thumbnail_url: str | None,
+    fallback_urls: list[str] | None = None,
 ) -> str | None:
     """Download a .loft's remote thumbnail and update File.thumbnail_path.
 
-    Returns the relative thumbnail_path on success, None on failure or
-    when ``thumbnail_url`` is empty. Failures are logged but not raised
-    — the .loft is still usable in degraded mode (placeholder thumb).
+    Tries ``thumbnail_url`` first, then each entry in ``fallback_urls``
+    in order. Returns the relative thumbnail_path on the first success,
+    None when nothing downloads. Failures are logged but not raised — the
+    .loft is still usable in degraded mode (placeholder thumb).
+
+    The fallback chain exists because yt-dlp's reported ``thumbnail`` for
+    YouTube videos sometimes points at the localized-captions overlay
+    URL (``/vi_lc/<id>/maxresdefault_en-US.jpg``) which 404s on videos
+    without translated titles. Callers pass canonical ``i.ytimg.com/vi/``
+    URLs as fallbacks so the .loft still gets a thumbnail.
 
     Used by both the /link pipeline (LoftManager._fetch_and_update) and
     the subscription import pipeline (SubscriptionManager._import_one_item)
@@ -338,7 +421,8 @@ def _save_loft_thumbnail(
     Centralizing this here is the structural defense against the kind of
     contract drift documented in hako rSexxNohzBFCSwvD7oQPI.
     """
-    if not thumbnail_url:
+    candidates = [u for u in [thumbnail_url, *(fallback_urls or [])] if u]
+    if not candidates:
         return None
     nfc_stem = Path(unicodedata.normalize("NFC", filename)).stem
     thumb_rel = (
@@ -347,7 +431,10 @@ def _save_loft_thumbnail(
         else f"{drive}/{nfc_stem}.jpg"
     )
     thumb_full = config.THUMBNAILS_DIR / thumb_rel
-    if not _download_thumbnail_sync(thumbnail_url, thumb_full):
+    for url in candidates:
+        if _download_thumbnail_sync(url, thumb_full):
+            break
+    else:
         return None
     db = SessionLocal()
     try:
@@ -359,6 +446,31 @@ def _save_loft_thumbnail(
     finally:
         db.close()
     return thumb_rel
+
+
+def _thumbnail_fallbacks_for_url(url: str, provider: str) -> list[str]:
+    """Build a provider-aware fallback chain for ``_save_loft_thumbnail``.
+
+    For YouTube the canonical ``i.ytimg.com/vi/<id>/...`` URLs are stable
+    across regions, so resolving the video id from ``url`` lets us recover
+    when yt-dlp returned a localized variant (or a since-removed CDN path).
+    Other providers currently have no published canonical thumbnail
+    pattern; the chain is empty for them.
+    """
+    if provider != "youtube":
+        return []
+    from .subscription.registry import (
+        REF_KIND_VIDEO,
+        find_subscription_provider_by_url,
+    )
+
+    match = find_subscription_provider_by_url(url)
+    if match is None:
+        return []
+    _, ref = match
+    if ref.kind != REF_KIND_VIDEO:
+        return []
+    return _youtube_thumbnail_fallbacks(ref.ref)
 
 
 class LoftManager:
@@ -523,6 +635,8 @@ class LoftManager:
 
             db.commit()
 
+            provider = detect_provider(item.url)
+
             # Thumbnail download runs in its own session via the shared
             # helper so the /link and subscription pipelines stay in
             # lockstep (hako IpF19kUI3OKoY_ps7iKg1).
@@ -532,9 +646,9 @@ class LoftManager:
                 folder_path=file_record.folder_path,
                 filename=file_record.filename,
                 thumbnail_url=meta.get("thumbnail_url"),
+                fallback_urls=_thumbnail_fallbacks_for_url(item.url, provider),
             )
 
-            provider = detect_provider(item.url)
             now_iso = datetime.now(UTC).isoformat()
             db.execute(
                 text(

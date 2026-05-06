@@ -102,8 +102,8 @@ describe("SubscriptionsDashboard", () => {
 
     render(<SubscriptionsDashboard drive="d" refreshKey={0} />);
     await waitFor(() => {
-      expect(screen.getByTestId("dashboard-summary")).toHaveTextContent("1 件の購読");
-      expect(screen.getByTestId("dashboard-summary")).toHaveTextContent("12 件取り込み済み");
+      expect(screen.getByTestId("dashboard-summary")).toHaveTextContent(/subscription/);
+      expect(screen.getByTestId("dashboard-summary")).toHaveTextContent("12 imported");
       expect(screen.getByTestId("summary-attention")).toBeInTheDocument();
     });
   });

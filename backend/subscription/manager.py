@@ -33,7 +33,11 @@ from pathlib import Path
 import app.config as config
 from app.services.ws import broadcast_from_thread
 
-from ..service import _save_loft_thumbnail, _save_subscription_avatar
+from ..service import (
+    _save_loft_thumbnail,
+    _save_subscription_avatar,
+    _youtube_thumbnail_fallbacks,
+)
 from . import db as subdb
 from .registry import (
     REF_KIND_CHANNEL,
@@ -561,12 +565,21 @@ class SubscriptionManager:
         # _allocate_loft_path may have appended a "(1)" suffix or run
         # _sanitize_filename — the thumb_rel must match the on-disk
         # filename for the core thumbnail endpoint to find it.
+        # YouTube's localized-captions thumbnail (``/vi_lc/.../*_en-US.jpg``)
+        # 404s for most videos, so wire up the canonical
+        # ``i.ytimg.com/vi/<id>/...`` chain as a fallback.
+        thumbnail_fallbacks = (
+            _youtube_thumbnail_fallbacks(item_id)
+            if provider.name == "youtube"
+            else []
+        )
         _save_loft_thumbnail(
             file_id=file_id,
             drive=drive,
             folder_path=folder_path,
             filename=loft_path.name,
             thumbnail_url=meta.thumbnail_url,
+            fallback_urls=thumbnail_fallbacks,
         )
 
         transcript_error: str | None = None
