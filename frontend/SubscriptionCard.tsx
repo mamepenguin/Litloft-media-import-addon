@@ -24,7 +24,7 @@ interface Props {
  * Status-first layout: the pill is rendered prominently right next
  * to the avatar so users notice "Needs attention" before reading
  * any text. Avatar shape signals provider intent — channel = round
- * (matches the YouTube channel avatar convention), playlist = rounded
+ * (matches the YouTube channel avatar convention), playlist = rounded-lg
  * square (matches a stack of items).
  */
 

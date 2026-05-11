@@ -257,7 +257,7 @@ export default function YouTubeEmbed({
     <div
       ref={wrapperRef}
       tabIndex={0}
-      className="relative w-full overflow-hidden bg-black focus:outline-none focus-visible:ring-2 focus-visible:ring-accent md:rounded-xl [&>iframe]:absolute [&>iframe]:inset-0 [&>iframe]:h-full [&>iframe]:w-full [&>iframe]:border-0"
+      className="relative w-full overflow-hidden bg-black focus:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring md:rounded-xl [&>iframe]:absolute [&>iframe]:inset-0 [&>iframe]:h-full [&>iframe]:w-full [&>iframe]:border-0"
       style={{ paddingTop: "56.25%" }}
     >
       <div ref={mountRef} className="absolute inset-0 h-full w-full" />
