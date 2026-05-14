@@ -9,15 +9,12 @@ import {
 import { useTranslations } from "next-intl";
 import {
   ChevronDown,
-  ChevronRight,
   ChevronUp,
-  FolderIcon,
   Link as LinkIcon,
   Plus,
 } from "lucide-react";
 
-import { getFolders } from "@/lib/api";
-import type { Folder } from "@/types";
+import { FolderPicker } from "@/components/FolderPicker";
 
 import {
   createLoft,
@@ -88,10 +85,7 @@ export default function Composer({
   const [provider, setProvider] = useState<string | null>(null);
   const [resolving, setResolving] = useState(false);
 
-  const [folders, setFolders] = useState<Folder[]>([]);
-  const [folderStack, setFolderStack] = useState<string[]>([]);
   const [selectedFolder, setSelectedFolder] = useState("");
-  const [folderPickerOpen, setFolderPickerOpen] = useState(false);
 
   const [advanced, setAdvanced] = useState(false);
   const [backfill, setBackfill] = useState(15);
@@ -103,12 +97,6 @@ export default function Composer({
   const [dragOver, setDragOver] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (!drive) return;
-    const path = folderStack.length ? folderStack[folderStack.length - 1] : undefined;
-    getFolders(drive, path).then(setFolders);
-  }, [drive, folderStack]);
 
   useEffect(() => {
     const trimmed = url.trim();
@@ -128,12 +116,10 @@ export default function Composer({
             res.provider
             && (res.kind === "channel" || res.kind === "playlist" || res.kind === "video")
             && selectedFolder === ""
-            && folderStack.length === 0
           ) {
             const last = getLastFolder(drive, res.provider, res.kind);
             if (last) {
               setSelectedFolder(last);
-              setFolderStack(last ? [last] : []);
             }
           }
         })
@@ -148,22 +134,6 @@ export default function Composer({
     // should fire on URL change, not when the user picks a folder.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [url, drive]);
-
-  function handleFolderClick(folder: Folder) {
-    setFolderStack((prev) => [...prev, folder.path]);
-    setSelectedFolder(folder.path);
-  }
-
-  function handleBreadcrumbClick(index: number) {
-    if (index < 0) {
-      setFolderStack([]);
-      setSelectedFolder("");
-    } else {
-      const next = folderStack.slice(0, index + 1);
-      setFolderStack(next);
-      setSelectedFolder(next[next.length - 1]);
-    }
-  }
 
   async function handleSubmit() {
     const trimmed = url.trim();
@@ -228,11 +198,6 @@ export default function Composer({
     },
     [],
   );
-
-  const breadcrumbParts = folderStack.map((p) => {
-    const parts = p.split("/");
-    return parts[parts.length - 1];
-  });
 
   const showSubscriptionFields = isSubscriptionKind(kind);
   const submitLabel = submitting
@@ -328,73 +293,11 @@ export default function Composer({
           )}
         </div>
 
-        <div>
-          <button
-            type="button"
-            onClick={() => setFolderPickerOpen((v) => !v)}
-            className="flex w-full items-center justify-between rounded-2xl border border-bg-border bg-bg-primary px-4 py-2.5 text-sm text-text-primary hover:bg-bg-elevated"
-            data-testid="composer-folder-toggle"
-          >
-            <span className="flex items-center gap-2">
-              <FolderIcon size={14} className="text-text-muted" />
-              <span className="text-text-muted">{t("composer.saveTo")}</span>
-              <span>
-                {selectedFolder
-                  ? `/${selectedFolder}`
-                  : <span className="text-text-muted">{t("composer.driveRoot")}</span>}
-              </span>
-            </span>
-            {folderPickerOpen
-              ? <ChevronUp size={14} />
-              : <ChevronDown size={14} />}
-          </button>
-
-          {folderPickerOpen && (
-            <div className="mt-2 rounded-xl border border-bg-border bg-bg-primary">
-              <div className="flex items-center gap-1 border-b border-bg-border px-3 py-2 text-xs text-text-muted">
-                <button
-                  type="button"
-                  onClick={() => handleBreadcrumbClick(-1)}
-                  className="hover:text-text-primary"
-                  data-testid="composer-breadcrumb-root"
-                >
-                  {drive || "..."}
-                </button>
-                {breadcrumbParts.map((name, i) => (
-                  <span key={i} className="flex items-center gap-1">
-                    <ChevronRight size={12} />
-                    <button
-                      type="button"
-                      onClick={() => handleBreadcrumbClick(i)}
-                      className="hover:text-text-primary"
-                    >
-                      {name}
-                    </button>
-                  </span>
-                ))}
-              </div>
-              <div className="max-h-44 overflow-y-auto">
-                {folders.length === 0 ? (
-                  <div className="px-3 py-3 text-sm text-text-muted">
-                    {t("composer.noSubfolders")}
-                  </div>
-                ) : (
-                  folders.map((f) => (
-                    <button
-                      key={f.path}
-                      type="button"
-                      onClick={() => handleFolderClick(f)}
-                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-text-primary hover:bg-bg-elevated"
-                    >
-                      <FolderIcon size={14} className="shrink-0 text-text-muted" />
-                      {f.name}
-                    </button>
-                  ))
-                )}
-              </div>
-            </div>
-          )}
-        </div>
+        <FolderPicker
+          drive={drive}
+          value={selectedFolder}
+          onChange={setSelectedFolder}
+        />
 
         {showSubscriptionFields && (
           <div data-testid="composer-advanced-section">

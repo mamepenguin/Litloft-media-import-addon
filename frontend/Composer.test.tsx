@@ -35,6 +35,7 @@ vi.mock("@/addons/media_import/api", async () => {
 const mockGetFolders = vi.fn().mockResolvedValue([]);
 vi.mock("@/lib/api", () => ({
   getFolders: (...args: unknown[]) => mockGetFolders(...args),
+  getFolderTree: vi.fn().mockResolvedValue([]),
 }));
 
 function makeMemoryStorage(): Storage {
@@ -139,9 +140,7 @@ describe("Composer smart-folder memory", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByTestId("composer-folder-toggle")).toHaveTextContent(
-        "/videos/yt",
-      );
+      expect(screen.getByText("/videos/yt")).toBeInTheDocument();
     });
   });
 });
