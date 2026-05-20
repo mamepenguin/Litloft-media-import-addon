@@ -1,6 +1,6 @@
 {
   "captionStatus": {
-    "noCaptions": "YouTube に字幕がありません",
+    "noCaptions": "YouTubeに字幕がありません",
     "rateLimited": "字幕の取得を再試行します（一時的なエラー）",
     "permanent": "字幕を取得できません（動画が非公開・削除・地域制限の可能性）",
     "failed": "字幕の取得に失敗しました",
@@ -13,26 +13,26 @@
     "driveLabel": "ドライブ: {drive}",
     "loadingDrive": "ドライブを読み込み中...",
     "composer": {
-      "addSourceCollapsed": "ソースを追加 — URL を貼り付けるかリンクをドロップ",
+      "addSourceCollapsed": "ソースを追加 — URLを貼り付けるかリンクをドロップ",
       "heading": "ソースを追加",
       "collapse": "閉じる",
       "urlPlaceholder": "https://...",
-      "dropOverlay": "URL をドロップして取り込み",
+      "dropOverlay": "URLをドロップして取り込み",
       "kind": {
-        "detecting": "URL の種類を判別中...",
-        "video": "単一の動画 — 1 件の .loft を作成します",
-        "channel": "YouTube チャンネル — 新着を自動で取り込みます",
-        "playlist": "YouTube プレイリスト — すべてのアイテムを追跡します",
+        "detecting": "URLの種類を判別中...",
+        "video": "単一の動画 — 1件の.loftファイルを作成します",
+        "channel": "YouTubeチャンネル — 新着を自動で取り込みます",
+        "playlist": "YouTubeプレイリスト — すべてのアイテムを追跡します",
         "feed": "フィード — 購読します",
-        "unknown": "単発取り込み（プロバイダ未認識）"
+        "unknown": "単発取り込み（プロバイダー未認識）"
       },
       "saveTo": "保存先:",
       "driveRoot": "ドライブ直下",
       "noSubfolders": "サブフォルダなし",
       "advanced": "詳細設定",
-      "backfill": "バックフィル件数（初回取り込み）",
-      "backfillHintChannel": "最新 N 件のアップロードを取り込みます。",
-      "backfillHintPlaylist": "プレイリスト先頭から N 件を取り込みます。",
+      "backfill": "初回に取り込む件数",
+      "backfillHintChannel": "最新N件のアップロードを取り込みます。",
+      "backfillHintPlaylist": "プレイリスト先頭からN件を取り込みます。",
       "includeNoTranscript": "字幕がない動画でも文字起こしを試みる",
       "submitImport": "取り込む",
       "submitSubscribe": "購読する",
@@ -51,7 +51,7 @@
       "searchPlaceholder": "購読を検索...",
       "loading": "購読を読み込み中...",
       "loadFailed": "読み込みに失敗しました",
-      "emptyAll": "購読はまだありません。上で YouTube のチャンネルやプレイリストの URL を貼り付けて始めましょう。",
+      "emptyAll": "購読はまだありません。上でYouTubeのチャンネルやプレイリストのURLを貼り付けて始めましょう。",
       "emptyFiltered": "「{filter}」に一致する購読がありません。",
       "summary": {
         "subscriptions": "{count} 件の購読",
@@ -66,7 +66,7 @@
       "failed": "{count} 件失敗",
       "nextSync": {
         "paused": "一時停止中",
-        "backoff": "バックオフ中",
+        "backoff": "再試行待ち",
         "pendingFirst": "初回同期待ち",
         "due": "同期予定",
         "minutes": "次回: {n}分",
@@ -91,8 +91,8 @@
       "schedule": {
         "heading": "スケジュール",
         "paused": "一時停止中 — 自動同期は無効です",
-        "backoffUntil": "{when} までバックオフ中",
-        "willSyncNext": "次回 cron で同期されます",
+        "backoffUntil": "{when}まで再試行待ち",
+        "willSyncNext": "次回のcronで同期されます",
         "nextAround": "次回同期: {when} 頃",
         "cooldownLabel": "クールダウン (分):",
         "cooldownSave": "保存"
@@ -137,7 +137,7 @@
     "errorKind": {
       "rate_limited": {
         "label": "レート制限",
-        "hint": "プロバイダがリクエストを制限しました。時間を空けて再試行してください。"
+        "hint": "プロバイダーがリクエストを制限しました。時間を空けて再試行してください。"
       },
       "permanent": {
         "label": "取得不可",
@@ -169,7 +169,7 @@
       "description": "保存先に同名のファイルが既に存在します。処理方法を選んでください。",
       "rename": {
         "label": "リネーム",
-        "hint": "新しいファイルに (1) サフィックスを付けて両方を残します（推奨）。"
+        "hint": "新しいファイルに (1)サフィックスを付けて両方を残します（推奨）。"
       },
       "overwrite": {
         "label": "上書き",
@@ -177,7 +177,7 @@
       },
       "skip": {
         "label": "スキップ",
-        "hint": "再試行を停止します。スキップ済みになり、再有効化するまで再試行されません。"
+        "hint": "再試行を停止します。スキップ済みになり、再度有効化するまで再試行されません。"
       },
       "cancel": "キャンセル",
       "errorFallback": "解決に失敗しました"
