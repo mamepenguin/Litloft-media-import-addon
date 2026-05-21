@@ -68,6 +68,7 @@ logger = logging.getLogger(__name__)
 
 ADDON_META = {
     "label": "Media Import",
+    "description": "Import videos and audio from URLs, and subscribe to channels for automatic sync.",
     "icon": "link",
     "scope": "drive",
     "href": "/addons/media_import",
