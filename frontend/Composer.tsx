@@ -21,6 +21,7 @@ import {
   createSubscription,
   resolveSubscriptionUrl,
   syncSubscription,
+  type SttMode,
   type SubscriptionKind,
 } from "./api";
 import {
@@ -53,6 +54,15 @@ interface PendingItem {
   filename: string;
   fileId: string;
   createdAt: number;
+}
+
+const STT_MODE_STORAGE_KEY = "media_import.stt_mode_v1";
+const STT_MODES: SttMode[] = ["manual", "missing_captions", "always"];
+
+function readStoredSttMode(): SttMode {
+  if (typeof window === "undefined") return "manual";
+  const raw = window.localStorage.getItem(STT_MODE_STORAGE_KEY);
+  return STT_MODES.includes(raw as SttMode) ? (raw as SttMode) : "manual";
 }
 
 function isSubscriptionKind(kind: SubscriptionKind): boolean {
@@ -90,6 +100,7 @@ export default function Composer({
   const [advanced, setAdvanced] = useState(false);
   const [backfill, setBackfill] = useState(15);
   const [includeNoTranscript, setIncludeNoTranscript] = useState(false);
+  const [sttMode, setSttMode] = useState<SttMode>("manual");
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -97,6 +108,10 @@ export default function Composer({
   const [dragOver, setDragOver] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setSttMode(readStoredSttMode());
+  }, []);
 
   useEffect(() => {
     const trimmed = url.trim();
@@ -150,7 +165,8 @@ export default function Composer({
         });
         await syncSubscription(drive, sub.id, backfill);
       } else {
-        const result = await createLoft(trimmed, drive, selectedFolder);
+        window.localStorage.setItem(STT_MODE_STORAGE_KEY, sttMode);
+        const result = await createLoft(trimmed, drive, selectedFolder, sttMode);
         const next: PendingItem = {
           url: trimmed,
           filename: result.filename,
@@ -216,6 +232,11 @@ export default function Composer({
       default: return t("composer.kind.unknown");
     }
   })();
+  const sttModeLabels: Record<SttMode, string> = {
+    manual: t("composer.sttMode.manual"),
+    missing_captions: t("composer.sttMode.missing_captions"),
+    always: t("composer.sttMode.always"),
+  };
 
   if (!expanded) {
     return (
@@ -298,6 +319,37 @@ export default function Composer({
           value={selectedFolder}
           onChange={setSelectedFolder}
         />
+
+        {!showSubscriptionFields && (
+          <div>
+            <label className="mb-1.5 block text-xs text-text-muted">
+              {t("composer.sttMode.label")}
+            </label>
+            <div
+              className="grid grid-cols-3 rounded-xl border border-bg-border bg-bg-primary p-1"
+              data-testid="composer-stt-mode"
+            >
+              {STT_MODES.map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => {
+                    setSttMode(mode);
+                    window.localStorage.setItem(STT_MODE_STORAGE_KEY, mode);
+                  }}
+                  className={
+                    mode === sttMode
+                      ? "rounded-lg bg-bg-card px-2 py-1.5 text-xs font-medium text-text-primary shadow-sm"
+                      : "rounded-lg px-2 py-1.5 text-xs text-text-muted hover:text-text-primary"
+                  }
+                  data-testid={`composer-stt-mode-${mode}`}
+                >
+                  {sttModeLabels[mode]}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {showSubscriptionFields && (
           <div data-testid="composer-advanced-section">

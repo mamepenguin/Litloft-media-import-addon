@@ -34,11 +34,26 @@
       "backfillHintChannel": "最新N件のアップロードを取り込みます。",
       "backfillHintPlaylist": "プレイリスト先頭からN件を取り込みます。",
       "includeNoTranscript": "字幕がない動画でも文字起こしを試みる",
+      "sttMode": {
+        "label": "文字起こし",
+        "manual": "手動",
+        "missing_captions": "字幕なし時",
+        "always": "常に実行"
+      },
       "submitImport": "取り込む",
       "submitSubscribe": "購読する",
       "submitting": "...",
       "errorFallback": "取り込みに失敗しました",
       "justImportedHeading": "直近の取り込み"
+    },
+    "loftMetadata": {
+      "refresh": "メタデータを更新",
+      "generateStt": "音声認識で字幕を生成",
+      "sttStatus": {
+        "queued": "文字起こしをキューに入れました",
+        "already_queued": "文字起こしは既にキューにあります",
+        "error": "文字起こしのキュー投入に失敗しました"
+      }
     },
     "dashboard": {
       "filter": {

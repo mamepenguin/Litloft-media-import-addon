@@ -165,10 +165,39 @@ describe("Composer submit dispatch", () => {
 
     await waitFor(() => {
       expect(mockCreateLoft).toHaveBeenCalledWith(
-        "https://example.com/video", "d", "",
+        "https://example.com/video", "d", "", "manual",
       );
       expect(onCreated).toHaveBeenCalled();
     });
+  });
+
+  it("persists and sends the selected STT mode for single imports", async () => {
+    mockResolveUrl.mockResolvedValue({
+      kind: "video", provider: "youtube", ref: "abc",
+    });
+    mockCreateLoft.mockResolvedValue({ file_id: "f1", filename: "x.loft" });
+
+    render(<Composer drive="d" initialExpanded={true} onCreated={() => {}} />);
+
+    fireEvent.change(
+      screen.getByPlaceholderText("https://..."),
+      { target: { value: "https://youtu.be/abc" } },
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId("composer-stt-mode")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("composer-stt-mode-missing_captions"));
+    fireEvent.click(screen.getByTestId("composer-submit"));
+
+    await waitFor(() => {
+      expect(mockCreateLoft).toHaveBeenCalledWith(
+        "https://youtu.be/abc", "d", "", "missing_captions",
+      );
+    });
+    expect(window.localStorage.getItem("media_import.stt_mode_v1")).toBe(
+      "missing_captions",
+    );
   });
 
   it("dispatches createSubscription + syncSubscription for channel URLs", async () => {

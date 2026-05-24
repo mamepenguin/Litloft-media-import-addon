@@ -12,7 +12,7 @@ import logging
 import re
 import unicodedata
 import urllib.request
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import app.config as config
@@ -26,11 +26,13 @@ from sqlalchemy import text
 from app.services.ws import broadcast_from_thread, manager
 from app.services import event_hooks
 
-from .schemas import LoftFetchItem
+from .schemas import LoftFetchItem, SttMode
 
 logger = logging.getLogger(__name__)
 
 _LOFT_MIME = "application/vnd.litloft.loft+json"
+_STT_TEMP_SUFFIX = ".stt_temp.m4a"
+_STT_TEMP_MAX_AGE = timedelta(hours=24)
 
 
 def _sanitize_filename(title: str) -> str:
@@ -239,6 +241,150 @@ def _download_captions_sync(
         _dedup_rolling_vtt(vtt_path)
         return True, None
     return False, None
+
+
+def _stt_temp_path(output_stem: Path) -> Path:
+    return output_stem.parent / f"{output_stem.name}{_STT_TEMP_SUFFIX}"
+
+
+def _cleanup_stt_temp(output_stem: Path) -> None:
+    parent = output_stem.parent
+    stem_name = output_stem.name
+    for path in parent.glob(f"{stem_name}.stt_temp.*"):
+        try:
+            if path.is_file():
+                path.unlink()
+        except FileNotFoundError:
+            continue
+        except Exception:
+                logger.warning("Failed to remove STT temp file: %s", path)
+
+
+def _resolve_drive_file_path(drive: str, relative_path: str) -> Path:
+    drive_path = config.get_drive_path(drive)
+    drive_root = drive_path.resolve()
+    target = (drive_path / relative_path).resolve()
+    if not (target == drive_root or target.is_relative_to(drive_root)):
+        raise ValueError("File path escapes drive root")
+    return target
+
+
+def _download_stt_audio_sync(url: str, output_stem: Path) -> Path:
+    """Download audio-only media for Intelligence STT handoff.
+
+    The final file is an adjacent ``*.stt_temp.m4a``. yt-dlp writes to a
+    temporary ``*.part`` target first; only after the download and
+    post-processing finish do we atomically move it into the handoff name.
+    """
+    import yt_dlp
+
+    parent = output_stem.parent
+    stem_name = output_stem.name
+    final_path = _stt_temp_path(output_stem)
+    part_template = parent / f"{stem_name}.stt_temp.%(ext)s.part"
+
+    _cleanup_stt_temp(output_stem)
+    parent.mkdir(parents=True, exist_ok=True)
+
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "format": "bestaudio/best",
+        "outtmpl": str(part_template),
+        "keepvideo": False,
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "m4a",
+            }
+        ],
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+
+        candidates = sorted(parent.glob(f"{stem_name}.stt_temp.*.part"))
+        if not candidates:
+            candidates = sorted(parent.glob(f"{stem_name}.stt_temp.*"))
+        candidates = [
+            p for p in candidates
+            if p.is_file() and p.name != final_path.name
+        ]
+        if not candidates:
+            raise RuntimeError("yt-dlp did not produce STT audio")
+
+        best = candidates[0]
+        best.replace(final_path)
+        for extra in candidates[1:]:
+            try:
+                if extra.exists():
+                    extra.unlink()
+            except Exception:
+                logger.warning("Failed to remove extra STT temp file: %s", extra)
+        return final_path
+    except Exception:
+        _cleanup_stt_temp(output_stem)
+        raise
+
+
+def _should_run_stt(
+    stt_mode: SttMode,
+    *,
+    has_captions: bool,
+    captions_downloaded: bool,
+) -> bool:
+    if stt_mode == "always":
+        return True
+    if stt_mode == "missing_captions":
+        # Only true absence should trigger STT automatically. Transient
+        # caption failures and rate limits stay on the caption retry path.
+        return not has_captions
+    return False
+
+
+def _cleanup_stale_stt_temp_files() -> int:
+    """Remove old STT temp/part files from configured drives."""
+    cutoff = datetime.now(UTC) - _STT_TEMP_MAX_AGE
+    removed = 0
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            text(
+                "SELECT drive, file_path FROM files "
+                "WHERE mime_type = :mime"
+            ),
+            {"mime": _LOFT_MIME},
+        ).mappings().all()
+    except Exception:
+        logger.warning("Failed to load loft refs for STT temp cleanup")
+        return 0
+    finally:
+        db.close()
+
+    for row in rows:
+        try:
+            loft_path = _resolve_drive_file_path(row["drive"], row["file_path"])
+            output_stem = loft_path.with_suffix("")
+            candidates = list(output_stem.parent.glob(f"{output_stem.name}.stt_temp.*"))
+        except Exception:
+            continue
+        for path in candidates:
+            try:
+                if not path.is_file():
+                    continue
+                mtime = datetime.fromtimestamp(path.stat().st_mtime, UTC)
+                if mtime > cutoff:
+                    continue
+                path.unlink()
+                removed += 1
+            except FileNotFoundError:
+                continue
+            except Exception:
+                logger.warning("Failed to remove stale STT temp file: %s", path)
+    if removed:
+        logger.info("Removed %d stale Media Import STT temp file(s)", removed)
+    return removed
 
 
 def _dedup_rolling_vtt(vtt_path: Path) -> None:
@@ -477,6 +623,8 @@ class LoftManager:
     def __init__(self) -> None:
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._items: dict[str, LoftFetchItem] = {}
+        self._stt_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._stt_items: dict[str, LoftFetchItem] = {}
 
     @property
     def pending_items(self) -> list[LoftFetchItem]:
@@ -486,8 +634,11 @@ class LoftManager:
         ]
 
     async def start_worker(self) -> None:
+        _cleanup_stale_stt_temp_files()
         asyncio.create_task(self._worker())
+        asyncio.create_task(self._stt_worker())
         asyncio.create_task(self._retry_failed_captions())
+        asyncio.create_task(self._cleanup_stale_stt_temp_files_periodically())
         logger.info("Loft fetch worker started")
 
     def create_loft_sync(
@@ -553,16 +704,34 @@ class LoftManager:
         finally:
             db.close()
 
-    async def enqueue_fetch(self, file_id: str, url: str, drive: str) -> None:
+    async def enqueue_fetch(
+        self,
+        file_id: str,
+        url: str,
+        drive: str,
+        stt_mode: SttMode = "manual",
+    ) -> None:
         """Queue a metadata fetch for a newly created .loft."""
         item = LoftFetchItem(
             file_id=file_id,
             url=url,
             drive=drive,
             status="queued",
+            stt_mode=stt_mode,
         )
         self._items[file_id] = item
         await self._queue.put(file_id)
+
+    async def enqueue_stt(self, file_id: str, drive: str) -> str:
+        """Queue manual STT generation for an existing .loft."""
+        current = self._stt_items.get(file_id)
+        if current and current.status in ("queued", "fetching"):
+            return "already_queued"
+
+        item = self._load_stt_item(file_id, drive)
+        self._stt_items[file_id] = item
+        await self._stt_queue.put(file_id)
+        return "queued"
 
     async def _worker(self) -> None:
         while True:
@@ -581,6 +750,69 @@ class LoftManager:
                 item.status = "error"
             finally:
                 self._queue.task_done()
+
+    async def _stt_worker(self) -> None:
+        while True:
+            file_id = await self._stt_queue.get()
+            item = self._stt_items.get(file_id)
+            if not item or item.status != "queued":
+                self._stt_queue.task_done()
+                continue
+            try:
+                item.status = "fetching"
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self._download_stt_and_notify, item)
+                item.status = "completed"
+            except Exception:
+                logger.exception("Loft STT handoff failed: %s", item.url)
+                item.status = "error"
+            finally:
+                self._stt_queue.task_done()
+
+    async def _cleanup_stale_stt_temp_files_periodically(self) -> None:
+        while True:
+            await asyncio.sleep(6 * 60 * 60)
+            await asyncio.to_thread(_cleanup_stale_stt_temp_files)
+
+    def _load_stt_item(self, file_id: str, drive: str) -> LoftFetchItem:
+        db = SessionLocal()
+        try:
+            file_record = (
+                db.query(File)
+                .filter(
+                    File.id == file_id,
+                    File.drive == drive,
+                    File.deleted_at.is_(None),
+                    File.missing_since.is_(None),
+                )
+                .first()
+            )
+            if not file_record or file_record.mime_type != _LOFT_MIME:
+                raise FileNotFoundError(file_id)
+
+            row = db.execute(
+                text("SELECT url FROM loft_metadata WHERE file_id = :file_id"),
+                {"file_id": file_id},
+            ).mappings().first()
+            url = row["url"] if row else None
+            if not url:
+                loft_path = _resolve_drive_file_path(
+                    file_record.drive, file_record.file_path
+                )
+                body = json.loads(loft_path.read_text(encoding="utf-8"))
+                url = body.get("url")
+            if not isinstance(url, str) or not url.strip():
+                raise ValueError("Loft URL is missing")
+
+            return LoftFetchItem(
+                file_id=file_id,
+                url=url,
+                drive=drive,
+                status="queued",
+                stt_mode="always",
+            )
+        finally:
+            db.close()
 
     async def _retry_failed_captions(self) -> None:
         """Retry caption downloads for loft refs that failed previously.
@@ -686,8 +918,9 @@ class LoftManager:
             caption_error_kind: str | None = None
             if meta.get("has_captions"):
                 try:
-                    drive_path = config.get_drive_path(file_record.drive)
-                    loft_path = drive_path / file_record.file_path
+                    loft_path = _resolve_drive_file_path(
+                        file_record.drive, file_record.file_path
+                    )
                     output_stem = loft_path.with_suffix("")
                     captions_ok, caption_error_kind = _download_captions_sync(
                         item.url, output_stem, language=meta.get("language"),
@@ -720,6 +953,13 @@ class LoftManager:
                     "scan.complete", {"drive": file_record.drive}
                 )
 
+            if _should_run_stt(
+                item.stt_mode,
+                has_captions=bool(meta.get("has_captions")),
+                captions_downloaded=captions_ok,
+            ):
+                self._download_stt_and_notify(item)
+
             broadcast_from_thread("files.updated", {
                 "file_id": item.file_id,
                 "drive": file_record.drive,
@@ -727,6 +967,46 @@ class LoftManager:
 
         except Exception:
             db.rollback()
+            raise
+        finally:
+            db.close()
+
+    def _download_stt_and_notify(self, item: LoftFetchItem) -> Path:
+        db = SessionLocal()
+        output_stem: Path | None = None
+        try:
+            file_record = (
+                db.query(File)
+                .filter(
+                    File.id == item.file_id,
+                    File.drive == item.drive,
+                    File.deleted_at.is_(None),
+                    File.missing_since.is_(None),
+                )
+                .first()
+            )
+            if not file_record or file_record.mime_type != _LOFT_MIME:
+                raise FileNotFoundError(item.file_id)
+
+            loft_path = _resolve_drive_file_path(
+                file_record.drive, file_record.file_path
+            )
+            output_stem = loft_path.with_suffix("")
+            temp_path = _download_stt_audio_sync(item.url, output_stem)
+
+            # Handoff to Intelligence via the existing scan-complete hook.
+            # Its reconcile pass detects the adjacent .stt_temp audio and
+            # queues the normal whisper task for this .loft.
+            event_hooks.emit_sync("scan.complete", {"drive": file_record.drive})
+            broadcast_from_thread(
+                "files.updated",
+                {"file_id": item.file_id, "drive": file_record.drive},
+                drive=file_record.drive,
+            )
+            return temp_path
+        except Exception:
+            if output_stem is not None:
+                _cleanup_stt_temp(output_stem)
             raise
         finally:
             db.close()

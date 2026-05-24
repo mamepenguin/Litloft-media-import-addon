@@ -1,17 +1,33 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { RefreshCw } from "lucide-react";
-import { getLoftMetadata, refreshLoft, type LoftMetadata } from "./api";
+import { Captions, RefreshCw } from "lucide-react";
+import { useTranslations } from "next-intl";
+import {
+  generateLoftStt,
+  getLoftMetadata,
+  refreshLoft,
+  type LoftMetadata,
+} from "./api";
 import CaptionStatusBadge from "./CaptionStatusBadge";
 
 /**
  * LoftMetadataPanel — channel/description/captions-status panel rendered
  * below the Core LoftPlayer. Owned by the Media Import addon (Phase 1).
  */
-export default function LoftMetadataPanel({ fileId }: { fileId: string }) {
+export default function LoftMetadataPanel({
+  fileId,
+  drive,
+}: {
+  fileId: string;
+  drive: string;
+}) {
+  const t = useTranslations("mediaImport.loftMetadata");
   const [metadata, setMetadata] = useState<LoftMetadata | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [sttStatus, setSttStatus] = useState<
+    "idle" | "queued" | "already_queued" | "error"
+  >("idle");
 
   useEffect(() => {
     getLoftMetadata(fileId).then(setMetadata);
@@ -31,7 +47,24 @@ export default function LoftMetadataPanel({ fileId }: { fileId: string }) {
     }
   }
 
+  async function handleGenerateStt() {
+    if (!drive) return;
+    setSttStatus("queued");
+    try {
+      const result = await generateLoftStt(fileId, drive);
+      setSttStatus(result.status);
+    } catch {
+      setSttStatus("error");
+    }
+  }
+
   if (!metadata) return null;
+
+  const sttStatusLabels = {
+    queued: t("sttStatus.queued"),
+    already_queued: t("sttStatus.already_queued"),
+    error: t("sttStatus.error"),
+  };
 
   return (
     <>
@@ -53,11 +86,32 @@ export default function LoftMetadataPanel({ fileId }: { fileId: string }) {
           onClick={handleRefresh}
           disabled={refreshing}
           className="shrink-0 rounded-lg p-1.5 text-text-muted hover:bg-bg-card hover:text-text-primary disabled:opacity-50"
-          title="Refresh metadata"
+          title={t("refresh")}
         >
           <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
         </button>
+        <button
+          onClick={handleGenerateStt}
+          disabled={sttStatus === "queued" || sttStatus === "already_queued"}
+          className="shrink-0 rounded-lg p-1.5 text-text-muted hover:bg-bg-card hover:text-text-primary disabled:opacity-50"
+          title={t("generateStt")}
+          data-testid="loft-generate-stt"
+        >
+          <Captions size={14} />
+        </button>
       </div>
+      {sttStatus !== "idle" && (
+        <div
+          className={
+            sttStatus === "error"
+              ? "mt-2 text-xs text-danger"
+              : "mt-2 text-xs text-text-muted"
+          }
+          data-testid="loft-stt-status"
+        >
+          {sttStatusLabels[sttStatus]}
+        </div>
+      )}
       <CaptionStatusBadge
         metadata={metadata}
         onRetry={handleRefresh}

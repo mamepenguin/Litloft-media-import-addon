@@ -158,7 +158,9 @@ async def create_loft(
         logger.exception("Failed to create loft ref: %s", request.url)
         raise HTTPException(status_code=500, detail="Failed to create link")
 
-    await loft_manager.enqueue_fetch(file_id, request.url, request.drive)
+    await loft_manager.enqueue_fetch(
+        file_id, request.url, request.drive, request.stt_mode
+    )
 
     return LoftCreateResponse(file_id=file_id, filename=filename)
 
@@ -201,6 +203,22 @@ async def refresh_loft(file_id: str) -> dict:
 
     await loft_manager.enqueue_fetch(file_id, url, drive)
     return {"status": "queued"}
+
+
+@router.post("/link/{file_id}/stt")
+async def generate_loft_stt(
+    file_id: str,
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
+) -> dict:
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    try:
+        status = await loft_manager.enqueue_stt(file_id, scoped)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="File not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"status": status}
 
 
 # ---- Subscriptions (Phase 2 Commit 4) -----------------------------

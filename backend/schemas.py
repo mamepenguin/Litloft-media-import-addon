@@ -2,11 +2,14 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+SttMode = Literal["always", "missing_captions", "manual"]
+
 
 class LoftCreateRequest(BaseModel):
     url: str
     drive: str
     folder_path: str = ""
+    stt_mode: SttMode = "manual"
 
 
 class LoftCreateResponse(BaseModel):
@@ -19,6 +22,7 @@ class LoftFetchItem(BaseModel):
     url: str
     drive: str
     status: str = "queued"  # queued | fetching | completed | error
+    stt_mode: SttMode = "manual"
 
 
 class LoftMetadataResponse(BaseModel):

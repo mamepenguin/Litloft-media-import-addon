@@ -34,11 +34,26 @@
       "backfillHintChannel": "Most-recent N uploads.",
       "backfillHintPlaylist": "Items from the start of the playlist.",
       "includeNoTranscript": "Try to fetch transcripts even when none reported",
+      "sttMode": {
+        "label": "Speech-to-text",
+        "manual": "Manual",
+        "missing_captions": "If no captions",
+        "always": "Always"
+      },
       "submitImport": "Import",
       "submitSubscribe": "Subscribe",
       "submitting": "...",
       "errorFallback": "Failed to import",
       "justImportedHeading": "Just imported"
+    },
+    "loftMetadata": {
+      "refresh": "Refresh metadata",
+      "generateStt": "Generate captions with speech-to-text",
+      "sttStatus": {
+        "queued": "Speech-to-text queued",
+        "already_queued": "Speech-to-text is already queued",
+        "error": "Failed to queue speech-to-text"
+      }
     },
     "dashboard": {
       "filter": {

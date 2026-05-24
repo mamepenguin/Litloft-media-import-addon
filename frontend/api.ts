@@ -12,6 +12,8 @@ export interface LoftCreateResponse {
   filename: string;
 }
 
+export type SttMode = "always" | "missing_captions" | "manual";
+
 export type CaptionErrorKind = "rate_limited" | "permanent" | null;
 
 export interface LoftMetadata {
@@ -32,18 +34,31 @@ export async function createLoft(
   url: string,
   drive: string,
   folder_path: string,
+  stt_mode: SttMode = "manual",
 ): Promise<LoftCreateResponse> {
   const res = await fetch(`${BASE}/link`, {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json", ...driveHeaders(drive) },
-    body: JSON.stringify({ url, drive, folder_path }),
+    body: JSON.stringify({ url, drive, folder_path, stt_mode }),
   });
   if (!res.ok) {
     const data = await res.json().catch(() => null);
     throw new Error(data?.detail ?? `Error: ${res.status}`);
   }
   return res.json();
+}
+
+export async function generateLoftStt(
+  fileId: string,
+  drive: string,
+): Promise<{ status: "queued" | "already_queued" }> {
+  const res = await fetch(`${BASE}/link/${fileId}/stt`, {
+    method: "POST",
+    credentials: "include",
+    headers: driveHeaders(drive),
+  });
+  return _json<{ status: "queued" | "already_queued" }>(res);
 }
 
 export async function getLoftMetadata(

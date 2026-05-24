@@ -10,6 +10,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -151,3 +152,90 @@ class TestCreateLoftSync:
         assert row is not None
         assert row.deleted_at is None
         assert row.missing_since is None
+
+
+class TestSttMode:
+    def test_missing_captions_only_runs_when_provider_reports_none(self) -> None:
+        from addons.media_import.service import _should_run_stt
+
+        assert _should_run_stt(
+            "missing_captions",
+            has_captions=False,
+            captions_downloaded=False,
+        )
+        assert not _should_run_stt(
+            "missing_captions",
+            has_captions=True,
+            captions_downloaded=False,
+        )
+
+    def test_always_runs_even_when_captions_downloaded(self) -> None:
+        from addons.media_import.service import _should_run_stt
+
+        assert _should_run_stt(
+            "always",
+            has_captions=True,
+            captions_downloaded=True,
+        )
+
+    def test_cleanup_stt_temp_removes_part_and_final_files(
+        self, tmp_path: Path
+    ) -> None:
+        from addons.media_import.service import _cleanup_stt_temp
+
+        stem = tmp_path / "Video"
+        final = tmp_path / "Video.stt_temp.m4a"
+        part = tmp_path / "Video.stt_temp.webm.part"
+        other = tmp_path / "Video.vtt"
+        final.write_bytes(b"a")
+        part.write_bytes(b"b")
+        other.write_text("WEBVTT", encoding="utf-8")
+
+        _cleanup_stt_temp(stem)
+
+        assert not final.exists()
+        assert not part.exists()
+        assert other.exists()
+
+    def test_stale_cleanup_scans_registered_loft_refs_only(
+        self, media_import_db, drive_path
+    ) -> None:
+        from datetime import UTC, datetime
+
+        from app.models import File
+        from addons.media_import.service import _cleanup_stale_stt_temp_files
+
+        loft = drive_path / "Video.loft"
+        loft.write_text("{}", encoding="utf-8")
+        old_temp = drive_path / "Video.stt_temp.m4a"
+        old_temp.write_bytes(b"audio")
+        fresh_temp = drive_path / "Other.stt_temp.m4a"
+        fresh_temp.write_bytes(b"audio")
+        old_ts = 946684800
+        os.utime(old_temp, (old_ts, old_ts))
+        os.utime(fresh_temp, (old_ts, old_ts))
+
+        db = media_import_db()
+        try:
+            db.add(
+                File(
+                    id="fsttclean",
+                    filename="Video.loft",
+                    title="Video",
+                    drive="drv",
+                    folder_path="",
+                    file_path="Video.loft",
+                    file_size=1,
+                    file_type="other",
+                    mime_type="application/vnd.litloft.loft+json",
+                    created_at=datetime.now(UTC),
+                    updated_at=datetime.now(UTC),
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        assert _cleanup_stale_stt_temp_files() == 1
+        assert not old_temp.exists()
+        assert fresh_temp.exists()

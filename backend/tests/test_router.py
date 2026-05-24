@@ -56,6 +56,40 @@ class TestCreateLoftEndpoint:
         assert body["filename"] == "Test Video.loft"
         assert isinstance(body["file_id"], str) and body["file_id"]
 
+    def test_passes_stt_mode_to_fetch_queue(self, client) -> None:
+        from addons.media_import.router import loft_manager
+
+        captured: list[tuple[str, str, str, str]] = []
+
+        async def _capture(
+            file_id: str, url: str, drive: str, stt_mode: str = "manual"
+        ) -> None:
+            captured.append((file_id, url, drive, stt_mode))
+
+        with patch.object(loft_manager, "enqueue_fetch", _capture), patch(
+            "addons.media_import.service._extract_title_sync",
+            return_value="Test Video",
+        ):
+            res = client.post(
+                "/api/addons/media_import/link",
+                json={
+                    "url": "https://www.youtube.com/watch?v=abc",
+                    "drive": "drv",
+                    "folder_path": "",
+                    "stt_mode": "missing_captions",
+                },
+            )
+
+        assert res.status_code == 200
+        assert captured == [
+            (
+                res.json()["file_id"],
+                "https://www.youtube.com/watch?v=abc",
+                "drv",
+                "missing_captions",
+            )
+        ]
+
     def test_rejects_blank_url(self, client) -> None:
         res = client.post(
             "/api/addons/media_import/link",
@@ -186,3 +220,32 @@ class TestRefreshEndpoint:
         assert res.status_code == 200
         assert res.json() == {"status": "queued"}
         assert captured == [("frefresh01", "https://x", "drv")]
+
+
+class TestManualSttEndpoint:
+    def test_queues_manual_stt(self, client) -> None:
+        from addons.media_import.router import loft_manager
+
+        captured: list[tuple[str, str]] = []
+
+        async def _capture(file_id: str, drive: str) -> str:
+            captured.append((file_id, drive))
+            return "queued"
+
+        with patch.object(loft_manager, "enqueue_stt", _capture):
+            res = client.post("/api/addons/media_import/link/fstt01/stt")
+
+        assert res.status_code == 200
+        assert res.json() == {"status": "queued"}
+        assert captured == [("fstt01", "drv")]
+
+    def test_manual_stt_unknown_file_returns_404(self, client) -> None:
+        from addons.media_import.router import loft_manager
+
+        async def _raise(_file_id: str, _drive: str) -> str:
+            raise FileNotFoundError("missing")
+
+        with patch.object(loft_manager, "enqueue_stt", _raise):
+            res = client.post("/api/addons/media_import/link/missing/stt")
+
+        assert res.status_code == 404
