@@ -310,6 +310,22 @@ export async function retrySubscriptionVideo(
   return _json<SubscriptionEnqueueResult>(res);
 }
 
+export async function dismissSubscriptionVideo(
+  drive: string,
+  id: number,
+  itemId: string,
+): Promise<ResolveConflictResult> {
+  const res = await fetch(
+    `${BASE}/subscriptions/${id}/videos/${encodeURIComponent(itemId)}/dismiss`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: driveHeaders(drive),
+    },
+  );
+  return _json<ResolveConflictResult>(res);
+}
+
 // ---- Phase 4 additions: PATCH / summary / refresh / activity / conflict ----
 
 export async function patchSubscription(

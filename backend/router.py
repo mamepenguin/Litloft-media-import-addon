@@ -841,3 +841,25 @@ async def resolve_video_conflict(
         subscription_id, kind="retry", item_id=item_id
     )
     return ResolveConflictResponse(status="requeued")
+
+
+@router.post(
+    "/subscriptions/{subscription_id}/videos/{item_id}/dismiss",
+    response_model=ResolveConflictResponse,
+)
+async def dismiss_video(
+    subscription_id: int,
+    item_id: str,
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
+) -> ResolveConflictResponse:
+    """Mark a failed video as dismissed so it no longer appears in the
+    attention list. Use when the video has been removed upstream or the
+    failure is not worth retrying."""
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    _load_owned_subscription(subscription_id, scoped, unlocked_groups)
+
+    ok = subdb.mark_video_dismissed(subscription_id, item_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="video not found")
+    return ResolveConflictResponse(status="dismissed")

@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { ExternalLink, RefreshCw } from "lucide-react";
+import { ExternalLink, RefreshCw, X } from "lucide-react";
 
 import type { SubscriptionVideo } from "./api";
 import { isRetryable, normalizeErrorKind } from "./lib/errorMessages";
@@ -10,8 +10,10 @@ import { isRetryable, normalizeErrorKind } from "./lib/errorMessages";
 interface Props {
   video: SubscriptionVideo;
   retrying: boolean;
+  dismissing: boolean;
   onRetry: () => void;
   onResolveConflict: () => void;
+  onDismiss: () => void;
 }
 
 /**
@@ -28,8 +30,10 @@ interface Props {
 export default function SubscriptionItemRow({
   video,
   retrying,
+  dismissing,
   onRetry,
   onResolveConflict,
+  onDismiss,
 }: Props) {
   const router = useRouter();
   const tItem = useTranslations("mediaImport.item");
@@ -40,6 +44,8 @@ export default function SubscriptionItemRow({
     video.status === "failed" && isRetryable(video.error_kind);
   const showResolveConflict =
     video.status === "failed" && video.error_kind === "path_conflict";
+  const showDismiss =
+    video.status === "failed" && video.error_kind !== "dismissed";
 
   const statusBg =
     video.status === "imported"
@@ -112,6 +118,18 @@ export default function SubscriptionItemRow({
         >
           <RefreshCw size={12} className={retrying ? "animate-spin" : ""} />
           {tItem("retry")}
+        </button>
+      )}
+      {showDismiss && (
+        <button
+          type="button"
+          onClick={onDismiss}
+          disabled={dismissing}
+          className="shrink-0 flex items-center gap-1 rounded-full px-2.5 py-1 text-xs text-text-muted hover:bg-bg-elevated hover:text-text-primary disabled:opacity-50"
+          data-testid={`dismiss-${video.item_id}`}
+        >
+          <X size={12} />
+          {tItem("dismiss")}
         </button>
       )}
     </li>

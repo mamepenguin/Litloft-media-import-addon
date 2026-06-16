@@ -8,6 +8,7 @@ import { useWebSocket } from "@/hooks/useWebSocket";
 
 import {
   deleteSubscription,
+  dismissSubscriptionVideo,
   extendBackfill,
   listSubscriptionVideos,
   patchSubscription,
@@ -56,6 +57,7 @@ export default function SubscriptionDetailPanel({
   const [videos, setVideos] = useState<SubscriptionVideo[]>([]);
   const [loadingVideos, setLoadingVideos] = useState(true);
   const [retrying, setRetrying] = useState<Set<string>>(new Set());
+  const [dismissing, setDismissing] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [conflictItem, setConflictItem] = useState<string | null>(null);
@@ -199,6 +201,26 @@ export default function SubscriptionDetailPanel({
       setError(e instanceof Error ? e.message : t("errors.retryFailed"));
     } finally {
       setRetrying((prev) => {
+        const next = new Set(prev);
+        next.delete(itemId);
+        return next;
+      });
+    }
+  }
+
+  async function handleDismiss(itemId: string) {
+    setDismissing((prev) => new Set(prev).add(itemId));
+    try {
+      await dismissSubscriptionVideo(drive, subscription.id, itemId);
+      setVideos((prev) =>
+        prev.map((v) =>
+          v.item_id === itemId ? { ...v, error_kind: "dismissed" } : v,
+        ),
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("errors.dismissFailed"));
+    } finally {
+      setDismissing((prev) => {
         const next = new Set(prev);
         next.delete(itemId);
         return next;
@@ -453,8 +475,10 @@ export default function SubscriptionDetailPanel({
                         key={v.item_id}
                         video={v}
                         retrying={retrying.has(v.item_id)}
+                        dismissing={dismissing.has(v.item_id)}
                         onRetry={() => handleRetry(v.item_id)}
                         onResolveConflict={() => setConflictItem(v.item_id)}
+                        onDismiss={() => handleDismiss(v.item_id)}
                       />
                     ))}
                   </ul>
@@ -471,8 +495,10 @@ export default function SubscriptionDetailPanel({
                         key={v.item_id}
                         video={v}
                         retrying={false}
+                        dismissing={false}
                         onRetry={() => {}}
                         onResolveConflict={() => {}}
+                        onDismiss={() => {}}
                       />
                     ))}
                   </ul>

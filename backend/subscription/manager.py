@@ -338,6 +338,7 @@ class SubscriptionManager:
                 self._record_video_safe(
                     subscription_id, item_id, status="failed",
                     file_id=None, first_seen=first_seen,
+                    error_kind="fetch_failed",
                 )
                 failed += 1
                 continue
@@ -402,6 +403,7 @@ class SubscriptionManager:
             self._record_video_safe(
                 subscription_id, item_id, status="failed",
                 file_id=None, first_seen=first_seen,
+                error_kind="fetch_failed",
             )
             return {"added": 0, "reused": 0, "failed": 1, "total_new": 0}
 

@@ -146,6 +146,7 @@
         "refreshFailed": "Refresh failed",
         "deleteFailed": "Delete failed",
         "retryFailed": "Retry failed",
+        "dismissFailed": "Failed to dismiss",
         "backfillFailed": "Failed to queue backfill"
       }
     },
@@ -156,6 +157,7 @@
       "untitled": "Untitled video",
       "openFile": "Open file",
       "retry": "Retry",
+      "dismiss": "Ignore",
       "resolveConflict": "Resolve…"
     },
     "errorKind": {

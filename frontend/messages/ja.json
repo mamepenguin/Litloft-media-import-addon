@@ -146,6 +146,7 @@
         "refreshFailed": "メタデータ更新に失敗しました",
         "deleteFailed": "削除に失敗しました",
         "retryFailed": "再試行に失敗しました",
+        "dismissFailed": "無視操作に失敗しました",
         "backfillFailed": "取り込みの開始に失敗しました"
       }
     },
@@ -156,6 +157,7 @@
       "untitled": "未取得の動画",
       "openFile": "ファイルを開く",
       "retry": "再試行",
+      "dismiss": "無視",
       "resolveConflict": "解決..."
     },
     "errorKind": {

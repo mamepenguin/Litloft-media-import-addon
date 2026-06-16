@@ -52,8 +52,8 @@ describe("isRetryable", () => {
     expect(isRetryable("path_conflict")).toBe(true);
   });
 
-  it("returns false when error_kind is null", () => {
-    expect(isRetryable(null)).toBe(false);
+  it("returns true when error_kind is null (legacy rows without classification)", () => {
+    expect(isRetryable(null)).toBe(true);
   });
 
   it("treats unrecognised kinds as retryable (the 'unknown' bucket)", () => {

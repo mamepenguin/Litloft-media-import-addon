@@ -33,6 +33,8 @@ export function normalizeErrorKind(raw: string | null): ErrorKind | null {
 
 export function isRetryable(raw: string | null): boolean {
   const kind = normalizeErrorKind(raw);
-  if (!kind) return false;
+  // null = cause unknown (legacy rows before fetch_failed was introduced).
+  // Treat as retryable; only permanent/dismissed should suppress the button.
+  if (!kind) return true;
   return RETRYABLE[kind];
 }
