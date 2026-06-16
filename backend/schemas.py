@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 SttMode = Literal["always", "missing_captions", "manual"]
 
@@ -129,6 +129,18 @@ class SubscriptionVideoResponse(BaseModel):
     thumbnail_path: str | None = None
     channel: str | None = None
     published_at: str | None = None
+
+
+class SubscriptionBackfillRequest(BaseModel):
+    """Body for POST /subscriptions/{id}/backfill.
+
+    ``count`` is the number of *additional* upstream items to fetch
+    beyond what is already known. The endpoint adds this to the current
+    seen-item count so that ``provider.list_items(limit=n_seen+count)``
+    naturally skips already-imported items via the seen-set diff.
+    """
+
+    count: int = Field(15, ge=1, le=200)
 
 
 class SubscriptionEnqueueResponse(BaseModel):

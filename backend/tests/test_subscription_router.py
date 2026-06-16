@@ -445,6 +445,109 @@ class TestSyncSubscription:
         assert res.status_code == 404
 
 
+# ---- backfill -----------------------------------------------------
+
+
+class TestBackfillSubscription:
+    def test_returns_queued(
+        self, client, fake_provider: _FakeProvider, drive_path
+    ) -> None:
+        fake_provider.headers = [ItemHeader(item_id="vid_a", title="A")]
+        fake_provider.items = {
+            "vid_a": ItemMetadata(
+                item_id="vid_a", canonical_url="https://fake/v/a", title="A",
+            ),
+        }
+        create = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
+        )
+        sub_id = create.json()["id"]
+
+        res = client.post(
+            f"/api/addons/media_import/subscriptions/{sub_id}/backfill",
+            json={"count": 10},
+        )
+        assert res.status_code == 200
+        assert res.json() == {"status": "queued"}
+        _drain_worker()
+
+    def test_count_below_minimum_returns_422(self, client) -> None:
+        create = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
+        )
+        sub_id = create.json()["id"]
+        res = client.post(
+            f"/api/addons/media_import/subscriptions/{sub_id}/backfill",
+            json={"count": 0},
+        )
+        assert res.status_code == 422
+
+    def test_count_above_maximum_returns_422(self, client) -> None:
+        create = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
+        )
+        sub_id = create.json()["id"]
+        res = client.post(
+            f"/api/addons/media_import/subscriptions/{sub_id}/backfill",
+            json={"count": 201},
+        )
+        assert res.status_code == 422
+
+    def test_unknown_id_returns_404(self, client) -> None:
+        res = client.post(
+            "/api/addons/media_import/subscriptions/9999/backfill",
+            json={"count": 15},
+        )
+        assert res.status_code == 404
+
+    def test_already_queued_returns_already_queued(
+        self, client, fake_provider: _FakeProvider
+    ) -> None:
+        from addons.media_import.subscription.worker import subscription_worker
+
+        fake_provider.headers = [ItemHeader(item_id="x", title="X")]
+        fake_provider.items = {
+            "x": ItemMetadata(
+                item_id="x", canonical_url="https://fake/v/x", title="X",
+            ),
+        }
+        original = fake_provider.fetch_item
+
+        def _slow(ref, item_id):
+            time.sleep(0.3)
+            return original(ref, item_id)
+
+        fake_provider.fetch_item = _slow  # type: ignore[method-assign]
+
+        create = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
+        )
+        sub_id = create.json()["id"]
+
+        first = client.post(
+            f"/api/addons/media_import/subscriptions/{sub_id}/backfill",
+            json={"count": 15},
+        )
+        assert first.json() == {"status": "queued"}
+
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            if sub_id in subscription_worker.running_ids:
+                break
+            time.sleep(0.02)
+
+        second = client.post(
+            f"/api/addons/media_import/subscriptions/{sub_id}/backfill",
+            json={"count": 15},
+        )
+        assert second.json() == {"status": "already_queued"}
+        _drain_worker()
+
+
 # ---- list videos --------------------------------------------------
 
 

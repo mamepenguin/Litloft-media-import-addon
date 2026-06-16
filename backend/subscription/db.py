@@ -480,6 +480,27 @@ def load_cooldown_state(
 # ---- subscription_videos -----------------------------------------
 
 
+def count_seen_item_ids(subscription_id: int) -> int:
+    """Return the number of item_ids already recorded for a subscription.
+
+    Used by the backfill endpoint to compute ``limit = n_seen + extra``
+    so that ``_sync_diff`` fetches enough upstream items to yield
+    ``extra`` new ones (already-seen items are filtered by the diff).
+    """
+    db = SessionLocal()
+    try:
+        row = db.execute(
+            text(
+                "SELECT COUNT(*) FROM subscription_videos "
+                "WHERE subscription_id = :id"
+            ),
+            {"id": subscription_id},
+        ).fetchone()
+    finally:
+        db.close()
+    return row[0] if row else 0
+
+
 def load_seen_item_ids(subscription_id: int) -> set[str]:
     db = SessionLocal()
     try:

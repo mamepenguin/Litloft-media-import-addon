@@ -8,6 +8,7 @@ Endpoints:
 - GET  /api/addons/media_import/subscriptions?drive=X
 - DELETE /api/addons/media_import/subscriptions/{id}
 - POST /api/addons/media_import/subscriptions/{id}/sync
+- POST /api/addons/media_import/subscriptions/{id}/backfill
 - GET  /api/addons/media_import/subscriptions/{id}/videos
 - POST /api/addons/media_import/subscriptions/{id}/videos/{item_id}/retry
 
@@ -39,6 +40,7 @@ from .schemas import (
     LoftMetadataResponse,
     ResolveConflictRequest,
     ResolveConflictResponse,
+    SubscriptionBackfillRequest,
     SubscriptionCreateRequest,
     SubscriptionEnqueueResponse,
     SubscriptionPatchRequest,
@@ -610,6 +612,35 @@ async def sync_subscription(
     _load_owned_subscription(subscription_id, scoped, unlocked_groups)
     queued = await subscription_worker.enqueue_sync(
         subscription_id, kind="manual", backfill=backfill
+    )
+    return SubscriptionEnqueueResponse(
+        status="queued" if queued else "already_queued"
+    )
+
+
+@router.post(
+    "/subscriptions/{subscription_id}/backfill",
+    response_model=SubscriptionEnqueueResponse,
+)
+async def backfill_subscription(
+    subscription_id: int,
+    request: SubscriptionBackfillRequest,
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
+) -> SubscriptionEnqueueResponse:
+    """Fetch ``request.count`` more historical items for a subscription.
+
+    Computes ``limit = n_seen + count`` so that ``_sync_diff`` skips
+    already-known items and imports up to ``count`` new older ones.
+    Uses ``kind="manual"`` so cron backoff state is not disturbed.
+    """
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    _load_owned_subscription(subscription_id, scoped, unlocked_groups)
+    n_seen = subdb.count_seen_item_ids(subscription_id)
+    queued = await subscription_worker.enqueue_sync(
+        subscription_id,
+        kind="manual",
+        backfill=n_seen + request.count,
     )
     return SubscriptionEnqueueResponse(
         status="queued" if queued else "already_queued"

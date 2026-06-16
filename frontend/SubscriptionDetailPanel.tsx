@@ -2,12 +2,13 @@
 
 import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
-import { Loader2, RefreshCw, Trash2, X } from "lucide-react";
+import { Loader2, Pencil, RefreshCw, Trash2, X } from "lucide-react";
 
 import { useWebSocket } from "@/hooks/useWebSocket";
 
 import {
   deleteSubscription,
+  extendBackfill,
   listSubscriptionVideos,
   patchSubscription,
   refreshSubscriptionMetadata,
@@ -61,6 +62,11 @@ export default function SubscriptionDetailPanel({
   const [editingCooldown, setEditingCooldown] = useState(
     subscription.cooldown_minutes,
   );
+  const [editingFolder, setEditingFolder] = useState(false);
+  const [folderInput, setFolderInput] = useState(subscription.folder_path);
+  const [backfillCount, setBackfillCount] = useState(15);
+  const [backfilling, setBackfilling] = useState(false);
+  const [backfillMessage, setBackfillMessage] = useState<string | null>(null);
 
   const completedEvent = useWebSocket(
     "media_import.subscription.sync_completed",
@@ -95,6 +101,7 @@ export default function SubscriptionDetailPanel({
   useEffect(() => {
     setSubscription(initial);
     setEditingCooldown(initial.cooldown_minutes);
+    setFolderInput(initial.folder_path);
   }, [initial]);
 
   useEffect(() => {
@@ -147,6 +154,20 @@ export default function SubscriptionDetailPanel({
       setError(e instanceof Error ? e.message : t("errors.refreshFailed"));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleBackfill() {
+    setBackfilling(true);
+    setBackfillMessage(null);
+    try {
+      await extendBackfill(drive, subscription.id, backfillCount);
+      setBackfillMessage(t("items.backfillQueued"));
+      loadVideos();
+    } catch {
+      setBackfillMessage(t("items.backfillFailed"));
+    } finally {
+      setBackfilling(false);
     }
   }
 
@@ -336,11 +357,58 @@ export default function SubscriptionDetailPanel({
           <h3 className="text-[11px] font-semibold uppercase text-text-muted">
             {t("destination.heading")}
           </h3>
-          <div className="mt-1.5 break-anywhere text-xs text-text-primary">
-            {subscription.folder_path
-              ? `/${subscription.folder_path}`
-              : "/"}
-          </div>
+          {editingFolder ? (
+            <div className="mt-2 flex items-center gap-2">
+              <input
+                type="text"
+                value={folderInput}
+                onChange={(e) => setFolderInput(e.target.value)}
+                placeholder={t("destination.placeholder")}
+                className="min-w-0 flex-1 rounded-2xl border border-bg-border bg-bg-primary px-3 py-1 text-xs text-text-primary focus:border-focus-ring focus:outline-none"
+                data-testid="folder-input"
+              />
+              <button
+                type="button"
+                onClick={async () => {
+                  await applyPatch({ folder_path: folderInput });
+                  setEditingFolder(false);
+                }}
+                disabled={busy || folderInput === subscription.folder_path}
+                className="rounded-2xl bg-sand px-3 py-1 text-xs text-text-primary hover:bg-sand-hover disabled:opacity-50"
+                data-testid="folder-save"
+              >
+                {t("destination.save")}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setFolderInput(subscription.folder_path);
+                  setEditingFolder(false);
+                }}
+                className="rounded-2xl px-3 py-1 text-xs text-text-muted hover:bg-bg-elevated"
+                data-testid="folder-cancel"
+              >
+                {t("destination.cancel")}
+              </button>
+            </div>
+          ) : (
+            <div className="mt-1.5 flex items-center gap-2">
+              <span className="break-anywhere text-xs text-text-primary">
+                {subscription.folder_path
+                  ? `/${subscription.folder_path}`
+                  : "/"}
+              </span>
+              <button
+                type="button"
+                onClick={() => setEditingFolder(true)}
+                className="rounded p-0.5 text-text-muted hover:bg-bg-elevated hover:text-text-primary"
+                aria-label={t("destination.edit")}
+                data-testid="folder-edit"
+              >
+                <Pencil size={12} />
+              </button>
+            </div>
+          )}
         </section>
 
         <section className="border-b border-bg-border px-5 py-4">
@@ -419,6 +487,35 @@ export default function SubscriptionDetailPanel({
               )}
             </div>
           )}
+          <div className="mt-4 flex items-center gap-2" data-testid="backfill-row">
+            <input
+              type="number"
+              min={1}
+              max={200}
+              value={backfillCount}
+              onChange={(e) =>
+                setBackfillCount(
+                  Math.min(200, Math.max(1, Number(e.target.value) || 1)),
+                )
+              }
+              className="w-20 rounded-2xl border border-bg-border bg-bg-primary px-3 py-1 text-xs text-text-primary focus:border-focus-ring focus:outline-none"
+              data-testid="backfill-count"
+            />
+            <button
+              type="button"
+              onClick={handleBackfill}
+              disabled={backfilling}
+              className="rounded-2xl bg-sand px-3 py-1.5 text-xs text-text-primary hover:bg-sand-hover disabled:opacity-50"
+              data-testid="backfill-button"
+            >
+              {backfilling ? t("items.backfilling") : t("items.backfill")}
+            </button>
+            {backfillMessage && (
+              <span className="text-xs text-text-muted" data-testid="backfill-message">
+                {backfillMessage}
+              </span>
+            )}
+          </div>
         </section>
 
         <section className="px-5 py-4">

@@ -36,7 +36,7 @@
       "includeNoTranscript": "Try to fetch transcripts even when none reported",
       "sttMode": {
         "label": "Speech-to-text",
-        "manual": "Manual",
+        "manual": "Use captions",
         "missing_captions": "If no captions",
         "always": "Always"
       },
@@ -113,7 +113,11 @@
         "cooldownSave": "Save"
       },
       "destination": {
-        "heading": "Destination"
+        "heading": "Destination",
+        "edit": "Edit",
+        "save": "Save",
+        "cancel": "Cancel",
+        "placeholder": "e.g. YouTube/channel-name"
       },
       "options": {
         "heading": "Options",
@@ -125,7 +129,11 @@
         "empty": "No items yet. Run a sync.",
         "groupAttention": "Needs attention ({count})",
         "groupImported": "Imported ({count})",
-        "groupSkipped": "Skipped ({count})"
+        "groupSkipped": "Skipped ({count})",
+        "backfill": "Fetch more",
+        "backfilling": "Queuing...",
+        "backfillQueued": "Queued",
+        "backfillFailed": "Failed to queue"
       },
       "danger": {
         "heading": "Danger zone",
@@ -137,7 +145,8 @@
         "syncFailed": "Sync failed",
         "refreshFailed": "Refresh failed",
         "deleteFailed": "Delete failed",
-        "retryFailed": "Retry failed"
+        "retryFailed": "Retry failed",
+        "backfillFailed": "Failed to queue backfill"
       }
     },
     "item": {

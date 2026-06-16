@@ -36,7 +36,7 @@
       "includeNoTranscript": "字幕がない動画でも文字起こしを試みる",
       "sttMode": {
         "label": "文字起こし",
-        "manual": "手動",
+        "manual": "字幕を使用",
         "missing_captions": "字幕なし時",
         "always": "常に実行"
       },
@@ -113,7 +113,11 @@
         "cooldownSave": "保存"
       },
       "destination": {
-        "heading": "保存先"
+        "heading": "保存先",
+        "edit": "変更",
+        "save": "保存",
+        "cancel": "キャンセル",
+        "placeholder": "例: YouTube/チャンネル名"
       },
       "options": {
         "heading": "オプション",
@@ -125,7 +129,11 @@
         "empty": "アイテムがありません。同期を実行してください。",
         "groupAttention": "要対応 ({count})",
         "groupImported": "取り込み済み ({count})",
-        "groupSkipped": "スキップ済み ({count})"
+        "groupSkipped": "スキップ済み ({count})",
+        "backfill": "さらに取り込む",
+        "backfilling": "キュー追加中...",
+        "backfillQueued": "キューに追加しました",
+        "backfillFailed": "取り込みの開始に失敗しました"
       },
       "danger": {
         "heading": "危険な操作",
@@ -137,7 +145,8 @@
         "syncFailed": "同期に失敗しました",
         "refreshFailed": "メタデータ更新に失敗しました",
         "deleteFailed": "削除に失敗しました",
-        "retryFailed": "再試行に失敗しました"
+        "retryFailed": "再試行に失敗しました",
+        "backfillFailed": "取り込みの開始に失敗しました"
       }
     },
     "item": {

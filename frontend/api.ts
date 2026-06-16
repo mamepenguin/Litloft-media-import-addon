@@ -269,6 +269,20 @@ export async function syncSubscription(
   return _json<SubscriptionEnqueueResult>(res);
 }
 
+export async function extendBackfill(
+  drive: string,
+  id: number,
+  count: number,
+): Promise<SubscriptionEnqueueResult> {
+  const res = await fetch(`${BASE}/subscriptions/${id}/backfill`, {
+    method: "POST",
+    credentials: "include",
+    headers: { ...driveHeaders(drive), "Content-Type": "application/json" },
+    body: JSON.stringify({ count }),
+  });
+  return _json<SubscriptionEnqueueResult>(res);
+}
+
 export async function listSubscriptionVideos(
   drive: string,
   id: number,
