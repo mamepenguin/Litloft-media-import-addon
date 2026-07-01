@@ -634,7 +634,7 @@ class LoftManager:
         ]
 
     async def start_worker(self) -> None:
-        _cleanup_stale_stt_temp_files()
+        await asyncio.to_thread(_cleanup_stale_stt_temp_files)
         asyncio.create_task(self._worker())
         asyncio.create_task(self._stt_worker())
         asyncio.create_task(self._retry_failed_captions())
@@ -821,23 +821,26 @@ class LoftManager:
         """
         await asyncio.sleep(30)
 
-        db = SessionLocal()
-        try:
-            rows = db.execute(
-                text(
-                    "SELECT h.file_id, h.url, f.drive "
-                    "FROM loft_metadata h "
-                    "JOIN files f ON f.id = h.file_id "
-                    "WHERE h.has_captions = TRUE "
-                    "AND h.captions_downloaded = FALSE "
-                    "AND (h.caption_error_kind IS NULL "
-                    "     OR h.caption_error_kind != 'permanent') "
-                    "AND f.deleted_at IS NULL "
-                    "AND f.missing_since IS NULL"
-                )
-            ).fetchall()
-        finally:
-            db.close()
+        def _query() -> list:
+            db = SessionLocal()
+            try:
+                return db.execute(
+                    text(
+                        "SELECT h.file_id, h.url, f.drive "
+                        "FROM loft_metadata h "
+                        "JOIN files f ON f.id = h.file_id "
+                        "WHERE h.has_captions = TRUE "
+                        "AND h.captions_downloaded = FALSE "
+                        "AND (h.caption_error_kind IS NULL "
+                        "     OR h.caption_error_kind != 'permanent') "
+                        "AND f.deleted_at IS NULL "
+                        "AND f.missing_since IS NULL"
+                    )
+                ).fetchall()
+            finally:
+                db.close()
+
+        rows = await asyncio.to_thread(_query)
 
         if not rows:
             return
