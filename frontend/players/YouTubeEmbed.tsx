@@ -93,6 +93,52 @@ export function extractYouTubeId(url: string): string | null {
   return match?.[1] ?? null;
 }
 
+/**
+ * TEMPORARY DIAGNOSTIC — remove once the iOS offset is understood.
+ *
+ * On iPhone the pseudo-fullscreen frame lands offset to the right and,
+ * when the page was scrolled first, low enough to leave the app's menu
+ * button showing. Nothing in the ancestor chain creates a containing
+ * block for `fixed`, so this reads the numbers off the device instead
+ * of guessing further.
+ */
+function FullscreenDiagnostic({
+  frameRef,
+}: {
+  frameRef: React.RefObject<HTMLElement | null>;
+}) {
+  const [text, setText] = useState("measuring…");
+  useEffect(() => {
+    const measure = () => {
+      const frame = frameRef.current;
+      if (!frame) return;
+      const r = frame.getBoundingClientRect();
+      const vv = window.visualViewport;
+      const parent = frame.offsetParent as HTMLElement | null;
+      setText(
+        [
+          `frame ${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}x${Math.round(r.height)}`,
+          `win ${window.innerWidth}x${window.innerHeight}`,
+          vv
+            ? `vv ${Math.round(vv.width)}x${Math.round(vv.height)} @${Math.round(vv.offsetLeft)},${Math.round(vv.offsetTop)}`
+            : "vv n/a",
+          `offsetParent ${parent ? `${parent.tagName}.${parent.className.split(" ")[0] || "-"}` : "null"}`,
+          `pos ${getComputedStyle(frame).position}`,
+        ].join("\n"),
+      );
+    };
+    measure();
+    const id = setInterval(measure, 500);
+    return () => clearInterval(id);
+  }, [frameRef]);
+
+  return (
+    <pre className="pointer-events-none absolute left-1 top-1 z-30 whitespace-pre bg-black/70 p-1 text-[10px] leading-tight text-white">
+      {text}
+    </pre>
+  );
+}
+
 export default function YouTubeEmbed({
   fileId,
   url,
@@ -425,6 +471,11 @@ export default function YouTubeEmbed({
           fullscreen.toggle();
         }}
       />
+
+      {/* TEMPORARY DIAGNOSTIC — remove once the iOS offset is
+          understood. Reports where the frame actually landed so we can
+          tell a containing-block problem from a sizing one. */}
+      {fullscreen.isPseudo && <FullscreenDiagnostic frameRef={wrapperRef} />}
 
       <MediaControls
         mc={controller}
