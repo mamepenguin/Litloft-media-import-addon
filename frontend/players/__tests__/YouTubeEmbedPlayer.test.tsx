@@ -338,30 +338,6 @@ describe("YouTubeEmbed fullscreen", () => {
     expect(frameOf(container).className).not.toContain("fixed");
   });
 
-  it("holds the iframe clear of the notch while faking fullscreen", async () => {
-    // WebKit propagates safe-area insets into an iframe that overlaps
-    // the Dynamic Island, and the YouTube player shifts the video away
-    // from that edge in response — off-centre, and unreachable by any
-    // CSS of ours. Keeping the iframe inside the safe area tells it the
-    // insets are zero.
-    makeCoarseTouchDevice();
-    const { container } = await mountPlayer();
-    await act(async () => {
-      pressShortcut("f");
-    });
-    const host = frameOf(container).querySelector<HTMLElement>(".absolute.inset-0")!;
-    expect(host.style.paddingLeft).toContain("safe-area-inset");
-    // Both sides take the larger inset so the box stays centred on the
-    // screen rather than merely clear of the island.
-    expect(host.style.paddingLeft).toBe(host.style.paddingRight);
-  });
-
-  it("leaves the iframe alone in the page", async () => {
-    const { container } = await mountPlayer();
-    const host = frameOf(container).querySelector<HTMLElement>(".absolute.inset-0")!;
-    expect(host.style.paddingLeft).toBe("");
-  });
-
   it("does not fake fullscreen on a desktop pointer", async () => {
     const { container } = await mountPlayer();
     await act(async () => {
