@@ -93,60 +93,6 @@ export function extractYouTubeId(url: string): string | null {
   return match?.[1] ?? null;
 }
 
-/**
- * TEMPORARY DIAGNOSTIC — remove once the iOS offset is understood.
- *
- * On iPhone the pseudo-fullscreen frame lands offset to the right and,
- * when the page was scrolled first, low enough to leave the app's menu
- * button showing. Nothing in the ancestor chain creates a containing
- * block for `fixed`, so this reads the numbers off the device instead
- * of guessing further.
- */
-function FullscreenDiagnostic({
-  frameRef,
-}: {
-  frameRef: React.RefObject<HTMLElement | null>;
-}) {
-  const [text, setText] = useState("measuring…");
-  useEffect(() => {
-    const measure = () => {
-      const frame = frameRef.current;
-      if (!frame) return;
-      const r = frame.getBoundingClientRect();
-      const iframe = frame.querySelector("iframe");
-      const ir = iframe?.getBoundingClientRect();
-      const host = iframe?.parentElement;
-      const hr = host?.getBoundingClientRect();
-      const safe = getComputedStyle(document.documentElement).getPropertyValue(
-        "--probe-safe-left",
-      );
-      setText(
-        [
-          `frame ${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}x${Math.round(r.height)}`,
-          `win ${window.innerWidth}x${window.innerHeight}`,
-          hr
-            ? `host ${Math.round(hr.left)},${Math.round(hr.top)} ${Math.round(hr.width)}x${Math.round(hr.height)}`
-            : "host n/a",
-          ir
-            ? `iframe ${Math.round(ir.left)},${Math.round(ir.top)} ${Math.round(ir.width)}x${Math.round(ir.height)}`
-            : "iframe n/a",
-          `hostTag ${host ? `${host.tagName}.${host.className.split(" ")[0] || "-"}` : "-"}`,
-          `safeLeft ${safe.trim() || "?"}`,
-        ].join("\n"),
-      );
-    };
-    measure();
-    const id = setInterval(measure, 500);
-    return () => clearInterval(id);
-  }, [frameRef]);
-
-  return (
-    <pre className="pointer-events-none absolute left-1 top-1 z-30 whitespace-pre bg-black/70 p-1 text-[10px] leading-tight text-white">
-      {text}
-    </pre>
-  );
-}
-
 export default function YouTubeEmbed({
   fileId,
   url,
@@ -479,20 +425,6 @@ export default function YouTubeEmbed({
           fullscreen.toggle();
         }}
       />
-
-      {/* TEMPORARY DIAGNOSTIC — remove once the iOS offset is
-          understood. Reports where the frame actually landed so we can
-          tell a containing-block problem from a sizing one. */}
-      {fullscreen.isPseudo && <FullscreenDiagnostic frameRef={wrapperRef} />}
-
-      {/* TEMPORARY — remove once the iPad fallback is understood. Says
-          why the native fullscreen request was turned down on a device
-          that should have been able to honour it. */}
-      {fullscreen.isPseudo && fullscreen.lastNativeError && (
-        <pre className="pointer-events-none absolute left-1 top-1 z-30 max-w-full whitespace-pre-wrap bg-black/70 p-1 text-[10px] leading-tight text-white">
-          {fullscreen.lastNativeError}
-        </pre>
-      )}
 
       <MediaControls
         mc={controller}
