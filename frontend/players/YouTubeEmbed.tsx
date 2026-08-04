@@ -36,6 +36,12 @@ const YT_STATE_ENDED = 0;
 const AD_DURATION_TOLERANCE_S = 2;
 
 /**
+ * How long a single click waits to see whether it is really the first
+ * half of a double-click. Matches the delay mainstream players use.
+ */
+const CLICK_RESOLVE_MS = 220;
+
+/**
  * Decide whether the player is currently playing an ad rather than the
  * requested video.
  *
@@ -115,6 +121,14 @@ export default function YouTubeEmbed({
   useEffect(() => {
     durationHintRef.current = durationHint;
   }, [durationHint]);
+
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+    },
+    [],
+  );
 
   const isInterrupted = useCallback(() => {
     const player = playerRef.current;
@@ -364,12 +378,27 @@ export default function YouTubeEmbed({
         // Pointer-only: on touch, a tap should surface the controls
         // (handled by MediaControls watching this frame) rather than
         // toggle playback, matching every mobile player.
+        //
+        // The play toggle is deferred because a double-click delivers
+        // two clicks before dblclick. Acting on both would pause and
+        // resume on the way to fullscreen, which the YouTube player
+        // shows as a visible hitch.
         onClick={(e) => {
           if (!e.nativeEvent.detail) return;
           if (!window.matchMedia("(pointer: fine)").matches) return;
-          controllerRef.current?.togglePlay();
+          if (clickTimerRef.current) return;
+          clickTimerRef.current = setTimeout(() => {
+            clickTimerRef.current = null;
+            controllerRef.current?.togglePlay();
+          }, CLICK_RESOLVE_MS);
         }}
-        onDoubleClick={() => controllerRef.current?.toggleFullscreen()}
+        onDoubleClick={() => {
+          if (clickTimerRef.current) {
+            clearTimeout(clickTimerRef.current);
+            clickTimerRef.current = null;
+          }
+          controllerRef.current?.toggleFullscreen();
+        }}
       />
 
       <MediaControls

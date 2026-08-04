@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, act, waitFor } from "@testing-library/react";
+import { render, act, waitFor, fireEvent } from "@testing-library/react";
 import YouTubeEmbed from "../YouTubeEmbed";
 
 const YT_STATE_ENDED = 0;
@@ -179,6 +179,73 @@ describe("YouTubeEmbed click overlay", () => {
       vi.advanceTimersByTime(1000);
     });
     expect(overlayOf(container).style.pointerEvents).toBe("auto");
+  });
+});
+
+describe("YouTubeEmbed pointer interaction", () => {
+  it("toggles playback on a single click with a fine pointer", async () => {
+    vi.useFakeTimers();
+    const { container } = await mountPlayer();
+    await act(async () => {
+      // detail must be set: a click with detail 0 is a programmatic
+      // one, which the overlay deliberately ignores.
+      fireEvent.click(overlayOf(container), { detail: 1 });
+      vi.advanceTimersByTime(300);
+    });
+    expect(player.pauseVideo).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores programmatic clicks", () => {
+    return (async () => {
+      vi.useFakeTimers();
+      const { container } = await mountPlayer();
+      await act(async () => {
+        overlayOf(container).click();
+        vi.advanceTimersByTime(300);
+      });
+      expect(player.pauseVideo).not.toHaveBeenCalled();
+    })();
+  });
+
+  it("goes fullscreen on double click without pausing on the way", async () => {
+    // Two clicks arrive before dblclick; acting on both would pause
+    // and resume, which shows as a hitch in the YouTube player.
+    vi.useFakeTimers();
+    const { container } = await mountPlayer();
+    const overlay = overlayOf(container);
+    const requestFullscreen = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(container.firstElementChild!, "requestFullscreen", {
+      configurable: true,
+      value: requestFullscreen,
+    });
+    await act(async () => {
+      fireEvent.click(overlay, { detail: 1 });
+      fireEvent.click(overlay, { detail: 2 });
+      fireEvent.dblClick(overlay, { detail: 2 });
+      vi.advanceTimersByTime(300);
+    });
+    expect(player.pauseVideo).not.toHaveBeenCalled();
+    expect(player.playVideo).not.toHaveBeenCalled();
+    expect(requestFullscreen).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not toggle playback on touch, where a tap surfaces the controls", async () => {
+    vi.useFakeTimers();
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+    const { container } = await mountPlayer();
+    await act(async () => {
+      fireEvent.click(overlayOf(container), { detail: 1 });
+      vi.advanceTimersByTime(300);
+    });
+    expect(player.pauseVideo).not.toHaveBeenCalled();
   });
 });
 
