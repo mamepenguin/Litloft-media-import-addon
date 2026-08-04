@@ -485,6 +485,15 @@ export default function YouTubeEmbed({
           tell a containing-block problem from a sizing one. */}
       {fullscreen.isPseudo && <FullscreenDiagnostic frameRef={wrapperRef} />}
 
+      {/* TEMPORARY — remove once the iPad fallback is understood. Says
+          why the native fullscreen request was turned down on a device
+          that should have been able to honour it. */}
+      {fullscreen.isPseudo && fullscreen.lastNativeError && (
+        <pre className="pointer-events-none absolute left-1 top-1 z-30 max-w-full whitespace-pre-wrap bg-black/70 p-1 text-[10px] leading-tight text-white">
+          {fullscreen.lastNativeError}
+        </pre>
+      )}
+
       <MediaControls
         mc={controller}
         frameRef={wrapperRef}
