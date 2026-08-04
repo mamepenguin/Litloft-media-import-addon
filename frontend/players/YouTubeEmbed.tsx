@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import {
   deleteWatchProgress,
@@ -20,12 +20,47 @@ import {
 import { useShortcuts } from "@/hooks/useShortcuts";
 import { useProfile } from "@/components/ProfileProvider";
 import type { LoftEmbedProps } from "@/components/loft/types";
+import MediaControls from "@/components/player/MediaControls";
 import { loadYouTubeIframeApi } from "./loadYouTubeIframeApi";
 
 const SAVE_INTERVAL = 5;
 const RESUME_THRESHOLD = 5;
 const POLL_INTERVAL_MS = 1000;
 const YT_STATE_ENDED = 0;
+
+/**
+ * How far the player's reported duration may drift from our own
+ * metadata before we call it an ad. yt-dlp and the player routinely
+ * disagree by about a second on the same video.
+ */
+const AD_DURATION_TOLERANCE_S = 2;
+
+/**
+ * Decide whether the player is currently playing an ad rather than the
+ * requested video.
+ *
+ * There is no ad-state API on the YouTube IFrame player. What we can
+ * observe is that during an ad, getDuration() reports the *ad's*
+ * length. Comparing that against a duration we captured at import time
+ * — which no ad can influence — is the most reliable signal available.
+ *
+ * Deliberately fail-open: with no trustworthy duration to compare
+ * against, report "not an ad". A false positive disables seeking in the
+ * middle of a video, which is far worse than letting an ad desync the
+ * clock for a few seconds.
+ */
+export function isAdDuration(
+  reportedDuration: number,
+  durationHint: number | null | undefined,
+  toleranceSeconds: number = AD_DURATION_TOLERANCE_S,
+): boolean {
+  if (durationHint == null) return false;
+  if (!Number.isFinite(durationHint) || durationHint <= 0) return false;
+  // The player reports 0 until metadata lands; that is "unknown", not
+  // "an ad the length of nothing".
+  if (!Number.isFinite(reportedDuration) || reportedDuration <= 0) return false;
+  return Math.abs(reportedDuration - durationHint) > toleranceSeconds;
+}
 
 const YOUTUBE_HOSTS = new Set([
   "www.youtube.com",
@@ -54,6 +89,7 @@ export default function YouTubeEmbed({
   url,
   onMediaController,
   initialTime,
+  durationHint,
 }: LoftEmbedProps) {
   const videoId = extractYouTubeId(url);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -64,9 +100,31 @@ export default function YouTubeEmbed({
   const controllerRef = useRef<MediaController | null>(null);
   const lastSavedRef = useRef(0);
   const [loadFailed, setLoadFailed] = useState(false);
+  // Held in state (not just the ref) so the control bar renders as soon
+  // as the player is ready.
+  const [controller, setController] = useState<MediaController | null>(null);
+  const [adActive, setAdActive] = useState(false);
+  const [ended, setEnded] = useState(false);
   const tsc = useTranslations("shortcuts");
   const { nickname } = useProfile();
   const hasProfile = nickname !== null;
+
+  // Read through a ref so the detector handed to the controller always
+  // sees the current hint without rebuilding the player.
+  const durationHintRef = useRef(durationHint);
+  useEffect(() => {
+    durationHintRef.current = durationHint;
+  }, [durationHint]);
+
+  const isInterrupted = useCallback(() => {
+    const player = playerRef.current;
+    if (!player) return false;
+    try {
+      return isAdDuration(player.getDuration(), durationHintRef.current);
+    } catch {
+      return false;
+    }
+  }, []);
 
   useEffect(() => {
     if (!videoId) return;
@@ -99,6 +157,16 @@ export default function YouTubeEmbed({
           height: "100%",
           playerVars: {
             enablejsapi: 1,
+            // Litloft draws its own control bar (MediaControls), so the
+            // YouTube chrome is turned off. This also removes the
+            // title / share overlays. The pause-time related-video
+            // overlay and the end screen are NOT removable, and must
+            // not be covered — see the overlay's pointer-events below.
+            controls: 0,
+            // Required once controls are ours: without it iOS hands
+            // playback to its native fullscreen player and our controls
+            // stop being reachable.
+            playsinline: 1,
             disablekb: 1,
             modestbranding: 1,
             rel: 0,
@@ -109,8 +177,11 @@ export default function YouTubeEmbed({
               playerRef.current = target as YouTubePlayerLike & {
                 destroy(): void;
               };
-              const mc = createYouTubeController(target, wrapper);
+              const mc = createYouTubeController(target, wrapper, {
+                isInterrupted,
+              });
               controllerRef.current = mc;
+              setController(mc);
               onMediaController?.(mc);
 
               // Citation jump (intelligence Ask `?t=`) wins over the
@@ -153,7 +224,12 @@ export default function YouTubeEmbed({
                 const p = playerRef.current;
                 if (!p) return;
                 try {
-                  persist(p.getCurrentTime(), p.getDuration());
+                  const inAd = isInterrupted();
+                  setAdActive(inAd);
+                  // During an ad the player's clock belongs to the ad,
+                  // so persisting it would overwrite the resume point
+                  // with an ad offset.
+                  if (!inAd) persist(p.getCurrentTime(), p.getDuration());
                 } catch {
                   // Player may be transitioning; skip this tick.
                 }
@@ -161,6 +237,7 @@ export default function YouTubeEmbed({
             },
             onStateChange: ({ data }) => {
               if (cancelled) return;
+              setEnded(data === YT_STATE_ENDED);
               if (data === YT_STATE_ENDED) {
                 lastSavedRef.current = 0;
                 if (hasProfile) {
@@ -183,7 +260,9 @@ export default function YouTubeEmbed({
       if (pollHandle) clearInterval(pollHandle);
       try {
         const p = playerRef.current;
-        if (p) {
+        // Leaving mid-ad must not stamp the ad's offset onto the
+        // resume point, same as the periodic save above.
+        if (p && !isInterrupted()) {
           const current = p.getCurrentTime();
           const duration = p.getDuration();
           if (
@@ -205,6 +284,9 @@ export default function YouTubeEmbed({
       }
       onMediaController?.(null);
       controllerRef.current = null;
+      setController(null);
+      setAdActive(false);
+      setEnded(false);
       try {
         playerRef.current?.destroy?.();
       } catch {
@@ -219,7 +301,7 @@ export default function YouTubeEmbed({
     // reseeks the live player when initialTime changes, so the
     // citation-jump flow still works for same-file ?t= updates.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fileId, videoId, hasProfile, onMediaController]);
+  }, [fileId, videoId, hasProfile, onMediaController, isInterrupted]);
 
   // Reseek when ?t= changes on the current iframe. Triggered when the
   // user clicks a second citation for the same .loft file (different
@@ -253,14 +335,48 @@ export default function YouTubeEmbed({
     return null;
   }
 
+  // The overlay is the only way to react to clicks on the video: the
+  // iframe is cross-origin, so its events never reach us. That makes it
+  // a liability during an ad or on the end screen, where YouTube's own
+  // UI (skip button, advertiser link, related videos) has to stay
+  // clickable — covering those breaks the player and interferes with
+  // ads, which the API terms forbid. Stand down in both states.
+  const overlayInteractive = !adActive && !ended;
+
   return (
     <div
       ref={wrapperRef}
       tabIndex={0}
-      className="relative w-full overflow-hidden bg-black focus:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring md:rounded-xl [&>iframe]:absolute [&>iframe]:inset-0 [&>iframe]:h-full [&>iframe]:w-full [&>iframe]:border-0"
+      className="relative w-full overflow-hidden bg-black focus:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring md:rounded-xl"
       style={{ paddingTop: "56.25%" }}
     >
-      <div ref={mountRef} className="absolute inset-0 h-full w-full" />
+      {/* The YouTube API *replaces* the mount node with its iframe, so
+          it gets a stable wrapper of its own. Without it React would be
+          holding a reference to a node that is no longer in the
+          document, and inserting the siblings below could fail. */}
+      <div className="absolute inset-0 [&>iframe]:h-full [&>iframe]:w-full [&>iframe]:border-0">
+        <div ref={mountRef} className="h-full w-full" />
+      </div>
+
+      <div
+        className="absolute inset-0 z-0"
+        style={{ pointerEvents: overlayInteractive ? "auto" : "none" }}
+        // Pointer-only: on touch, a tap should surface the controls
+        // (handled by MediaControls watching this frame) rather than
+        // toggle playback, matching every mobile player.
+        onClick={(e) => {
+          if (!e.nativeEvent.detail) return;
+          if (!window.matchMedia("(pointer: fine)").matches) return;
+          controllerRef.current?.togglePlay();
+        }}
+        onDoubleClick={() => controllerRef.current?.toggleFullscreen()}
+      />
+
+      <MediaControls
+        mc={controller}
+        frameRef={wrapperRef}
+        durationHint={durationHint}
+      />
     </div>
   );
 }
