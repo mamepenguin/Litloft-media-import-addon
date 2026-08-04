@@ -1,5 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, act, waitFor, fireEvent } from "@testing-library/react";
+// `screen` must be imported: jsdom exposes a global `window.screen`
+// that silently shadows it and has none of the query helpers.
+import { render, act, waitFor, fireEvent, screen } from "@testing-library/react";
 import YouTubeEmbed from "../YouTubeEmbed";
 
 const YT_STATE_ENDED = 0;
@@ -62,9 +64,25 @@ vi.mock("@/components/ProfileProvider", () => ({
   useProfile: () => ({ nickname: null }),
 }));
 
+interface Shortcut {
+  key: string;
+  handler: () => void;
+}
+
+/** Captured so tests can fire the same handler the keyboard would. */
+let shortcuts: Shortcut[] = [];
+
 vi.mock("@/hooks/useShortcuts", () => ({
-  useShortcuts: () => {},
+  useShortcuts: (_id: string, _label: string, entries: Shortcut[]) => {
+    shortcuts = entries;
+  },
 }));
+
+function pressShortcut(key: string) {
+  const entry = shortcuts.find((s) => s.key === key);
+  if (!entry) throw new Error(`shortcut not registered: ${key}`);
+  entry.handler();
+}
 
 const URL_UNDER_TEST = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 
@@ -246,6 +264,86 @@ describe("YouTubeEmbed pointer interaction", () => {
       vi.advanceTimersByTime(300);
     });
     expect(player.pauseVideo).not.toHaveBeenCalled();
+  });
+});
+
+describe("YouTubeEmbed fullscreen", () => {
+  function makeCoarseTouchDevice() {
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query.includes("pointer: coarse"),
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+  }
+
+  function frameOf(container: HTMLElement): HTMLElement {
+    return container.firstElementChild as HTMLElement;
+  }
+
+  it("keeps the in-page aspect shim while not fullscreen", async () => {
+    const { container } = await mountPlayer();
+    const frame = frameOf(container);
+    expect(frame.style.paddingTop).toBe("56.25%");
+    expect(frame.className).toContain("relative");
+  });
+
+  it("pins the frame over the viewport when it has to fake fullscreen", async () => {
+    // No requestFullscreen on the frame: an iPhone, in other words.
+    makeCoarseTouchDevice();
+    const { container } = await mountPlayer();
+    await act(async () => {
+      pressShortcut("f");
+    });
+    const frame = frameOf(container);
+    expect(frame.className).toContain("fixed");
+    expect(frame.className).toContain("inset-0");
+    // Filling the viewport is the whole point; the aspect shim would
+    // fight it.
+    expect(frame.style.paddingTop).toBe("");
+  });
+
+  it("shares one fullscreen state across the keyboard and the bar", async () => {
+    makeCoarseTouchDevice();
+    const { container } = await mountPlayer();
+    await act(async () => {
+      pressShortcut("f");
+    });
+    // The bar's button must know the keyboard already opened it,
+    // otherwise the two routes fight over the state.
+    expect(
+      await screen.findByRole("button", { name: "Exit full screen" }),
+    ).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Exit full screen" }));
+    });
+    expect(frameOf(container).className).toContain("relative");
+  });
+
+  it("uses the real API where the platform has one", async () => {
+    makeCoarseTouchDevice();
+    const requestFullscreen = vi.fn().mockResolvedValue(undefined);
+    const { container } = await mountPlayer();
+    Object.defineProperty(frameOf(container), "requestFullscreen", {
+      configurable: true,
+      value: requestFullscreen,
+    });
+    await act(async () => {
+      pressShortcut("f");
+    });
+    expect(requestFullscreen).toHaveBeenCalledTimes(1);
+    expect(frameOf(container).className).not.toContain("fixed");
+  });
+
+  it("does not fake fullscreen on a desktop pointer", async () => {
+    const { container } = await mountPlayer();
+    await act(async () => {
+      pressShortcut("f");
+    });
+    expect(frameOf(container).className).toContain("relative");
   });
 });
 

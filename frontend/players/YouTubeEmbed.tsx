@@ -21,12 +21,15 @@ import { useShortcuts } from "@/hooks/useShortcuts";
 import { useProfile } from "@/components/ProfileProvider";
 import type { LoftEmbedProps } from "@/components/loft/types";
 import MediaControls from "@/components/player/MediaControls";
+import { useFullscreen } from "@/components/player/hooks/useFullscreen";
 import { loadYouTubeIframeApi } from "./loadYouTubeIframeApi";
 
 const SAVE_INTERVAL = 5;
 const RESUME_THRESHOLD = 5;
 const POLL_INTERVAL_MS = 1000;
 const YT_STATE_ENDED = 0;
+const YT_STATE_PLAYING = 1;
+const YT_STATE_BUFFERING = 3;
 
 /**
  * How far the player's reported duration may drift from our own
@@ -111,6 +114,7 @@ export default function YouTubeEmbed({
   const [controller, setController] = useState<MediaController | null>(null);
   const [adActive, setAdActive] = useState(false);
   const [ended, setEnded] = useState(false);
+  const [playing, setPlaying] = useState(false);
   const tsc = useTranslations("shortcuts");
   const { nickname } = useProfile();
   const hasProfile = nickname !== null;
@@ -121,6 +125,12 @@ export default function YouTubeEmbed({
   useEffect(() => {
     durationHintRef.current = durationHint;
   }, [durationHint]);
+
+  // One instance for the whole frame. Every route into fullscreen —
+  // the bar's button, the `f` shortcut, double-click — goes through it,
+  // so they cannot disagree about whether we are fullscreen and, on
+  // iPhone, whether we are faking it.
+  const fullscreen = useFullscreen({ frameRef: wrapperRef, autoRotateEnabled: playing });
 
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
@@ -252,6 +262,9 @@ export default function YouTubeEmbed({
             onStateChange: ({ data }) => {
               if (cancelled) return;
               setEnded(data === YT_STATE_ENDED);
+              // Buffering counts: the viewer is watching, the player is
+              // just catching up.
+              setPlaying(data === YT_STATE_PLAYING || data === YT_STATE_BUFFERING);
               if (data === YT_STATE_ENDED) {
                 lastSavedRef.current = 0;
                 if (hasProfile) {
@@ -301,6 +314,7 @@ export default function YouTubeEmbed({
       setController(null);
       setAdActive(false);
       setEnded(false);
+      setPlaying(false);
       try {
         playerRef.current?.destroy?.();
       } catch {
@@ -342,7 +356,7 @@ export default function YouTubeEmbed({
     { key: "arrowup",    label: tsc("seekForward60"),  handler: () => { const mc = controllerRef.current; if (mc) mc.seek(mc.getCurrentTime() + 60); } },
     { key: "arrowdown",  label: tsc("seekBack60"),     handler: () => { const mc = controllerRef.current; if (mc) mc.seek(mc.getCurrentTime() - 60); } },
     { key: "m",          label: tsc("mute"),           handler: () => controllerRef.current?.toggleMute() },
-    { key: "f",          label: tsc("fullscreen"),     handler: () => controllerRef.current?.toggleFullscreen() },
+    { key: "f",          label: tsc("fullscreen"),     handler: () => fullscreen.toggle() },
   ]);
 
   if (!videoId || loadFailed) {
@@ -361,8 +375,19 @@ export default function YouTubeEmbed({
     <div
       ref={wrapperRef}
       tabIndex={0}
-      className="relative w-full overflow-hidden bg-black focus:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring md:rounded-xl"
-      style={{ paddingTop: "56.25%" }}
+      className={[
+        "overflow-hidden bg-black focus:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring",
+        fullscreen.isPseudo
+          ? // Pinned over the viewport instead of sitting in the page.
+            // The frame itself is styled; the iframe is never moved,
+            // because re-parenting one reloads it.
+            "fixed inset-0 z-50 rounded-none"
+          : "relative w-full md:rounded-xl",
+      ].join(" ")}
+      // The aspect-ratio shim only applies in the page. Filling the
+      // viewport is the point of fullscreen, and the YouTube player
+      // letterboxes the video itself.
+      style={fullscreen.isPseudo ? undefined : { paddingTop: "56.25%" }}
     >
       {/* The YouTube API *replaces* the mount node with its iframe, so
           it gets a stable wrapper of its own. Without it React would be
@@ -397,7 +422,7 @@ export default function YouTubeEmbed({
             clearTimeout(clickTimerRef.current);
             clickTimerRef.current = null;
           }
-          controllerRef.current?.toggleFullscreen();
+          fullscreen.toggle();
         }}
       />
 
@@ -405,6 +430,8 @@ export default function YouTubeEmbed({
         mc={controller}
         frameRef={wrapperRef}
         durationHint={durationHint}
+        fullscreen={fullscreen}
+        isPseudoFullscreen={fullscreen.isPseudo}
       />
     </div>
   );
