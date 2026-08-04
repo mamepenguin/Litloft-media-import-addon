@@ -113,17 +113,25 @@ function FullscreenDiagnostic({
       const frame = frameRef.current;
       if (!frame) return;
       const r = frame.getBoundingClientRect();
-      const vv = window.visualViewport;
-      const parent = frame.offsetParent as HTMLElement | null;
+      const iframe = frame.querySelector("iframe");
+      const ir = iframe?.getBoundingClientRect();
+      const host = iframe?.parentElement;
+      const hr = host?.getBoundingClientRect();
+      const safe = getComputedStyle(document.documentElement).getPropertyValue(
+        "--probe-safe-left",
+      );
       setText(
         [
           `frame ${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}x${Math.round(r.height)}`,
           `win ${window.innerWidth}x${window.innerHeight}`,
-          vv
-            ? `vv ${Math.round(vv.width)}x${Math.round(vv.height)} @${Math.round(vv.offsetLeft)},${Math.round(vv.offsetTop)}`
-            : "vv n/a",
-          `offsetParent ${parent ? `${parent.tagName}.${parent.className.split(" ")[0] || "-"}` : "null"}`,
-          `pos ${getComputedStyle(frame).position}`,
+          hr
+            ? `host ${Math.round(hr.left)},${Math.round(hr.top)} ${Math.round(hr.width)}x${Math.round(hr.height)}`
+            : "host n/a",
+          ir
+            ? `iframe ${Math.round(ir.left)},${Math.round(ir.top)} ${Math.round(ir.width)}x${Math.round(ir.height)}`
+            : "iframe n/a",
+          `hostTag ${host ? `${host.tagName}.${host.className.split(" ")[0] || "-"}` : "-"}`,
+          `safeLeft ${safe.trim() || "?"}`,
         ].join("\n"),
       );
     };
