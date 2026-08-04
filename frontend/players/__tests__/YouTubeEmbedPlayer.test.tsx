@@ -97,10 +97,33 @@ async function mountPlayer(durationHint: number | null = 600) {
   return utils;
 }
 
+/**
+ * The gesture surface belongs to core's MediaControls now; this file
+ * only cares that the ad / end-screen gate reaches it. Addressed by its
+ * marker attribute rather than its classes so a styling change in core
+ * does not quietly turn these assertions into no-ops.
+ */
 function overlayOf(container: HTMLElement): HTMLElement {
-  const overlay = container.querySelector<HTMLElement>(".absolute.inset-0.z-0");
-  if (!overlay) throw new Error("overlay not found");
+  const overlay = container.querySelector<HTMLElement>("[data-player-gestures]");
+  if (!overlay) throw new Error("gesture overlay not found");
   return overlay;
+}
+
+/**
+ * jsdom implements no PointerEvent, and testing-library's
+ * `fireEvent.pointerDown` silently drops every coordinate when it falls
+ * back to a plain Event. Building it by hand is the only way to deliver
+ * clientX.
+ */
+function pointerEvent(type: string, clientX: number): Event {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.assign(event, {
+    clientX,
+    clientY: 50,
+    pointerId: 1,
+    pointerType: "touch",
+  });
+  return event;
 }
 
 beforeEach(() => {
@@ -200,6 +223,10 @@ describe("YouTubeEmbed click overlay", () => {
   });
 });
 
+// The gesture state machine itself is core's, and is covered in
+// usePlayerGestures.test.tsx. What is left to prove here is that this
+// player wires it up: the controller, the ad gate and the fullscreen
+// controller all have to arrive for any of it to work.
 describe("YouTubeEmbed pointer interaction", () => {
   it("toggles playback on a single click with a fine pointer", async () => {
     vi.useFakeTimers();
@@ -211,18 +238,6 @@ describe("YouTubeEmbed pointer interaction", () => {
       vi.advanceTimersByTime(300);
     });
     expect(player.pauseVideo).toHaveBeenCalledTimes(1);
-  });
-
-  it("ignores programmatic clicks", () => {
-    return (async () => {
-      vi.useFakeTimers();
-      const { container } = await mountPlayer();
-      await act(async () => {
-        overlayOf(container).click();
-        vi.advanceTimersByTime(300);
-      });
-      expect(player.pauseVideo).not.toHaveBeenCalled();
-    })();
   });
 
   it("goes fullscreen on double click without pausing on the way", async () => {
@@ -264,6 +279,33 @@ describe("YouTubeEmbed pointer interaction", () => {
       vi.advanceTimersByTime(300);
     });
     expect(player.pauseVideo).not.toHaveBeenCalled();
+  });
+
+  it("boosts the speed while a finger is held on the video", async () => {
+    // End-to-end through this player's wiring: the controller, the ad
+    // gate and the pointer mode all have to arrive for the boost to
+    // reach the YouTube player at all.
+    vi.useFakeTimers();
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query.includes("pointer: coarse"),
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+    const { container } = await mountPlayer();
+    await act(async () => {
+      overlayOf(container).dispatchEvent(pointerEvent("pointerdown", 200));
+      vi.advanceTimersByTime(500);
+    });
+    expect(player.setPlaybackRate).toHaveBeenCalledWith(2);
+
+    await act(async () => {
+      window.dispatchEvent(pointerEvent("pointerup", 200));
+    });
+    expect(player.setPlaybackRate).toHaveBeenLastCalledWith(1);
   });
 });
 

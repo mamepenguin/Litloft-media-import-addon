@@ -39,12 +39,6 @@ const YT_STATE_BUFFERING = 3;
 const AD_DURATION_TOLERANCE_S = 2;
 
 /**
- * How long a single click waits to see whether it is really the first
- * half of a double-click. Matches the delay mainstream players use.
- */
-const CLICK_RESOLVE_MS = 220;
-
-/**
  * Decide whether the player is currently playing an ad rather than the
  * requested video.
  *
@@ -126,19 +120,20 @@ export default function YouTubeEmbed({
     durationHintRef.current = durationHint;
   }, [durationHint]);
 
+  // True while a long press is holding the speed boost. Fullscreen has
+  // to stop treating downward travel as a dismiss for the duration, or
+  // the drift that comes with a planted finger closes the frame.
+  const [boosting, setBoosting] = useState(false);
+
   // One instance for the whole frame. Every route into fullscreen —
   // the bar's button, the `f` shortcut, double-click — goes through it,
   // so they cannot disagree about whether we are fullscreen and, on
   // iPhone, whether we are faking it.
-  const fullscreen = useFullscreen({ frameRef: wrapperRef, autoRotateEnabled: playing });
-
-  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(
-    () => () => {
-      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
-    },
-    [],
-  );
+  const fullscreen = useFullscreen({
+    frameRef: wrapperRef,
+    autoRotateEnabled: playing,
+    suppressSwipe: boosting,
+  });
 
   const isInterrupted = useCallback(() => {
     const player = playerRef.current;
@@ -363,13 +358,14 @@ export default function YouTubeEmbed({
     return null;
   }
 
-  // The overlay is the only way to react to clicks on the video: the
-  // iframe is cross-origin, so its events never reach us. That makes it
-  // a liability during an ad or on the end screen, where YouTube's own
-  // UI (skip button, advertiser link, related videos) has to stay
-  // clickable — covering those breaks the player and interferes with
-  // ads, which the API terms forbid. Stand down in both states.
-  const overlayInteractive = !adActive && !ended;
+  // The gesture overlay (drawn by MediaControls) is the only way to
+  // react to input on the video: the iframe is cross-origin, so its
+  // events never reach us. That makes it a liability during an ad or on
+  // the end screen, where YouTube's own UI (skip button, advertiser
+  // link, related videos) has to stay clickable — covering those breaks
+  // the player and interferes with ads, which the API terms forbid.
+  // Stand down in both states.
+  const gesturesInteractive = !adActive && !ended;
 
   return (
     <div
@@ -397,41 +393,14 @@ export default function YouTubeEmbed({
         <div ref={mountRef} className="h-full w-full" />
       </div>
 
-      <div
-        className="absolute inset-0 z-0"
-        style={{ pointerEvents: overlayInteractive ? "auto" : "none" }}
-        // Pointer-only: on touch, a tap should surface the controls
-        // (handled by MediaControls watching this frame) rather than
-        // toggle playback, matching every mobile player.
-        //
-        // The play toggle is deferred because a double-click delivers
-        // two clicks before dblclick. Acting on both would pause and
-        // resume on the way to fullscreen, which the YouTube player
-        // shows as a visible hitch.
-        onClick={(e) => {
-          if (!e.nativeEvent.detail) return;
-          if (!window.matchMedia("(pointer: fine)").matches) return;
-          if (clickTimerRef.current) return;
-          clickTimerRef.current = setTimeout(() => {
-            clickTimerRef.current = null;
-            controllerRef.current?.togglePlay();
-          }, CLICK_RESOLVE_MS);
-        }}
-        onDoubleClick={() => {
-          if (clickTimerRef.current) {
-            clearTimeout(clickTimerRef.current);
-            clickTimerRef.current = null;
-          }
-          fullscreen.toggle();
-        }}
-      />
-
       <MediaControls
         mc={controller}
         frameRef={wrapperRef}
         durationHint={durationHint}
         fullscreen={fullscreen}
         isPseudoFullscreen={fullscreen.isPseudo}
+        interactive={gesturesInteractive}
+        onBoostingChange={setBoosting}
       />
     </div>
   );
