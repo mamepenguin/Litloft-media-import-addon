@@ -189,6 +189,12 @@ export default function YouTubeEmbed({
             disablekb: 1,
             modestbranding: 1,
             rel: 0,
+            // Start with captions off rather than inheriting whatever
+            // the viewer's YouTube account has set. Our own toggle is
+            // the only thing that should turn them on here, and a
+            // player that keeps re-enabling them from an account
+            // preference fights that toggle on every seek.
+            cc_load_policy: 0,
           },
           events: {
             onReady: async ({ target }) => {
