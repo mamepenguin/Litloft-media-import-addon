@@ -219,6 +219,12 @@
         "subscription": "Subscription",
         "single": "Single import"
       }
+    },
+    "player": {
+      "playerUi": "Player",
+      "playerUiLitloft": "Litloft",
+      "playerUiYouTube": "YouTube",
+      "backToLitloftPlayer": "Back to the Litloft player"
     }
   }
 }

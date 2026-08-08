@@ -219,6 +219,12 @@
         "subscription": "購読",
         "single": "単発取り込み"
       }
+    },
+    "player": {
+      "playerUi": "プレイヤー",
+      "playerUiLitloft": "Litloft",
+      "playerUiYouTube": "YouTube",
+      "backToLitloftPlayer": "Litloft のプレイヤーに戻す"
     }
   }
 }
