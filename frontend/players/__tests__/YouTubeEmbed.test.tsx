@@ -1,5 +1,34 @@
 import { describe, expect, it } from "vitest";
-import { extractYouTubeId } from "../YouTubeEmbed";
+import { extractYouTubeId, isAdDuration } from "../YouTubeEmbed";
+
+describe("isAdDuration", () => {
+  it("treats a reported duration close to our metadata as the real video", () => {
+    expect(isAdDuration(600, 600)).toBe(false);
+    // yt-dlp metadata and the player routinely disagree by ~1s.
+    expect(isAdDuration(601, 600)).toBe(false);
+    expect(isAdDuration(599, 600)).toBe(false);
+  });
+
+  it("treats a wildly different duration as an ad", () => {
+    // Pre-roll ads are typically 5-30s against a video of minutes.
+    expect(isAdDuration(15, 600)).toBe(true);
+    expect(isAdDuration(603, 600)).toBe(true);
+  });
+
+  it("disables detection when we have no trustworthy duration (fail-open)", () => {
+    // Being wrong here disables the seek bar mid-video, which is worse
+    // than letting an ad desync the clock.
+    for (const hint of [null, undefined, 0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(isAdDuration(15, hint)).toBe(false);
+    }
+  });
+
+  it("reports no ad while the player has not published a duration yet", () => {
+    for (const reported of [0, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(isAdDuration(reported, 600)).toBe(false);
+    }
+  });
+});
 
 describe("extractYouTubeId", () => {
   it("extracts id from watch URL", () => {
