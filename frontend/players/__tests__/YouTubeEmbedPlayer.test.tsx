@@ -488,6 +488,34 @@ describe("YouTubeEmbed player UI choice", () => {
     expect(mounts[1].isConnected).toBe(true);
   });
 
+  it("never hands our controls a player from the other mode", async () => {
+    // Regression: state updates land after the render that mounts the
+    // control bar, so for one commit it was given the player being
+    // destroyed in that same commit. Its mount effect then applied the
+    // saved playback rate to a destroyed widget, which threw from
+    // inside YouTube's own code and took the page down.
+    window.localStorage.setItem(STORAGE_KEY, "true");
+    await mountPlayer();
+    player.setPlaybackRate.mockClear();
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("button", { name: "Back to the Litloft player" }),
+      );
+    });
+    await waitFor(() => expect(lastOptions!.playerVars.controls).toBe(0));
+
+    // The new player has not reported ready yet, so there is no
+    // controller for this mode and the bar must stay unmounted.
+    expect(screen.queryByLabelText("Seek")).not.toBeInTheDocument();
+    expect(player.setPlaybackRate).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await lastOptions!.events.onReady({ target: player });
+    });
+    expect(screen.getByLabelText("Seek")).toBeInTheDocument();
+  });
+
   it("carries the playhead across the switch", async () => {
     // The periodic save only writes every five seconds, so it cannot
     // be relied on to hold the exact position at the moment of a

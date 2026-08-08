@@ -110,8 +110,18 @@ export default function YouTubeEmbed({
   const lastSavedRef = useRef(0);
   const [loadFailed, setLoadFailed] = useState(false);
   // Held in state (not just the ref) so the control bar renders as soon
-  // as the player is ready.
-  const [controller, setController] = useState<MediaController | null>(null);
+  // as the player is ready — and tagged with the UI it was built for.
+  //
+  // Without that tag, switching UI hands the freshly mounted control bar
+  // the *previous* player: state updates land after the render that
+  // mounts it, so for one commit this would still point at the player
+  // being destroyed in that same commit. The bar's mount effect then
+  // applies the saved playback rate to it, and the call lands inside a
+  // destroyed widget ("null is not an object (evaluating 'this.g.src')").
+  const [session, setSession] = useState<{
+    mc: MediaController;
+    youtubeUi: boolean;
+  } | null>(null);
   const [adActive, setAdActive] = useState(false);
   const [ended, setEnded] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -232,7 +242,7 @@ export default function YouTubeEmbed({
                 isInterrupted,
               });
               controllerRef.current = mc;
-              setController(mc);
+              setSession({ mc, youtubeUi });
               onMediaController?.(mc);
 
               // Citation jump (intelligence Ask `?t=`) wins over the
@@ -363,7 +373,7 @@ export default function YouTubeEmbed({
       }
       onMediaController?.(null);
       controllerRef.current = null;
-      setController(null);
+      setSession(null);
       setAdActive(false);
       setEnded(false);
       setPlaying(false);
@@ -427,6 +437,11 @@ export default function YouTubeEmbed({
   // Stand down in both states.
   const gesturesInteractive = !adActive && !ended;
 
+  // Only ever the player belonging to the UI currently on screen. A
+  // stale one is the same as none: it is already destroyed, or about to
+  // be, and anything sent to it crashes inside the widget.
+  const activeMc = session && session.youtubeUi === youtubeUi ? session.mc : null;
+
   return (
     <div className="w-full">
     <div
@@ -460,9 +475,9 @@ export default function YouTubeEmbed({
       {/* In YouTube-UI mode the player draws its own controls, and ours
           would sit on top of them — including the gesture overlay,
           which would swallow every touch meant for them. */}
-      {!youtubeUi && (
+      {!youtubeUi && activeMc && (
         <MediaControls
-          mc={controller}
+          mc={activeMc}
           frameRef={wrapperRef}
           durationHint={durationHint}
           fullscreen={fullscreen}
