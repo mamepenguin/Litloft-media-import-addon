@@ -98,7 +98,11 @@ export default function YouTubeEmbed({
 }: LoftEmbedProps) {
   const videoId = extractYouTubeId(url);
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const mountRef = useRef<HTMLDivElement>(null);
+  // The API replaces whatever node it is given with an iframe, so the
+  // node cannot be one React owns — React would keep trying to manage
+  // something no longer in the document. It owns this host instead, and
+  // the mount inside it is made and thrown away by the effect.
+  const hostRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<
     (YouTubePlayerLike & { destroy(): void }) | null
   >(null);
@@ -178,9 +182,16 @@ export default function YouTubeEmbed({
     loadYouTubeIframeApi()
       .then((YT) => {
         if (cancelled) return;
-        const mount = mountRef.current;
+        const host = hostRef.current;
         const wrapper = wrapperRef.current;
-        if (!mount || !wrapper) return;
+        if (!host || !wrapper) return;
+        // A fresh mount every time. On a rebuild the previous one is
+        // long gone — replaced by the iframe that has since been
+        // destroyed — so reusing it would hand the API a detached node.
+        host.replaceChildren();
+        const mount = document.createElement("div");
+        mount.className = "h-full w-full";
+        host.appendChild(mount);
         const player = new YT.Player(mount, {
           videoId,
           width: "100%",
@@ -362,6 +373,9 @@ export default function YouTubeEmbed({
         // Player may already be torn down by React unmount.
       }
       playerRef.current = null;
+      // destroy() takes the iframe with it, but not always — and a
+      // leftover would be a second player on the next build.
+      hostRef.current?.replaceChildren();
     };
     // initialTime is read inside the onReady closure but intentionally
     // excluded from this effect's dependency list — re-creating the
@@ -433,13 +447,15 @@ export default function YouTubeEmbed({
       // letterboxes the video itself.
       style={fullscreen.isPseudo ? undefined : { paddingTop: "56.25%" }}
     >
-      {/* The YouTube API *replaces* the mount node with its iframe, so
-          it gets a stable wrapper of its own. Without it React would be
-          holding a reference to a node that is no longer in the
-          document, and inserting the siblings below could fail. */}
-      <div className="absolute inset-0 [&>iframe]:h-full [&>iframe]:w-full [&>iframe]:border-0">
-        <div ref={mountRef} className="h-full w-full" />
-      </div>
+      {/* React owns this host and nothing inside it. The API replaces
+          the node it is given with an iframe, so anything React thought
+          it had put there would be gone from the document — and React
+          would fail trying to update or remove it on the next render,
+          which is exactly what broke switching player UI. */}
+      <div
+        ref={hostRef}
+        className="absolute inset-0 [&>iframe]:h-full [&>iframe]:w-full [&>iframe]:border-0"
+      />
 
       {/* In YouTube-UI mode the player draws its own controls, and ours
           would sit on top of them — including the gesture overlay,
@@ -463,7 +479,7 @@ export default function YouTubeEmbed({
       {/* The settings sheet goes with our controls, so the way back has
           to live outside the frame. */}
       {youtubeUi && (
-        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 px-1">
+        <div className="mt-2 px-1">
           <button
             type="button"
             className="rounded-2xl text-sm text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
@@ -471,7 +487,6 @@ export default function YouTubeEmbed({
           >
             {tmi("backToLitloftPlayer")}
           </button>
-          <span className="text-xs text-text-muted">{tmi("playerUiNote")}</span>
         </div>
       )}
     </div>

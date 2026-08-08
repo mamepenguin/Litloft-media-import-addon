@@ -37,7 +37,7 @@ export function PlayerUiToggle({ youtubeUi, onChange }: PlayerUiToggleProps) {
         aria-label={t("playerUi")}
         onClick={() => onChange(!youtubeUi)}
         className={[
-          "inline-flex h-11 min-w-24 items-center justify-center gap-1 rounded-2xl px-3 text-sm",
+          "inline-flex h-11 items-center justify-center gap-1 rounded-2xl px-3 text-sm",
           "transition-colors motion-reduce:transition-none",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring",
           youtubeUi ? "bg-white/20 font-medium" : "hover:bg-white/10",

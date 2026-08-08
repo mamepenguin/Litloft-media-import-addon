@@ -17,6 +17,8 @@ let lastOptions: {
   playerVars: Record<string, number>;
   events: PlayerEvents;
 } | null = null;
+/** The node handed to that call, which the real API would replace. */
+let lastMount: HTMLElement | null = null;
 
 const player = {
   seekTo: vi.fn(),
@@ -40,7 +42,8 @@ vi.mock("../loadYouTubeIframeApi", () => ({
   loadYouTubeIframeApi: () =>
     Promise.resolve({
       Player: class {
-        constructor(_mount: HTMLElement, options: never) {
+        constructor(mount: HTMLElement, options: never) {
+          lastMount = mount;
           lastOptions = options;
           return player as never;
         }
@@ -460,6 +463,29 @@ describe("YouTubeEmbed player UI choice", () => {
     window.localStorage.setItem(STORAGE_KEY, "true");
     await mountPlayer();
     expect(lastOptions!.playerVars.disablekb).toBe(0);
+  });
+
+  it("builds a fresh mount node on every switch", async () => {
+    // The API replaces the node it is given with an iframe, so the
+    // previous one is detached by the time a rebuild happens. Handing
+    // it back would fail, and leaving React to manage it broke the
+    // page outright.
+    const mounts: HTMLElement[] = [];
+    lastMount = null;
+    window.localStorage.setItem(STORAGE_KEY, "true");
+    await mountPlayer();
+    mounts.push(lastMount!);
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("button", { name: "Back to the Litloft player" }),
+      );
+    });
+    await waitFor(() => expect(lastOptions!.playerVars.controls).toBe(0));
+    mounts.push(lastMount!);
+
+    expect(mounts[0]).not.toBe(mounts[1]);
+    expect(mounts[1].isConnected).toBe(true);
   });
 
   it("carries the playhead across the switch", async () => {
