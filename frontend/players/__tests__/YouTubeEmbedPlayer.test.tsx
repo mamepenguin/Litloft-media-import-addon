@@ -128,6 +128,7 @@ function pointerEvent(type: string, clientX: number): Event {
 
 beforeEach(() => {
   lastOptions = null;
+  window.localStorage.clear();
   vi.clearAllMocks();
   player.getDuration.mockReturnValue(600);
   player.getPlayerState.mockReturnValue(YT_STATE_PLAYING);
@@ -247,10 +248,14 @@ describe("YouTubeEmbed pointer interaction", () => {
     const { container } = await mountPlayer();
     const overlay = overlayOf(container);
     const requestFullscreen = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(container.firstElementChild!, "requestFullscreen", {
-      configurable: true,
-      value: requestFullscreen,
-    });
+    Object.defineProperty(
+      container.querySelector<HTMLElement>('[data-testid="player-frame"]')!,
+      "requestFullscreen",
+      {
+        configurable: true,
+        value: requestFullscreen,
+      },
+    );
     await act(async () => {
       fireEvent.click(overlay, { detail: 1 });
       fireEvent.click(overlay, { detail: 2 });
@@ -323,7 +328,9 @@ describe("YouTubeEmbed fullscreen", () => {
   }
 
   function frameOf(container: HTMLElement): HTMLElement {
-    return container.firstElementChild as HTMLElement;
+    const frame = container.querySelector<HTMLElement>('[data-testid="player-frame"]');
+    if (!frame) throw new Error("player frame not found");
+    return frame;
   }
 
   it("keeps the in-page aspect shim while not fullscreen", async () => {
@@ -411,5 +418,69 @@ describe("YouTubeEmbed watch progress", () => {
       vi.advanceTimersByTime(1000);
     });
     expect(saveProgress).toHaveBeenCalledWith("abc123456789", 120);
+  });
+});
+
+describe("YouTubeEmbed player UI choice", () => {
+  const STORAGE_KEY = "media-import-youtube-ui";
+
+  it("draws Litloft's controls by default", async () => {
+    const { container } = await mountPlayer();
+    expect(lastOptions!.playerVars.controls).toBe(0);
+    expect(overlayOf(container)).toBeInTheDocument();
+  });
+
+  it("hands the player its own UI when asked", async () => {
+    // playsinline goes with it: that hand-off to the browser's own
+    // full-screen player is the only route to Picture-in-Picture.
+    window.localStorage.setItem(STORAGE_KEY, "true");
+    await mountPlayer();
+    expect(lastOptions!.playerVars.controls).toBe(1);
+    expect(lastOptions!.playerVars.playsinline).toBeUndefined();
+  });
+
+  it("stands our controls down in that mode", async () => {
+    // Ours would sit on top of the player's — and the gesture overlay
+    // would swallow every touch meant for them.
+    window.localStorage.setItem(STORAGE_KEY, "true");
+    const { container } = await mountPlayer();
+    expect(container.querySelector("[data-player-gestures]")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Seek")).not.toBeInTheDocument();
+  });
+
+  it("offers a way back that does not depend on our controls", async () => {
+    window.localStorage.setItem(STORAGE_KEY, "true");
+    await mountPlayer();
+    expect(
+      screen.getByRole("button", { name: "Back to the Litloft player" }),
+    ).toBeInTheDocument();
+  });
+
+  it("gives the keyboard back to the player in that mode", async () => {
+    window.localStorage.setItem(STORAGE_KEY, "true");
+    await mountPlayer();
+    expect(lastOptions!.playerVars.disablekb).toBe(0);
+  });
+
+  it("carries the playhead across the switch", async () => {
+    // The periodic save only writes every five seconds, so it cannot
+    // be relied on to hold the exact position at the moment of a
+    // switch.
+    window.localStorage.setItem(STORAGE_KEY, "true");
+    const { container } = await mountPlayer();
+    player.getCurrentTime.mockReturnValue(123);
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("button", { name: "Back to the Litloft player" }),
+      );
+    });
+    await waitFor(() => expect(lastOptions!.playerVars.controls).toBe(0));
+    await act(async () => {
+      await lastOptions!.events.onReady({ target: player });
+    });
+
+    expect(player.seekTo).toHaveBeenCalledWith(123, true);
+    expect(container.querySelector("[data-player-gestures]")).toBeInTheDocument();
   });
 });

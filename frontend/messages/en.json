@@ -219,6 +219,13 @@
         "subscription": "Subscription",
         "single": "Single import"
       }
+    },
+    "player": {
+      "playerUi": "Player",
+      "playerUiLitloft": "Litloft",
+      "playerUiYouTube": "YouTube",
+      "playerUiNote": "Plays with YouTube's own player. Litloft's controls and gestures are unavailable.",
+      "backToLitloftPlayer": "Back to the Litloft player"
     }
   }
 }

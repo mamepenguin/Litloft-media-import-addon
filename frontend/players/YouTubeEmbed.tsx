@@ -23,6 +23,8 @@ import type { LoftEmbedProps } from "@/components/loft/types";
 import MediaControls from "@/components/player/MediaControls";
 import { useFullscreen } from "@/components/player/hooks/useFullscreen";
 import { loadYouTubeIframeApi } from "./loadYouTubeIframeApi";
+import { useYouTubeUiPreference } from "./useYouTubeUiPreference";
+import { PlayerUiToggle } from "./PlayerUiToggle";
 
 const SAVE_INTERVAL = 5;
 const RESUME_THRESHOLD = 5;
@@ -110,6 +112,7 @@ export default function YouTubeEmbed({
   const [ended, setEnded] = useState(false);
   const [playing, setPlaying] = useState(false);
   const tsc = useTranslations("shortcuts");
+  const tmi = useTranslations("mediaImport.player");
   const { nickname } = useProfile();
   const hasProfile = nickname !== null;
 
@@ -124,6 +127,14 @@ export default function YouTubeEmbed({
   // to stop treating downward travel as a dismiss for the duration, or
   // the drift that comes with a planted finger closes the frame.
   const [boosting, setBoosting] = useState(false);
+
+  // Which player UI is on screen. Switching rebuilds the iframe, since
+  // playerVars are read once at construction and never again.
+  const [youtubeUi, setYoutubeUi] = useYouTubeUiPreference();
+  // Carries the playhead across that rebuild. The periodic save has a
+  // five-second threshold, so it cannot be relied on to hold the exact
+  // position at the moment of a switch.
+  const resumeAtRef = useRef<number | null>(null);
 
   // One instance for the whole frame. Every route into fullscreen —
   // the bar's button, the `f` shortcut, double-click — goes through it,
@@ -176,17 +187,21 @@ export default function YouTubeEmbed({
           height: "100%",
           playerVars: {
             enablejsapi: 1,
-            // Litloft draws its own control bar (MediaControls), so the
-            // YouTube chrome is turned off. This also removes the
-            // title / share overlays. The pause-time related-video
-            // overlay and the end screen are NOT removable, and must
-            // not be covered — see the overlay's pointer-events below.
-            controls: 0,
-            // Required once controls are ours: without it iOS hands
-            // playback to its native fullscreen player and our controls
-            // stop being reachable.
-            playsinline: 1,
-            disablekb: 1,
+            // The one setting that decides which UI is on screen.
+            // Litloft draws its own control bar (MediaControls) at 0;
+            // at 1 the player draws its own and ours stands down. The
+            // pause-time related-video overlay and the end screen are
+            // NOT removable either way, and must not be covered — see
+            // the gesture overlay's interactive gate.
+            controls: youtubeUi ? 1 : 0,
+            // Only meaningful while the controls are ours: without it
+            // iOS refuses inline playback and hands the video to its
+            // own full-screen player, where our controls cannot be
+            // reached. Dropping it in YouTube-UI mode is deliberate —
+            // that hand-off is what puts a Picture-in-Picture button
+            // on screen, which no API of ours can produce.
+            ...(youtubeUi ? {} : { playsinline: 1 }),
+            disablekb: youtubeUi ? 0 : 1,
             modestbranding: 1,
             rel: 0,
             // Start with captions off rather than inheriting whatever
@@ -216,7 +231,20 @@ export default function YouTubeEmbed({
               // — exactly what was reported. Skip the resume read
               // entirely in that case so we don't even pay the API
               // round-trip.
-              if (Number.isFinite(initialTime) && (initialTime ?? 0) > 0) {
+              // A UI switch outranks both the citation jump and the
+              // saved progress: it is the most recent thing the viewer
+              // did, and they expect to carry on from where they were.
+              const resumeAt = resumeAtRef.current;
+              resumeAtRef.current = null;
+              if (resumeAt != null && resumeAt > 0) {
+                try {
+                  target.seekTo(resumeAt, true);
+                  lastSavedRef.current = resumeAt;
+                  target.playVideo();
+                } catch {
+                  // Player may still be warming up.
+                }
+              } else if (Number.isFinite(initialTime) && (initialTime ?? 0) > 0) {
                 try {
                   target.seekTo(initialTime as number, true);
                   lastSavedRef.current = initialTime as number;
@@ -287,6 +315,18 @@ export default function YouTubeEmbed({
       cancelled = true;
       if (pollHandle) clearInterval(pollHandle);
       try {
+        // Where to pick up if this teardown is a UI switch rather than
+        // leaving the page. Harmless otherwise: nothing reads it until
+        // a player is built again for the same file.
+        const live = playerRef.current;
+        if (live && !isInterrupted()) {
+          const at = live.getCurrentTime();
+          if (Number.isFinite(at) && at > 0) resumeAtRef.current = at;
+        }
+      } catch {
+        // Player may already be torn down.
+      }
+      try {
         const p = playerRef.current;
         // Leaving mid-ad must not stamp the ad's offset onto the
         // resume point, same as the periodic save above.
@@ -330,7 +370,7 @@ export default function YouTubeEmbed({
     // reseeks the live player when initialTime changes, so the
     // citation-jump flow still works for same-file ?t= updates.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fileId, videoId, hasProfile, onMediaController, isInterrupted]);
+  }, [fileId, videoId, hasProfile, onMediaController, isInterrupted, youtubeUi]);
 
   // Reseek when ?t= changes on the current iframe. Triggered when the
   // user clicks a second citation for the same .loft file (different
@@ -374,8 +414,10 @@ export default function YouTubeEmbed({
   const gesturesInteractive = !adActive && !ended;
 
   return (
+    <div className="w-full">
     <div
       ref={wrapperRef}
+      data-testid="player-frame"
       tabIndex={0}
       className={[
         "overflow-hidden bg-black focus:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring",
@@ -399,15 +441,39 @@ export default function YouTubeEmbed({
         <div ref={mountRef} className="h-full w-full" />
       </div>
 
-      <MediaControls
-        mc={controller}
-        frameRef={wrapperRef}
-        durationHint={durationHint}
-        fullscreen={fullscreen}
-        isPseudoFullscreen={fullscreen.isPseudo}
-        interactive={gesturesInteractive}
-        onBoostingChange={setBoosting}
-      />
+      {/* In YouTube-UI mode the player draws its own controls, and ours
+          would sit on top of them — including the gesture overlay,
+          which would swallow every touch meant for them. */}
+      {!youtubeUi && (
+        <MediaControls
+          mc={controller}
+          frameRef={wrapperRef}
+          durationHint={durationHint}
+          fullscreen={fullscreen}
+          isPseudoFullscreen={fullscreen.isPseudo}
+          interactive={gesturesInteractive}
+          onBoostingChange={setBoosting}
+          settingsExtra={
+            <PlayerUiToggle youtubeUi={youtubeUi} onChange={setYoutubeUi} />
+          }
+        />
+      )}
+    </div>
+
+      {/* The settings sheet goes with our controls, so the way back has
+          to live outside the frame. */}
+      {youtubeUi && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 px-1">
+          <button
+            type="button"
+            className="rounded-2xl text-sm text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
+            onClick={() => setYoutubeUi(false)}
+          >
+            {tmi("backToLitloftPlayer")}
+          </button>
+          <span className="text-xs text-text-muted">{tmi("playerUiNote")}</span>
+        </div>
+      )}
     </div>
   );
 }
