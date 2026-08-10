@@ -89,9 +89,17 @@ function pressShortcut(key: string) {
 
 const URL_UNDER_TEST = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 
-async function mountPlayer(durationHint: number | null = 600) {
+async function mountPlayer(
+  durationHint: number | null = 600,
+  onEnded?: () => void,
+) {
   const utils = render(
-    <YouTubeEmbed fileId="abc123456789" url={URL_UNDER_TEST} durationHint={durationHint} />,
+    <YouTubeEmbed
+      fileId="abc123456789"
+      url={URL_UNDER_TEST}
+      durationHint={durationHint}
+      onEnded={onEnded}
+    />,
   );
   await waitFor(() => expect(lastOptions).not.toBeNull());
   await act(async () => {
@@ -420,7 +428,47 @@ describe("YouTubeEmbed watch progress", () => {
     await act(async () => {
       vi.advanceTimersByTime(1000);
     });
-    expect(saveProgress).toHaveBeenCalledWith("abc123456789", 120);
+    expect(saveProgress).toHaveBeenCalledWith("abc123456789", 120, 600);
+  });
+});
+
+// Spec 2026-08-10-media-import-watch-surface.md §4.2 / §4.3.
+describe("YouTubeEmbed playback completion", () => {
+  it("records the final position instead of erasing the record", async () => {
+    const { saveProgress } = await import("@/lib/recentlyPlayed");
+    const { deleteWatchProgress } = await import("@/lib/api");
+    await mountPlayer(600);
+    player.getCurrentTime.mockReturnValue(600);
+    await act(async () => {
+      lastOptions!.events.onStateChange({ data: YT_STATE_ENDED });
+    });
+    expect(saveProgress).toHaveBeenCalledWith("abc123456789", 600, 600);
+    expect(deleteWatchProgress).not.toHaveBeenCalled();
+  });
+
+  it("forwards completion to the host", async () => {
+    const onEnded = vi.fn();
+    await mountPlayer(600, onEnded);
+    await act(async () => {
+      lastOptions!.events.onStateChange({ data: YT_STATE_ENDED });
+    });
+    expect(onEnded).toHaveBeenCalledTimes(1);
+  });
+
+  // ENDED fires at the end of a pre-roll too, and nothing in the API
+  // distinguishes the two — only the duration mismatch does. Without
+  // this guard an ad would be written down as a finished video.
+  it("ignores the ENDED that closes an ad", async () => {
+    const { saveProgress } = await import("@/lib/recentlyPlayed");
+    const onEnded = vi.fn();
+    await mountPlayer(600, onEnded);
+    player.getDuration.mockReturnValue(15);
+    player.getCurrentTime.mockReturnValue(15);
+    await act(async () => {
+      lastOptions!.events.onStateChange({ data: YT_STATE_ENDED });
+    });
+    expect(saveProgress).not.toHaveBeenCalled();
+    expect(onEnded).not.toHaveBeenCalled();
   });
 });
 
