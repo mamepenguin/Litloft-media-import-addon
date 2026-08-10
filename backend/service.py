@@ -1167,10 +1167,16 @@ def _ensure_subscription_tables() -> None:
     without a follow-up migration; the registry module owns the
     canonical value list.
 
-    Phase 4 adds ``avatar_url`` and ``display_title`` columns. They are
-    appended via ``ALTER TABLE ... ADD COLUMN`` wrapped in try/except so
-    the call stays idempotent on installs that already created the
-    table at Phase 2 schema.
+    Phase 4 adds ``avatar_url`` and ``display_title`` columns, and the
+    Watch surface adds ``display_mode``. They are appended via
+    ``ALTER TABLE ... ADD COLUMN`` wrapped in try/except so the call
+    stays idempotent on installs that already created the table at
+    Phase 2 schema.
+
+    ``display_mode`` is plain TEXT with no CHECK constraint, matching
+    ``status`` / ``error_kind``: the vocabulary
+    (``library`` / ``feed`` / ``regular``) is owned by the application
+    layer so it can grow without another migration.
 
     The ``file_id`` FK uses ``ON DELETE SET NULL`` so a user-deleted
     .loft preserves the subscription_videos row (history of seen items),
@@ -1198,6 +1204,7 @@ def _ensure_subscription_tables() -> None:
                     created_at TEXT NOT NULL,
                     avatar_url TEXT,
                     display_title TEXT,
+                    display_mode TEXT NOT NULL DEFAULT 'library',
                     UNIQUE(provider, source_kind, source_ref, drive, folder_path)
                 )
                 """
@@ -1206,6 +1213,13 @@ def _ensure_subscription_tables() -> None:
         for column_sql in (
             "ALTER TABLE subscriptions ADD COLUMN avatar_url TEXT",
             "ALTER TABLE subscriptions ADD COLUMN display_title TEXT",
+            # The DEFAULT is the whole migration for existing installs:
+            # every subscription that predates the Watch surface becomes
+            # 'library', so nothing a user already imported suddenly
+            # turns into a viewing backlog. Spec
+            # 2026-08-10-media-import-watch-surface.md §8.
+            "ALTER TABLE subscriptions ADD COLUMN display_mode TEXT "
+            "NOT NULL DEFAULT 'library'",
         ):
             try:
                 db.execute(text(column_sql))

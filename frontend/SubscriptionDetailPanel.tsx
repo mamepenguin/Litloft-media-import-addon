@@ -20,6 +20,7 @@ import {
   type SubscriptionVideo,
 } from "./api";
 import ConflictResolveDialog from "./ConflictResolveDialog";
+import DisplayModeField from "./DisplayModeField";
 import SubscriptionItemRow from "./SubscriptionItemRow";
 import SubscriptionStatusPill, {
   deriveStatus,
@@ -431,6 +432,20 @@ export default function SubscriptionDetailPanel({
               </button>
             </div>
           )}
+        </section>
+
+        <section
+          className="border-b border-bg-border px-5 py-4"
+          data-testid="display-mode-section"
+        >
+          {/* Presentation only. Changing this never re-imports,
+              reindexes, moves, or deletes anything (spec §3.2). */}
+          <DisplayModeField
+            name={`subscription-${subscription.id}-display-mode`}
+            value={subscription.display_mode}
+            onChange={(mode) => applyPatch({ display_mode: mode })}
+            disabled={busy}
+          />
         </section>
 
         <section className="border-b border-bg-border px-5 py-4">

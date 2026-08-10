@@ -42,12 +42,28 @@ class LoftMetadataResponse(BaseModel):
 # ---- Subscription schemas (Phase 2 Commit 4) -----------------------
 
 
+DisplayMode = Literal["library", "feed", "regular"]
+"""How prominently a subscription's new videos appear in Watch.
+
+- ``library``: imported and indexed, never placed in a Watch lane.
+- ``feed``: appears in the chronological recent lane.
+- ``regular``: appears in the prominent regular-sources lane.
+
+``library`` is the default everywhere — for new subscriptions and, via
+the column DEFAULT, for every subscription that predates this field.
+Importing a video has never implied an intent to watch it, so opting
+*in* is the only way into Watch (spec
+``2026-08-10-media-import-watch-surface.md`` §1 / §2.1).
+"""
+
+
 class SubscriptionCreateRequest(BaseModel):
     url: str
     drive: str
     folder_path: str = ""
     cooldown_minutes: int = 60
     include_no_transcript: bool = False
+    display_mode: DisplayMode = "library"
 
 
 class SubscriptionResponse(BaseModel):
@@ -69,6 +85,10 @@ class SubscriptionResponse(BaseModel):
     # backfilled metadata don't crash response serialisation.
     avatar_url: str | None = None
     display_title: str | None = None
+    # Rows written before the column existed read back as the DDL
+    # default, so this is never actually absent — typed non-optional to
+    # keep the frontend from having to handle a third state.
+    display_mode: DisplayMode = "library"
 
 
 class SubscriptionPatchRequest(BaseModel):
@@ -86,6 +106,7 @@ class SubscriptionPatchRequest(BaseModel):
     include_no_transcript: bool | None = None
     folder_path: str | None = None
     display_title: str | None = None
+    display_mode: DisplayMode | None = None
 
 
 class SubscriptionSummaryResponse(BaseModel):
@@ -209,3 +230,54 @@ class ResolveConflictRequest(BaseModel):
 
 class ResolveConflictResponse(BaseModel):
     status: Literal["dismissed", "requeued"]
+
+
+# ---- Watch surface -------------------------------------------------
+
+
+WatchLane = Literal["continue", "regular", "feed"]
+"""Which slice of the library a Watch request is asking for.
+
+One lane per request so each paginates on its own; the page fires
+three. Requesting them together would force a single limit across
+lanes that grow at completely different rates.
+"""
+
+
+PlaybackState = Literal["not_started", "in_progress", "completed"]
+"""Informational only — never a queue position.
+
+Derived from core ``WatchHistory``; Media Import keeps no watched flag
+of its own. A view-only ``0 / 0`` row is ``not_started``: opening a
+file's detail page is not watching it (spec §4.1).
+"""
+
+
+class WatchPlayback(BaseModel):
+    position: float
+    duration: float
+    state: PlaybackState
+
+
+class WatchItem(BaseModel):
+    """One video in a Watch lane.
+
+    ``playback`` is None when there is no history row for this viewer,
+    and also when reading playback state failed — Watch degrades to
+    "no badge", never to "no video" (spec §7).
+    """
+
+    file_id: str
+    filename: str
+    title: str | None = None
+    thumbnail_path: str | None = None
+    channel: str | None = None
+    published_at: str | None = None
+    created_at: str
+    # Media length from the core file record (yt-dlp at import time),
+    # not from playback state.
+    duration: float | None = None
+    url: str
+    subscription_id: int | None = None
+    subscription_title: str | None = None
+    playback: WatchPlayback | None = None

@@ -72,6 +72,7 @@ def insert_subscription(
     folder_path: str,
     cooldown_minutes: int,
     include_no_transcript: bool,
+    display_mode: str = "library",
 ) -> int:
     now = datetime.now(UTC).isoformat()
     db = SessionLocal()
@@ -81,9 +82,9 @@ def insert_subscription(
                 "INSERT INTO subscriptions "
                 "(provider, source_kind, source_ref, drive, folder_path, "
                 " is_enabled, cooldown_minutes, include_no_transcript, "
-                " created_at) "
+                " display_mode, created_at) "
                 "VALUES (:provider, :kind, :ref, :drive, :folder, "
-                " 1, :cd, :inc, :created_at) "
+                " 1, :cd, :inc, :mode, :created_at) "
                 "RETURNING id"
             ),
             {
@@ -94,6 +95,7 @@ def insert_subscription(
                 "folder": folder_path,
                 "cd": cooldown_minutes,
                 "inc": int(include_no_transcript),
+                "mode": display_mode,
                 "created_at": now,
             },
         )
@@ -124,6 +126,7 @@ def update_settings(
     include_no_transcript: bool | None = None,
     folder_path: str | None = None,
     display_title: str | None = None,
+    display_mode: str | None = None,
     clear_cooldown_until: bool = False,
 ) -> None:
     """PATCH-style update for user-editable subscription fields.
@@ -152,6 +155,13 @@ def update_settings(
     if display_title is not None:
         set_clauses.append("display_title = :title")
         params["title"] = display_title
+    if display_mode is not None:
+        # Presentation only. Nothing here touches the .loft files, the
+        # import queue, or the index — changing where a subscription's
+        # videos show up must never re-import or reindex anything
+        # (spec 2026-08-10-media-import-watch-surface.md §3.2).
+        set_clauses.append("display_mode = :mode")
+        params["mode"] = display_mode
     if clear_cooldown_until:
         set_clauses.append("cooldown_until = NULL")
     if not set_clauses:
@@ -274,6 +284,204 @@ def list_activity(drive: str, limit: int) -> list[dict]:
     finally:
         db.close()
     return [dict(r) for r in rows]
+
+
+# ---- Watch projection ---------------------------------------------
+
+# Media Import records ``published_at`` as yt-dlp's ``upload_date``,
+# i.e. the bare ``YYYYMMDD`` string, while ``files.created_at`` is an
+# ISO timestamp. Ordering a lane by whichever is present therefore has
+# to normalise first, or the two formats interleave arbitrarily.
+#
+# Import time alone is not usable as the sort key: a backfill imports
+# old videos today, which would park a five-year-old upload at the top
+# of "recent". Publication date is what the lane claims to show, so it
+# leads, and the import timestamp only fills in when the provider gave
+# us no date at all (and breaks ties).
+_PUBLISHED_SORT_KEY = """
+        CASE
+            WHEN m.published_at GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+                THEN substr(m.published_at, 1, 4) || '-'
+                     || substr(m.published_at, 5, 2) || '-'
+                     || substr(m.published_at, 7, 2)
+            WHEN m.published_at IS NOT NULL AND m.published_at <> ''
+                THEN substr(m.published_at, 1, 10)
+            ELSE substr(f.created_at, 1, 10)
+        END
+"""
+
+# Every Watch row is a live .loft on this drive. ``active_file_filter``
+# lives in the ORM and this module speaks raw SQL, so the two NULL
+# checks are spelled out — they are the same Active-state definition
+# (deleted_at IS NULL AND missing_since IS NULL) the core uses.
+_WATCH_COLUMNS = """
+        f.id AS file_id,
+        f.filename AS filename,
+        f.title AS title,
+        f.thumbnail_path AS thumbnail_path,
+        f.duration AS duration,
+        f.created_at AS created_at,
+        m.url AS url,
+        m.channel AS channel,
+        m.published_at AS published_at
+"""
+
+
+def list_watch_lane(
+    drive: str,
+    display_mode: str,
+    *,
+    limit: int,
+    offset: int,
+) -> list[dict]:
+    """Recent .loft imports from subscriptions set to ``display_mode``.
+
+    A video can be reached through more than one subscription (the same
+    upload sitting in a channel and a playlist), so rows are collapsed
+    to one per file. ``MIN(s.id)`` picks a stable subscription to
+    attribute it to rather than multiplying the item across lanes.
+
+    Deliberately returns no total count: Watch is not an inbox and must
+    never render a backlog figure (spec §2.2).
+    """
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            text(
+                f"SELECT {_WATCH_COLUMNS}, "
+                " MIN(s.id) AS subscription_id, "
+                " COALESCE("
+                "   MIN(s.display_title), MIN(s.source_ref)"
+                " ) AS subscription_title "
+                "FROM files f "
+                "JOIN loft_metadata m ON m.file_id = f.id "
+                "JOIN subscription_videos sv ON sv.file_id = f.id "
+                "JOIN subscriptions s ON s.id = sv.subscription_id "
+                "WHERE f.drive = :drive "
+                "  AND f.deleted_at IS NULL "
+                "  AND f.missing_since IS NULL "
+                "  AND s.drive = :drive "
+                "  AND s.display_mode = :mode "
+                "GROUP BY f.id "
+                f"ORDER BY {_PUBLISHED_SORT_KEY} DESC, f.created_at DESC "
+                "LIMIT :limit OFFSET :offset"
+            ),
+            {
+                "drive": drive,
+                "mode": display_mode,
+                "limit": limit,
+                "offset": offset,
+            },
+        ).mappings().all()
+    finally:
+        db.close()
+    return [dict(r) for r in rows]
+
+
+def list_watch_continue(
+    drive: str,
+    viewer_id: str,
+    *,
+    limit: int,
+    offset: int,
+) -> list[dict]:
+    """.loft files this viewer has started but not finished.
+
+    Display mode is intentionally ignored here: a video opened from
+    search deserves to be resumable even when its subscription is
+    ``library``-only, and one-off URL imports have no subscription at
+    all (spec §2.3 / §3.1).
+
+    The predicate is the core's own continue-watching gate — positive
+    duration, position under 90% — so the two surfaces cannot drift
+    into disagreeing about what "in progress" means. The extra
+    ``playback_position > 0`` keeps view-only rows out even if a future
+    change made a 0/0 row satisfy the ratio.
+    """
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            text(
+                f"SELECT {_WATCH_COLUMNS}, "
+                " w.playback_position AS playback_position, "
+                " w.duration AS playback_duration "
+                "FROM files f "
+                "JOIN loft_metadata m ON m.file_id = f.id "
+                "JOIN watch_history w ON w.file_id = f.id "
+                "WHERE f.drive = :drive "
+                "  AND f.deleted_at IS NULL "
+                "  AND f.missing_since IS NULL "
+                "  AND w.viewer_id = :viewer "
+                "  AND w.duration > 0 "
+                "  AND w.playback_position > 0 "
+                "  AND w.playback_position < w.duration * 0.9 "
+                "ORDER BY w.last_played_at DESC "
+                "LIMIT :limit OFFSET :offset"
+            ),
+            {
+                "drive": drive,
+                "viewer": viewer_id,
+                "limit": limit,
+                "offset": offset,
+            },
+        ).mappings().all()
+    finally:
+        db.close()
+    return [dict(r) for r in rows]
+
+
+def load_playback_markers(
+    viewer_id: str, file_ids: list[str]
+) -> dict[str, tuple[float, float]]:
+    """``file_id -> (position, duration)`` for the given files.
+
+    Split out from the lane query on purpose: a failure to read
+    playback state must cost the badges, not the videos. Callers run
+    this after the lane is already assembled and fall back to an empty
+    mapping (spec §7 — "failure to read progress must not hide
+    videos").
+    """
+    if not file_ids:
+        return {}
+    placeholders = ", ".join(f":f{i}" for i in range(len(file_ids)))
+    params: dict = {f"f{i}": fid for i, fid in enumerate(file_ids)}
+    params["viewer"] = viewer_id
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            text(
+                "SELECT file_id, playback_position, duration "
+                "FROM watch_history "
+                "WHERE viewer_id = :viewer "
+                f"  AND file_id IN ({placeholders})"
+            ),
+            params,
+        ).mappings().all()
+    finally:
+        db.close()
+    return {
+        r["file_id"]: (r["playback_position"], r["duration"]) for r in rows
+    }
+
+
+def count_surfaced_subscriptions(drive: str) -> int:
+    """How many subscriptions on this drive are not ``library``.
+
+    Drives the Watch empty state ("nothing is surfaced yet"), which is
+    a statement about configuration — not a count of unwatched videos.
+    """
+    db = SessionLocal()
+    try:
+        row = db.execute(
+            text(
+                "SELECT COUNT(*) FROM subscriptions "
+                "WHERE drive = :drive AND display_mode <> 'library'"
+            ),
+            {"drive": drive},
+        ).fetchone()
+    finally:
+        db.close()
+    return row[0] if row else 0
 
 
 def reset_video_for_retry(

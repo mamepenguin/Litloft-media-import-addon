@@ -12,6 +12,48 @@
     "title": "Media Import",
     "driveLabel": "drive: {drive}",
     "loadingDrive": "Loading drive...",
+    "nav": {
+      "label": "Media Import views",
+      "watch": "Watch",
+      "manage": "Manage"
+    },
+    "displayMode": {
+      "legend": "Show in Watch",
+      "library": {
+        "label": "Library only",
+        "hint": "Imported and searchable, including Ask. Not placed in Watch."
+      },
+      "feed": {
+        "label": "Show in recent videos",
+        "hint": "New videos appear in the chronological recent feed."
+      },
+      "regular": {
+        "label": "Regular source",
+        "hint": "A source you watch habitually — shown prominently at the top of Watch."
+      }
+    },
+    "watch": {
+      "lane": {
+        "continue": "Continue watching",
+        "regular": "Regular sources",
+        "feed": "Recent videos"
+      },
+      "state": {
+        "completed": "Watched"
+      },
+      "action": {
+        "play": "Play",
+        "resume": "Resume",
+        "addToCollection": "Add to collection",
+        "openSource": "Open the source page"
+      },
+      "loadMore": "Show more",
+      "empty": {
+        "none": "No sources are surfaced in Watch yet. Set a subscription to \"Show in recent videos\" or \"Regular source\" and its new videos will appear here. Imported videos stay searchable and available to Ask whether or not they show up in Watch.",
+        "surfaced": "Nothing to show right now. New videos appear here as they are imported.",
+        "action": "Open Manage"
+      }
+    },
     "composer": {
       "addSourceCollapsed": "Add a source — paste a URL or drop a link",
       "heading": "Add a source",

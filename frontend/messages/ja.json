@@ -12,6 +12,48 @@
     "title": "メディア取り込み",
     "driveLabel": "ドライブ: {drive}",
     "loadingDrive": "ドライブを読み込み中...",
+    "nav": {
+      "label": "メディア取り込みの表示切り替え",
+      "watch": "見る",
+      "manage": "管理"
+    },
+    "displayMode": {
+      "legend": "Watch での表示",
+      "library": {
+        "label": "ライブラリのみ",
+        "hint": "取り込んで検索・Ask の対象にします。Watch には並びません。"
+      },
+      "feed": {
+        "label": "新着に表示",
+        "hint": "新しい動画を新着一覧に時系列で並べます。"
+      },
+      "regular": {
+        "label": "よく見るソース",
+        "hint": "習慣的に見るチャンネルとして Watch の上部に表示します。"
+      }
+    },
+    "watch": {
+      "lane": {
+        "continue": "再生途中",
+        "regular": "よく見るソース",
+        "feed": "新着"
+      },
+      "state": {
+        "completed": "視聴済み"
+      },
+      "action": {
+        "play": "再生",
+        "resume": "続きから",
+        "addToCollection": "コレクションに追加",
+        "openSource": "配信元のページを開く"
+      },
+      "loadMore": "さらに表示",
+      "empty": {
+        "none": "Watch に表示するソースがまだありません。購読の表示設定を「新着に表示」または「よく見るソース」に変更すると、ここに並びます。取り込み済みの動画は Watch に出ていなくても検索・Ask から利用できます。",
+        "surfaced": "いま表示できる動画はありません。新しい動画が取り込まれるとここに並びます。",
+        "action": "管理を開く"
+      }
+    },
     "composer": {
       "addSourceCollapsed": "ソースを追加 — URLを貼り付けるかリンクをドロップ",
       "heading": "ソースを追加",

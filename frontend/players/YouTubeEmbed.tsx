@@ -2,16 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
-import {
-  deleteWatchProgress,
-  getWatchProgress,
-  saveWatchProgress,
-} from "@/lib/api";
-import {
-  clearProgress,
-  getSavedProgress,
-  saveProgress,
-} from "@/lib/recentlyPlayed";
+import { getWatchProgress, saveWatchProgress } from "@/lib/api";
+import { getSavedProgress, saveProgress } from "@/lib/recentlyPlayed";
 import {
   createYouTubeController,
   type MediaController,
@@ -95,6 +87,7 @@ export default function YouTubeEmbed({
   onMediaController,
   initialTime,
   durationHint,
+  onEnded,
 }: LoftEmbedProps) {
   const videoId = extractYouTubeId(url);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -136,6 +129,14 @@ export default function YouTubeEmbed({
   useEffect(() => {
     durationHintRef.current = durationHint;
   }, [durationHint]);
+
+  // Same reason as durationHintRef: a caller that passes an inline
+  // arrow would otherwise tear the iframe down and restart the watch
+  // session on every one of its renders.
+  const onEndedRef = useRef(onEnded);
+  useEffect(() => {
+    onEndedRef.current = onEnded;
+  }, [onEnded]);
 
   // True while a long press is holding the speed boost. Fullscreen has
   // to stop treating downward travel as a dismiss for the duration, or
@@ -185,7 +186,7 @@ export default function YouTubeEmbed({
       if (hasProfile) {
         saveWatchProgress(fileId, current, duration).catch(() => {});
       } else {
-        saveProgress(fileId, current);
+        saveProgress(fileId, current, duration);
       }
     };
 
@@ -316,12 +317,41 @@ export default function YouTubeEmbed({
               // just catching up.
               setPlaying(data === YT_STATE_PLAYING || data === YT_STATE_BUFFERING);
               if (data === YT_STATE_ENDED) {
-                lastSavedRef.current = 0;
-                if (hasProfile) {
-                  deleteWatchProgress(fileId).catch(() => {});
-                } else {
-                  clearProgress(fileId);
+                // ENDED fires for a pre-roll too, and there is no state
+                // flag that tells the two apart — the same duration
+                // mismatch that guards the periodic save is the only
+                // signal. Persisting here without it would stamp the
+                // ad's length onto the video as a completed watch.
+                if (isInterrupted()) return;
+                const p = playerRef.current;
+                let current = NaN;
+                let duration = NaN;
+                try {
+                  current = p?.getCurrentTime() ?? NaN;
+                  duration = p?.getDuration() ?? NaN;
+                } catch {
+                  // Player may already be tearing down.
                 }
+                // Completion is kept, not erased: the history row is
+                // what distinguishes "watched to the end" from "never
+                // opened", and the 90% gate keeps it out of continue
+                // watching anyway. Spec
+                // 2026-08-10-media-import-watch-surface.md §4.2.
+                if (Number.isFinite(duration) && duration > 0) {
+                  const position =
+                    Number.isFinite(current) && current > 0
+                      ? current
+                      : duration;
+                  lastSavedRef.current = position;
+                  if (hasProfile) {
+                    saveWatchProgress(fileId, position, duration).catch(
+                      () => {},
+                    );
+                  } else {
+                    saveProgress(fileId, position, duration);
+                  }
+                }
+                onEndedRef.current?.();
               }
             },
           },
@@ -364,7 +394,7 @@ export default function YouTubeEmbed({
             if (hasProfile) {
               saveWatchProgress(fileId, current, duration).catch(() => {});
             } else {
-              saveProgress(fileId, current);
+              saveProgress(fileId, current, duration);
             }
           }
         }
