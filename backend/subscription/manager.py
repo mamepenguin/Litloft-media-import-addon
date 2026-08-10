@@ -162,6 +162,7 @@ class SubscriptionManager:
         folder_path: str = "",
         cooldown_minutes: int = 60,
         include_no_transcript: bool = False,
+        display_mode: str = "library",
     ) -> int:
         match = find_subscription_provider_by_url(url)
         if match is None:
@@ -182,6 +183,7 @@ class SubscriptionManager:
             folder_path=folder_path,
             cooldown_minutes=cooldown_minutes,
             include_no_transcript=include_no_transcript,
+            display_mode=display_mode,
         )
 
         # Best-effort source-metadata pull (avatar + display title).

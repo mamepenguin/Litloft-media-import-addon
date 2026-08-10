@@ -93,6 +93,22 @@ export interface SubscriptionResolveResponse {
   ref: string | null;
 }
 
+/**
+ * How prominently a subscription's new videos appear in Watch.
+ *
+ * `library` is the default and stays the default: importing a video
+ * has never meant an intent to watch it, so a source only reaches a
+ * Watch lane when the user opts it in. Spec
+ * `2026-08-10-media-import-watch-surface.md` §1.
+ */
+export type DisplayMode = "library" | "feed" | "regular";
+
+export const DISPLAY_MODES: readonly DisplayMode[] = [
+  "library",
+  "feed",
+  "regular",
+] as const;
+
 export interface Subscription {
   id: number;
   provider: string;
@@ -114,6 +130,9 @@ export interface Subscription {
   // backfilled metadata yet.
   avatar_url: string | null;
   display_title: string | null;
+  // Never absent: rows predating the column read back as the DDL
+  // default ("library").
+  display_mode: DisplayMode;
 }
 
 export interface SubscriptionPatch {
@@ -122,6 +141,7 @@ export interface SubscriptionPatch {
   include_no_transcript?: boolean;
   folder_path?: string;
   display_title?: string;
+  display_mode?: DisplayMode;
 }
 
 export interface SubscriptionSummary {
@@ -206,6 +226,7 @@ export interface SubscriptionCreateInput {
   folder_path?: string;
   cooldown_minutes?: number;
   include_no_transcript?: boolean;
+  display_mode?: DisplayMode;
 }
 
 export async function createSubscription(
@@ -224,6 +245,7 @@ export async function createSubscription(
       folder_path: input.folder_path ?? "",
       cooldown_minutes: input.cooldown_minutes ?? 60,
       include_no_transcript: input.include_no_transcript ?? false,
+      display_mode: input.display_mode ?? "library",
     }),
   });
   return _json<Subscription>(res);
@@ -381,6 +403,71 @@ export async function listActivity(
     { credentials: "include", headers: driveHeaders(drive) },
   );
   return _json<ActivityEntry[]>(res);
+}
+
+// ---- Watch surface -------------------------------------------------
+
+/**
+ * Which slice of the library to ask for. One lane per request so each
+ * paginates independently — they grow at very different rates.
+ */
+export type WatchLane = "continue" | "regular" | "feed";
+
+export type PlaybackState = "not_started" | "in_progress" | "completed";
+
+export interface WatchPlayback {
+  position: number;
+  duration: number;
+  state: PlaybackState;
+}
+
+export interface WatchItem {
+  file_id: string;
+  filename: string;
+  title: string | null;
+  thumbnail_path: string | null;
+  channel: string | null;
+  published_at: string | null;
+  created_at: string;
+  /** Media length in seconds, from import metadata. */
+  duration: number | null;
+  /** Provider URL, for "open on YouTube". */
+  url: string;
+  subscription_id: number | null;
+  subscription_title: string | null;
+  /**
+   * Null when this viewer has no history for the file — and also when
+   * reading playback state failed. Either way the item still renders,
+   * just without a badge.
+   */
+  playback: WatchPlayback | null;
+}
+
+export const WATCH_PAGE_SIZE = 24;
+
+/**
+ * Fetch one bounded page of one Watch lane.
+ *
+ * There is deliberately no total: Watch is a lens over the library,
+ * not an inbox, and must never show a backlog count. A full page back
+ * is the only "there may be more" signal.
+ */
+export async function listWatch(
+  drive: string,
+  lane: WatchLane,
+  { limit = WATCH_PAGE_SIZE, offset = 0 } = {},
+): Promise<WatchItem[]> {
+  const params = new URLSearchParams({
+    lane,
+    drive,
+    limit: String(limit),
+    offset: String(offset),
+  });
+  const res = await fetch(`${BASE}/watch?${params}`, {
+    credentials: "include",
+    headers: driveHeaders(drive),
+  });
+  return _json<WatchItem[]>(res);
 }
 
 export async function resolveConflict(

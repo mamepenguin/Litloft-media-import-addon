@@ -11,6 +11,7 @@ Endpoints:
 - POST /api/addons/media_import/subscriptions/{id}/backfill
 - GET  /api/addons/media_import/subscriptions/{id}/videos
 - POST /api/addons/media_import/subscriptions/{id}/videos/{item_id}/retry
+- GET  /api/addons/media_import/watch?lane=...&drive=X  — Watch lane projection
 
 Slot:
 - ``loft-metadata`` — channel/description/captions panel under the player.
@@ -30,7 +31,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import text
 
 import app.config as config
-from app.auth import check_drive_access, get_unlocked_groups
+from app.auth import check_drive_access, get_unlocked_groups, get_viewer_id
 from app.database import SessionLocal
 
 from .schemas import (
@@ -38,6 +39,7 @@ from .schemas import (
     LoftCreateRequest,
     LoftCreateResponse,
     LoftMetadataResponse,
+    PlaybackState,
     ResolveConflictRequest,
     ResolveConflictResponse,
     SubscriptionBackfillRequest,
@@ -50,6 +52,9 @@ from .schemas import (
     SubscriptionResponse,
     SubscriptionSummaryResponse,
     SubscriptionVideoResponse,
+    WatchItem,
+    WatchLane,
+    WatchPlayback,
 )
 from .subscription import db as subdb
 from .subscription.registry import find_subscription_provider_by_url
@@ -281,6 +286,7 @@ def _row_to_subscription_response(
         running=running,
         avatar_url=row.get("avatar_url"),
         display_title=row.get("display_title"),
+        display_mode=row.get("display_mode") or "library",
     )
 
 
@@ -341,6 +347,7 @@ async def create_subscription(
                 folder_path=request.folder_path,
                 cooldown_minutes=request.cooldown_minutes,
                 include_no_transcript=request.include_no_transcript,
+                display_mode=request.display_mode,
             ),
         )
     except ValueError as exc:
@@ -478,7 +485,13 @@ async def patch_subscription(
     re-evaluates eligibility against the new schedule on the next sweep
     (rather than waiting out a backoff that no longer reflects user
     intent). is_enabled / include_no_transcript / display_title /
-    folder_path edits leave cooldown_until alone.
+    folder_path / display_mode edits leave cooldown_until alone.
+
+    ``display_mode`` is presentation only: it decides which Watch lane
+    the subscription's videos appear in and nothing else. No re-import,
+    no reindex, no file move — the .loft files and their index records
+    are untouched (spec
+    ``2026-08-10-media-import-watch-surface.md`` §3.2).
     """
     scoped = _scoped_drive(x_lit_drive, unlocked_groups)
     sub = _load_owned_subscription(
@@ -505,6 +518,7 @@ async def patch_subscription(
         include_no_transcript=patch.include_no_transcript,
         folder_path=folder,
         display_title=patch.display_title,
+        display_mode=patch.display_mode,
         clear_cooldown_until=patch.cooldown_minutes is not None,
     )
 
@@ -802,6 +816,125 @@ async def list_activity(
             )
         )
     return out
+
+
+# ---- Watch surface -------------------------------------------------
+
+
+def _playback_state(position: float, duration: float) -> PlaybackState:
+    """Map core WatchHistory markers onto the three Watch states.
+
+    The 90% threshold is the core's own continue-watching gate; keeping
+    the same number here is what stops the badge and the lane from
+    disagreeing. A ``0 / 0`` row is the view-only record the file detail
+    page writes on open — it means the page was opened, never that the
+    video was watched (spec §4.1).
+    """
+    if duration <= 0 or position <= 0:
+        return "not_started"
+    if position >= duration * 0.9:
+        return "completed"
+    return "in_progress"
+
+
+def _to_watch_item(row: dict, playback: WatchPlayback | None) -> WatchItem:
+    return WatchItem(
+        file_id=row["file_id"],
+        filename=row["filename"],
+        title=row.get("title") or _title_from_filename(row.get("filename")),
+        thumbnail_path=row.get("thumbnail_path"),
+        channel=row.get("channel"),
+        published_at=row.get("published_at"),
+        created_at=str(row["created_at"]),
+        duration=row.get("duration"),
+        url=row["url"],
+        subscription_id=row.get("subscription_id"),
+        subscription_title=row.get("subscription_title"),
+        playback=playback,
+    )
+
+
+@router.get("/watch", response_model=list[WatchItem])
+async def list_watch(
+    lane: WatchLane = Query(..., description="continue | regular | feed"),
+    drive: str = Query(..., description="Drive name (required)"),
+    limit: int = Query(24, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
+    viewer_id: str | None = Depends(get_viewer_id),
+) -> list[WatchItem]:
+    """One bounded, paginated lane of the Watch surface.
+
+    A read projection over existing rows — .loft files, the
+    subscription relationships that produced them, and core playback
+    state. Nothing here writes, and no total is returned: Watch is a
+    lens over the library, not an inbox with a backlog figure
+    (spec §2.2 / §5.2).
+
+    ``continue`` needs a viewer identity and is empty without one; the
+    other two lanes are viewer-independent and still render, just
+    without progress badges.
+    """
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    if drive != scoped:
+        raise HTTPException(
+            status_code=400,
+            detail="drive query does not match X-Lit-Drive scope",
+        )
+
+    if lane == "continue":
+        if viewer_id is None:
+            return []
+        rows = subdb.list_watch_continue(
+            drive, viewer_id, limit=limit, offset=offset
+        )
+        return [
+            _to_watch_item(
+                row,
+                WatchPlayback(
+                    position=row["playback_position"],
+                    duration=row["playback_duration"],
+                    state=_playback_state(
+                        row["playback_position"], row["playback_duration"]
+                    ),
+                ),
+            )
+            for row in rows
+        ]
+
+    rows = subdb.list_watch_lane(drive, lane, limit=limit, offset=offset)
+
+    # Progress is an annotation on an already-complete list. Losing it
+    # costs the badges and nothing else — a video must never disappear
+    # because its playback state could not be read (spec §7).
+    markers: dict[str, tuple[float, float]] = {}
+    if viewer_id is not None and rows:
+        try:
+            markers = subdb.load_playback_markers(
+                viewer_id, [row["file_id"] for row in rows]
+            )
+        except Exception:
+            logger.exception(
+                "Failed to read playback markers for drive=%s lane=%s",
+                drive,
+                lane,
+            )
+
+    items: list[WatchItem] = []
+    for row in rows:
+        marker = markers.get(row["file_id"])
+        playback = (
+            WatchPlayback(
+                position=marker[0],
+                duration=marker[1],
+                state=_playback_state(marker[0], marker[1]),
+            )
+            if marker is not None
+            else None
+        )
+        items.append(_to_watch_item(row, playback))
+    return items
 
 
 @router.post(

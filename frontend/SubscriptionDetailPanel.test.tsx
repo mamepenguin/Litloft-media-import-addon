@@ -50,6 +50,7 @@ function makeSubscription(overrides: Partial<Subscription> = {}): Subscription {
     running: false,
     avatar_url: null,
     display_title: "Test Channel",
+    display_mode: "library",
     ...overrides,
   };
 }

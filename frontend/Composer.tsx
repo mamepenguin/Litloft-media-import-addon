@@ -21,9 +21,11 @@ import {
   createSubscription,
   resolveSubscriptionUrl,
   syncSubscription,
+  type DisplayMode,
   type SttMode,
   type SubscriptionKind,
 } from "./api";
+import DisplayModeField from "./DisplayModeField";
 import {
   getLastFolder,
   rememberFolder,
@@ -99,6 +101,9 @@ export default function Composer({
 
   const [advanced, setAdvanced] = useState(false);
   const [backfill, setBackfill] = useState(15);
+  // Library-only unless the user says otherwise: subscribing means
+  // "make this searchable", not "queue this up to watch".
+  const [displayMode, setDisplayMode] = useState<DisplayMode>("library");
   const [includeNoTranscript, setIncludeNoTranscript] = useState(false);
   const [sttMode, setSttMode] = useState<SttMode>("manual");
 
@@ -162,6 +167,7 @@ export default function Composer({
           drive,
           folder_path: selectedFolder,
           include_no_transcript: includeNoTranscript,
+          display_mode: displayMode,
         });
         await syncSubscription(drive, sub.id, backfill);
       } else {
@@ -348,6 +354,19 @@ export default function Composer({
                 </button>
               ))}
             </div>
+          </div>
+        )}
+
+        {showSubscriptionFields && (
+          <div
+            className="rounded-xl border border-bg-border bg-bg-primary p-4"
+            data-testid="composer-display-mode"
+          >
+            <DisplayModeField
+              name="composer-display-mode"
+              value={displayMode}
+              onChange={setDisplayMode}
+            />
           </div>
         )}
 
