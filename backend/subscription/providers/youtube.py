@@ -451,6 +451,7 @@ class YouTubeProvider:
             duration=meta.get("duration"),
             thumbnail_url=meta.get("thumbnail_url"),
             has_captions=bool(meta.get("has_captions")),
+            chapters=meta.get("chapters"),
         )
 
     def fetch_transcript(

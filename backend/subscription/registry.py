@@ -75,6 +75,10 @@ class ItemMetadata:
     duration: int | None = None
     thumbnail_url: str | None = None
     has_captions: bool = False
+    # As the provider reported them, before core's ``normalise_chapters``
+    # decides which entries earn a row. ``None`` means the provider said
+    # nothing, which is not the same claim as "this item has none".
+    chapters: list[dict] | None = None
 
 
 @dataclass(frozen=True)
