@@ -472,6 +472,113 @@ describe("YouTubeEmbed playback completion", () => {
   });
 });
 
+// Spec 2026-08-11-playback-clock-foundation.md §4.3. Native media had
+// Media Session and no custom control bar; .loft had the bar and no
+// Media Session. Core supplies the metadata because core owns it.
+describe("YouTubeEmbed media session", () => {
+  class FakeMetadata {
+    title: string;
+    artist: string;
+    artwork: MediaImage[];
+    constructor(init: MediaMetadataInit) {
+      this.title = init.title ?? "";
+      this.artist = init.artist ?? "";
+      this.artwork = (init.artwork ?? []) as MediaImage[];
+    }
+  }
+
+  type Handler = ((details: MediaSessionActionDetails) => void) | null;
+
+  const originalSession = navigator.mediaSession;
+  const originalMetadata = (window as unknown as { MediaMetadata?: unknown })
+    .MediaMetadata;
+
+  let handlers: Record<string, Handler>;
+
+  beforeEach(() => {
+    handlers = {};
+    Object.defineProperty(navigator, "mediaSession", {
+      configurable: true,
+      value: {
+        setActionHandler: vi.fn((action: string, h: Handler) => {
+          handlers[action] = h;
+        }),
+        setPositionState: vi.fn(),
+        metadata: null as FakeMetadata | null,
+        playbackState: "none",
+      },
+    });
+    (window as unknown as { MediaMetadata: unknown }).MediaMetadata =
+      FakeMetadata;
+  });
+
+  afterEach(() => {
+    Object.defineProperty(navigator, "mediaSession", {
+      configurable: true,
+      value: originalSession,
+    });
+    (window as unknown as { MediaMetadata?: unknown }).MediaMetadata =
+      originalMetadata;
+  });
+
+  function session() {
+    return navigator.mediaSession as unknown as {
+      metadata: FakeMetadata | null;
+      setPositionState: ReturnType<typeof vi.fn>;
+    };
+  }
+
+  async function mountWithMetadata() {
+    const utils = render(
+      <YouTubeEmbed
+        fileId="abc123456789"
+        url={URL_UNDER_TEST}
+        durationHint={600}
+        mediaSessionMetadata={{
+          title: "Some talk",
+          artist: "Some channel",
+          artwork: [{ src: "/thumb.jpg" }],
+        }}
+      />,
+    );
+    await waitFor(() => expect(lastOptions).not.toBeNull());
+    await act(async () => {
+      await lastOptions!.events.onReady({ target: player });
+    });
+    return utils;
+  }
+
+  it("publishes what core handed it to the OS", async () => {
+    await mountWithMetadata();
+    expect(session().metadata?.title).toBe("Some talk");
+    expect(session().metadata?.artist).toBe("Some channel");
+    expect(session().metadata?.artwork[0]?.src).toBe("/thumb.jpg");
+  });
+
+  it("drives the lock-screen scrubber", async () => {
+    player.getCurrentTime.mockReturnValue(42);
+    await mountWithMetadata();
+    expect(session().setPositionState).toHaveBeenCalledWith(
+      expect.objectContaining({ duration: 600, position: 42 }),
+    );
+  });
+
+  it("routes the OS transport controls through the player", async () => {
+    await mountWithMetadata();
+    handlers.play?.({} as MediaSessionActionDetails);
+    expect(player.playVideo).toHaveBeenCalled();
+    handlers.pause?.({} as MediaSessionActionDetails);
+    expect(player.pauseVideo).toHaveBeenCalled();
+  });
+
+  it("stays out of the way when core supplies nothing", async () => {
+    // A provider whose file has no metadata to publish must not blank
+    // out whatever the platform already had.
+    await mountPlayer(600);
+    expect(session().metadata).toBeNull();
+  });
+});
+
 describe("YouTubeEmbed player UI choice", () => {
   const STORAGE_KEY = "media-import-youtube-ui";
 
