@@ -2,15 +2,15 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
-import { getWatchProgress, saveWatchProgress } from "@/lib/api";
-import { getSavedProgress, saveProgress } from "@/lib/recentlyPlayed";
 import {
   createYouTubeController,
   type MediaController,
   type YouTubePlayerLike,
 } from "@/lib/mediaController";
+import { usePlaybackProgress } from "@/lib/playbackProgress";
+import { setupMediaSession } from "@/lib/mediaSession";
+import { getMediaClockSnapshot, subscribeMediaClock } from "@/lib/mediaClock";
 import { useShortcuts } from "@/hooks/useShortcuts";
-import { useProfile } from "@/components/ProfileProvider";
 import type { LoftEmbedProps } from "@/components/loft/types";
 import MediaControls from "@/components/player/MediaControls";
 import { useFullscreen } from "@/components/player/hooks/useFullscreen";
@@ -18,9 +18,6 @@ import { loadYouTubeIframeApi } from "./loadYouTubeIframeApi";
 import { useYouTubeUiPreference } from "./useYouTubeUiPreference";
 import { PlayerUiToggle } from "./PlayerUiToggle";
 
-const SAVE_INTERVAL = 5;
-const RESUME_THRESHOLD = 5;
-const POLL_INTERVAL_MS = 1000;
 const YT_STATE_ENDED = 0;
 const YT_STATE_PLAYING = 1;
 const YT_STATE_BUFFERING = 3;
@@ -88,6 +85,7 @@ export default function YouTubeEmbed({
   initialTime,
   durationHint,
   onEnded,
+  mediaSessionMetadata,
 }: LoftEmbedProps) {
   const videoId = extractYouTubeId(url);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -100,7 +98,6 @@ export default function YouTubeEmbed({
     (YouTubePlayerLike & { destroy(): void }) | null
   >(null);
   const controllerRef = useRef<MediaController | null>(null);
-  const lastSavedRef = useRef(0);
   const [loadFailed, setLoadFailed] = useState(false);
   // Held in state (not just the ref) so the control bar renders as soon
   // as the player is ready — and tagged with the UI it was built for.
@@ -120,8 +117,6 @@ export default function YouTubeEmbed({
   const [playing, setPlaying] = useState(false);
   const tsc = useTranslations("shortcuts");
   const tmi = useTranslations("mediaImport.player");
-  const { nickname } = useProfile();
-  const hasProfile = nickname !== null;
 
   // Read through a ref so the detector handed to the controller always
   // sees the current hint without rebuilding the player.
@@ -149,7 +144,13 @@ export default function YouTubeEmbed({
   // Carries the playhead across that rebuild. The periodic save has a
   // five-second threshold, so it cannot be relied on to hold the exact
   // position at the moment of a switch.
-  const resumeAtRef = useRef<number | null>(null);
+  //
+  // Tagged with the file it belongs to. The teardown that records it
+  // cannot tell a UI switch from a navigation, so an untagged value
+  // would be handed to whatever file was opened next.
+  const carriedRef = useRef<{ fileId: string; at: number } | null>(null);
+  const carriedAt =
+    carriedRef.current?.fileId === fileId ? carriedRef.current.at : undefined;
 
   // One instance for the whole frame. Every route into fullscreen —
   // the bar's button, the `f` shortcut, double-click — goes through it,
@@ -171,24 +172,58 @@ export default function YouTubeEmbed({
     }
   }, []);
 
+  // Only ever the player belonging to the UI currently on screen. A
+  // stale one is the same as none: it is already destroyed, or about to
+  // be, and anything sent to it crashes inside the widget.
+  const activeMc = session && session.youtubeUi === youtubeUi ? session.mc : null;
+
+  // Watch history — resume, periodic save, completion, teardown save —
+  // is core's, shared with native video and audio. What stays here is
+  // the part that is genuinely YouTube's: the ad heuristic (injected
+  // into the controller, so the hook sees it generically) and carrying
+  // the playhead across a deliberate iframe rebuild.
+  //
+  // The carried position is handed over as `initialTime` because that
+  // is exactly its meaning to the hook: an explicit "land here" that
+  // outranks stored progress. Read during render rather than through a
+  // dependency — the ref is written in the teardown of the previous
+  // player, and this render is the one the new controller triggers.
+  const { notifyEnded } = usePlaybackProgress({
+    mc: activeMc,
+    fileId,
+    initialTime: carriedAt ?? initialTime,
+  });
+  // Read through a ref inside the player effect: this identity changes
+  // with the controller, and the controller is what that effect builds.
+  const notifyEndedRef = useRef(notifyEnded);
+  notifyEndedRef.current = notifyEnded;
+
+  useEffect(() => {
+    if (!activeMc || !mediaSessionMetadata) return;
+    return setupMediaSession(activeMc, mediaSessionMetadata, {
+      onNextTrack: () => onEndedRef.current?.(),
+    });
+  }, [activeMc, mediaSessionMetadata]);
+
+  // The ad flag gates the gesture overlay, which must stand down while
+  // YouTube's own skip button needs to be reachable. Subscribing to the
+  // clock rather than reading it through useMediaClock keeps the render
+  // out of it: only a change of flag re-renders, not every tick.
+  useEffect(() => {
+    if (!activeMc) {
+      setAdActive(false);
+      return;
+    }
+    const sync = () => setAdActive(getMediaClockSnapshot(activeMc).interrupted);
+    const unsubscribe = subscribeMediaClock(activeMc, sync);
+    sync();
+    return unsubscribe;
+  }, [activeMc]);
+
   useEffect(() => {
     if (!videoId) return;
     let cancelled = false;
-    let pollHandle: ReturnType<typeof setInterval> | null = null;
     setLoadFailed(false);
-    lastSavedRef.current = 0;
-
-    const persist = (current: number, duration: number) => {
-      if (!Number.isFinite(current) || current <= 0) return;
-      if (!Number.isFinite(duration) || duration <= 0) return;
-      if (Math.abs(current - lastSavedRef.current) < SAVE_INTERVAL) return;
-      lastSavedRef.current = current;
-      if (hasProfile) {
-        saveWatchProgress(fileId, current, duration).catch(() => {});
-      } else {
-        saveProgress(fileId, current, duration);
-      }
-    };
 
     loadYouTubeIframeApi()
       .then((YT) => {
@@ -246,69 +281,26 @@ export default function YouTubeEmbed({
               setSession({ mc, youtubeUi });
               onMediaController?.(mc);
 
-              // Citation jump (intelligence Ask `?t=`) wins over the
-              // saved-progress resume. The user explicitly clicked a
-              // timestamped citation, so silently snapping back to
-              // wherever they last left off would be an obvious bug
-              // — exactly what was reported. Skip the resume read
-              // entirely in that case so we don't even pay the API
-              // round-trip.
-              // A UI switch outranks both the citation jump and the
-              // saved progress: it is the most recent thing the viewer
-              // did, and they expect to carry on from where they were.
-              const resumeAt = resumeAtRef.current;
-              resumeAtRef.current = null;
-              if (resumeAt != null && resumeAt > 0) {
+              // Resume is the progress hook's, including the rule that
+              // an explicit position outranks stored progress. What it
+              // cannot do is carry a UI switch across the rebuild
+              // *synchronously*: the hook only reaches this controller
+              // on the render that setSession above schedules. Seeking
+              // here keeps the switch seamless; the hook then resumes to
+              // the same position it was handed as initialTime, so the
+              // second seek changes nothing.
+              const carried =
+                carriedRef.current?.fileId === fileId
+                  ? carriedRef.current.at
+                  : null;
+              if (carried != null && carried > 0) {
                 try {
-                  target.seekTo(resumeAt, true);
-                  lastSavedRef.current = resumeAt;
+                  target.seekTo(carried, true);
                   target.playVideo();
                 } catch {
                   // Player may still be warming up.
                 }
-              } else if (Number.isFinite(initialTime) && (initialTime ?? 0) > 0) {
-                try {
-                  target.seekTo(initialTime as number, true);
-                  lastSavedRef.current = initialTime as number;
-                } catch {
-                  // Player may still be warming up; seekTo will be
-                  // retried implicitly when the buffer catches up.
-                }
-              } else {
-                try {
-                  const saved = hasProfile
-                    ? (await getWatchProgress(fileId)).position
-                    : getSavedProgress(fileId);
-                  if (cancelled) return;
-                  const duration = target.getDuration();
-                  const upperOk =
-                    !Number.isFinite(duration) ||
-                    duration <= 0 ||
-                    saved < duration - RESUME_THRESHOLD;
-                  if (saved > RESUME_THRESHOLD && upperOk) {
-                    target.seekTo(saved, true);
-                    lastSavedRef.current = saved;
-                  }
-                } catch {
-                  // Fire-and-forget: don't block playback.
-                }
               }
-              if (cancelled) return;
-
-              pollHandle = setInterval(() => {
-                const p = playerRef.current;
-                if (!p) return;
-                try {
-                  const inAd = isInterrupted();
-                  setAdActive(inAd);
-                  // During an ad the player's clock belongs to the ad,
-                  // so persisting it would overwrite the resume point
-                  // with an ad offset.
-                  if (!inAd) persist(p.getCurrentTime(), p.getDuration());
-                } catch {
-                  // Player may be transitioning; skip this tick.
-                }
-              }, POLL_INTERVAL_MS);
             },
             onStateChange: ({ data }) => {
               if (cancelled) return;
@@ -318,39 +310,14 @@ export default function YouTubeEmbed({
               setPlaying(data === YT_STATE_PLAYING || data === YT_STATE_BUFFERING);
               if (data === YT_STATE_ENDED) {
                 // ENDED fires for a pre-roll too, and there is no state
-                // flag that tells the two apart — the same duration
-                // mismatch that guards the periodic save is the only
-                // signal. Persisting here without it would stamp the
-                // ad's length onto the video as a completed watch.
+                // flag that tells the two apart — the duration mismatch
+                // is the only signal. The guard has to stay here rather
+                // than move into the hook: the hook can refuse to write
+                // a completion, but onEnded is a lifecycle callback the
+                // ad must not reach either, or finishing a pre-roll
+                // advances the Collection to the next video.
                 if (isInterrupted()) return;
-                const p = playerRef.current;
-                let current = NaN;
-                let duration = NaN;
-                try {
-                  current = p?.getCurrentTime() ?? NaN;
-                  duration = p?.getDuration() ?? NaN;
-                } catch {
-                  // Player may already be tearing down.
-                }
-                // Completion is kept, not erased: the history row is
-                // what distinguishes "watched to the end" from "never
-                // opened", and the 90% gate keeps it out of continue
-                // watching anyway. Spec
-                // 2026-08-10-media-import-watch-surface.md §4.2.
-                if (Number.isFinite(duration) && duration > 0) {
-                  const position =
-                    Number.isFinite(current) && current > 0
-                      ? current
-                      : duration;
-                  lastSavedRef.current = position;
-                  if (hasProfile) {
-                    saveWatchProgress(fileId, position, duration).catch(
-                      () => {},
-                    );
-                  } else {
-                    saveProgress(fileId, position, duration);
-                  }
-                }
+                notifyEndedRef.current();
                 onEndedRef.current?.();
               }
             },
@@ -364,38 +331,16 @@ export default function YouTubeEmbed({
       });
     return () => {
       cancelled = true;
-      if (pollHandle) clearInterval(pollHandle);
       try {
         // Where to pick up if this teardown is a UI switch rather than
-        // leaving the page. Harmless otherwise: nothing reads it until
-        // a player is built again for the same file.
+        // leaving the page. The progress hook's own teardown save is
+        // five-second-granular by design; a switch has to land on the
+        // exact frame the viewer was looking at.
         const live = playerRef.current;
         if (live && !isInterrupted()) {
           const at = live.getCurrentTime();
-          if (Number.isFinite(at) && at > 0) resumeAtRef.current = at;
-        }
-      } catch {
-        // Player may already be torn down.
-      }
-      try {
-        const p = playerRef.current;
-        // Leaving mid-ad must not stamp the ad's offset onto the
-        // resume point, same as the periodic save above.
-        if (p && !isInterrupted()) {
-          const current = p.getCurrentTime();
-          const duration = p.getDuration();
-          if (
-            Number.isFinite(current) &&
-            current > 0 &&
-            Number.isFinite(duration) &&
-            duration > 0 &&
-            Math.abs(current - lastSavedRef.current) >= 1
-          ) {
-            if (hasProfile) {
-              saveWatchProgress(fileId, current, duration).catch(() => {});
-            } else {
-              saveProgress(fileId, current, duration);
-            }
+          if (Number.isFinite(at) && at > 0) {
+            carriedRef.current = { fileId, at };
           }
         }
       } catch {
@@ -417,14 +362,13 @@ export default function YouTubeEmbed({
       // leftover would be a second player on the next build.
       hostRef.current?.replaceChildren();
     };
-    // initialTime is read inside the onReady closure but intentionally
-    // excluded from this effect's dependency list — re-creating the
-    // YT.Player just to honour a new ?t= would tear the iframe down
-    // mid-playback and reset the watch session. A second effect below
-    // reseeks the live player when initialTime changes, so the
-    // citation-jump flow still works for same-file ?t= updates.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fileId, videoId, hasProfile, onMediaController, isInterrupted, youtubeUi]);
+    // Deliberately not keyed on initialTime: re-creating the YT.Player
+    // to honour a new ?t= would tear the iframe down mid-playback and
+    // reset the watch session. The effect below reseeks the live player
+    // instead, so same-file citation jumps still work. It no longer
+    // needs an exhaustive-deps exemption — onReady stopped reading
+    // initialTime when resume moved into the progress hook.
+  }, [fileId, videoId, onMediaController, isInterrupted, youtubeUi]);
 
   // Reseek when ?t= changes on the current iframe. Triggered when the
   // user clicks a second citation for the same .loft file (different
@@ -437,7 +381,6 @@ export default function YouTubeEmbed({
     if (!p) return;
     try {
       p.seekTo(initialTime as number, true);
-      lastSavedRef.current = initialTime as number;
     } catch {
       // Player not in a seekable state yet; the onReady handler will
       // pick up `initialTime` on first mount.
@@ -466,11 +409,6 @@ export default function YouTubeEmbed({
   // the player and interferes with ads, which the API terms forbid.
   // Stand down in both states.
   const gesturesInteractive = !adActive && !ended;
-
-  // Only ever the player belonging to the UI currently on screen. A
-  // stale one is the same as none: it is already destroyed, or about to
-  // be, and anything sent to it crashes inside the widget.
-  const activeMc = session && session.youtubeUi === youtubeUi ? session.mc : null;
 
   return (
     <div className="w-full">
