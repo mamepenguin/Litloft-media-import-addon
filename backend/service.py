@@ -18,6 +18,7 @@ from pathlib import Path
 import app.config as config
 from app.database import SessionLocal
 from app.models import File
+from app.services.chapters import normalise_chapters, replace_chapters
 from app.services.hash import compute_file_hash
 from app.services.provider_registry import detect_provider
 from app.services.scanner import register_single_file
@@ -145,6 +146,12 @@ def _fetch_metadata_sync(url: str) -> dict:
             "language": info.get("language"),
             "thumbnail_url": _pick_video_thumbnail_url(info),
             "has_captions": bool(info.get("subtitles") or info.get("automatic_captions")),
+            # Taken as yt-dlp reports it. It already derives these from
+            # the provider's own markers and, where those are absent,
+            # from timestamps in the description — a second parser here
+            # would drift from that silently. What each entry has to
+            # look like to be stored is core's `normalise_chapters`.
+            "chapters": info.get("chapters"),
         }
 
 
@@ -867,6 +874,19 @@ class LoftManager:
 
             if meta.get("duration"):
                 file_record.duration = meta["duration"]
+
+            # Written through core's helper, not our own SQL: the
+            # curated guard and the empty-result rule are behavioural
+            # contracts, and a second implementation of them is how the
+            # two producers would start disagreeing about the same file.
+            # A refresh of a file whose chapters a person approved
+            # therefore leaves them alone.
+            replace_chapters(
+                db,
+                file_record.id,
+                normalise_chapters(meta.get("chapters")),
+                "extracted",
+            )
 
             db.commit()
 

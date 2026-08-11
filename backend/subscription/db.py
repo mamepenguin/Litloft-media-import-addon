@@ -20,6 +20,7 @@ from typing import Any
 from sqlalchemy import text
 
 from app.database import SessionLocal
+from app.services.chapters import normalise_chapters, replace_chapters
 from app.services.scanner import register_single_file
 
 
@@ -845,6 +846,17 @@ def register_loft(
     db = SessionLocal()
     try:
         file_id = register_single_file(db, drive, loft_path)
+        # ``register_single_file`` has already stamped the file as probed
+        # and skipped ffprobe — a .loft is a small JSON reference, not
+        # media on disk. The chapters come from the provider instead, and
+        # go through core's helper so the storage rules are not written
+        # a second time here.
+        replace_chapters(
+            db,
+            file_id,
+            normalise_chapters(getattr(meta, "chapters", None)),
+            "extracted",
+        )
         db.execute(
             text(
                 "INSERT INTO loft_metadata "
