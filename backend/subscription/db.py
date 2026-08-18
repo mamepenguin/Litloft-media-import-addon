@@ -328,6 +328,13 @@ _WATCH_COLUMNS = """
 """
 
 
+# How long a started video stays in Continue watching after it was last
+# played. A video reached for once and abandoned should stop occupying
+# the lane; it is not deleted, and opening the file still resumes where
+# the viewer left off (spec 2026-08-19-watch-lane-bounds.md §3).
+CONTINUE_STALE_DAYS = 7
+
+
 def list_watch_lane(
     drive: str,
     display_mode: str,
@@ -398,6 +405,14 @@ def list_watch_continue(
     into disagreeing about what "in progress" means. The extra
     ``playback_position > 0`` keeps view-only rows out even if a future
     change made a 0/0 row satisfy the ratio.
+
+    On top of that gate sits a freshness window of
+    ``CONTINUE_STALE_DAYS``: a video played once and abandoned leaves
+    the lane instead of sitting in it forever. **This filters the
+    projection only.** No row is written or deleted, so the file still
+    resumes from its saved position when opened from anywhere else —
+    the lane loses the video, the viewer does not lose their place
+    (spec 2026-08-19-watch-lane-bounds.md §3).
     """
     db = SessionLocal()
     try:
@@ -416,12 +431,21 @@ def list_watch_continue(
                 "  AND w.duration > 0 "
                 "  AND w.playback_position > 0 "
                 "  AND w.playback_position < w.duration * 0.9 "
+                # The cutoff is computed by SQLite, deliberately.
+                # ``last_played_at`` is a naive UTC wall clock compared
+                # as text; binding a Python-side aware datetime would
+                # render a ``+00:00`` suffix and mis-rank the boundary
+                # against rows that carry none — the same trap
+                # ``app/routers/internal.py`` documents at
+                # ``_parse_iso8601_or_400``.
+                "  AND w.last_played_at >= datetime('now', :stale) "
                 "ORDER BY w.last_played_at DESC "
                 "LIMIT :limit OFFSET :offset"
             ),
             {
                 "drive": drive,
                 "viewer": viewer_id,
+                "stale": f"-{CONTINUE_STALE_DAYS} days",
                 "limit": limit,
                 "offset": offset,
             },

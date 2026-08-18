@@ -10,7 +10,7 @@ and what it refuses to leak.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import FastAPI
@@ -147,6 +147,24 @@ def _link(session, sub_id: int, file_id: str) -> None:
         db.close()
 
 
+# ``WatchHistory.last_played_at`` is a naive column and SQLAlchemy's
+# SQLite DATETIME binding drops the offset, so stored rows read as
+# ``2026-08-14 15:04:45.794347``. Seeding raw SQL with ``isoformat()``
+# would write a ``T``-separated, offset-carrying string instead, and the
+# freshness gate compares against ``datetime('now', ...)`` **as text** —
+# a fixture in the wrong shape would prove nothing about production.
+_STORED_DATETIME = "%Y-%m-%d %H:%M:%S.%f"
+
+
+def _wall_clock(moment: datetime) -> str:
+    """Format a datetime the way the app stores it."""
+    return moment.strftime(_STORED_DATETIME)
+
+
+def _days_ago(days: float) -> str:
+    return _wall_clock(datetime.now(UTC) - timedelta(days=days))
+
+
 def _seed_history(
     session, file_id: str, position: float, duration: float,
     *, nickname: str = VIEWER, last_played_at: str | None = None,
@@ -165,7 +183,7 @@ def _seed_history(
                 "f": file_id,
                 "p": position,
                 "d": duration,
-                "ts": last_played_at or datetime.now(UTC).isoformat(),
+                "ts": last_played_at or _wall_clock(datetime.now(UTC)),
             },
         )
         db.commit()
@@ -523,6 +541,175 @@ class TestContinueWatching:
             )
         assert res.status_code == 200
         assert res.json() == []
+
+    def test_playback_older_than_the_window_leaves_the_lane(
+        self, client, media_import_db
+    ):
+        """A video started and abandoned stops being "in progress".
+
+        Spec ``2026-08-19-watch-lane-bounds.md`` §3. The predicate is
+        unchanged — both rows are in progress — only recency separates
+        them.
+        """
+        stale = _seed_loft(
+            media_import_db,
+            file_id="staleeeeeee1",
+            filename="Stale.loft",
+            published_at="20260801",
+            created_at="2026-08-01 00:00:00",
+        )
+        fresh = _seed_loft(
+            media_import_db,
+            file_id="fresheeeeee1",
+            filename="Fresh.loft",
+            published_at="20260801",
+            created_at="2026-08-01 00:00:00",
+        )
+        _seed_history(
+            media_import_db, stale, 30.0, 300.0, last_played_at=_days_ago(8)
+        )
+        _seed_history(
+            media_import_db, fresh, 30.0, 300.0, last_played_at=_days_ago(6)
+        )
+
+        items = _watch(client, "continue")
+        assert [i["file_id"] for i in items] == [fresh]
+
+    @pytest.mark.parametrize(
+        ("offset_days", "expected"),
+        [
+            # Both sides of the cutoff, an hour away from it so the
+            # assertion cannot be decided by clock drift during the run.
+            (7 - 1 / 24, True),
+            (7 + 1 / 24, False),
+        ],
+    )
+    def test_freshness_boundary(
+        self, client, media_import_db, offset_days, expected
+    ):
+        """The cutoff is compared as text, in SQLite, in one zone.
+
+        Computing it in Python and binding an aware datetime would
+        render a ``+00:00`` suffix and compare it against rows that
+        carry none (see ``app/routers/internal.py`` ``_parse_iso8601``).
+        This pins the behaviour either way.
+        """
+        fid = _seed_loft(
+            media_import_db,
+            file_id="boundaryyyy1",
+            filename="Boundary.loft",
+            published_at="20260801",
+            created_at="2026-08-01 00:00:00",
+        )
+        _seed_history(
+            media_import_db,
+            fid,
+            30.0,
+            300.0,
+            last_played_at=_days_ago(offset_days),
+        )
+
+        items = _watch(client, "continue")
+        assert bool(items) is expected
+
+    def test_the_gate_matches_how_the_app_stores_timestamps(
+        self, client, media_import_db
+    ):
+        """Close the loop between the fixture shape and the real writer.
+
+        Every other test here seeds ``watch_history`` with raw SQL, which
+        proves the gate works against *a* string format — not that the
+        format is the one core actually writes. ``POST /progress``
+        assigns ``datetime.now(UTC)`` to a naive column, and the gate
+        compares the result against SQLite's ``datetime('now')``. If
+        SQLAlchemy ever stored an offset, or a local wall clock, the
+        window would silently shift by hours and every other test here
+        would still pass.
+        """
+        from app.models import WatchHistory
+
+        fid = _seed_loft(
+            media_import_db,
+            file_id="ormwrittenn1",
+            filename="OrmWritten.loft",
+            published_at="20260801",
+            created_at="2026-08-01 00:00:00",
+        )
+        db = media_import_db()
+        try:
+            db.add(
+                WatchHistory(
+                    viewer_id=_viewer_id(),
+                    file_id=fid,
+                    playback_position=30.0,
+                    duration=300.0,
+                    last_played_at=datetime.now(UTC),
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        db = media_import_db()
+        try:
+            stored = db.execute(
+                text(
+                    "SELECT last_played_at FROM watch_history "
+                    "WHERE file_id = :f"
+                ),
+                {"f": fid},
+            ).scalar_one()
+        finally:
+            db.close()
+
+        # The shape the fixtures imitate, carrying no offset...
+        written = datetime.strptime(stored, _STORED_DATETIME)
+        # ...on the same clock SQLite's ``now`` reads.
+        drift = abs(
+            (datetime.now(UTC).replace(tzinfo=None) - written).total_seconds()
+        )
+        assert drift < 60, f"stored {stored!r} is not a UTC wall clock"
+
+        assert [i["file_id"] for i in _watch(client, "continue")] == [fid]
+
+    def test_ageing_out_never_touches_stored_progress(
+        self, client, media_import_db
+    ):
+        """The gate is display-only (spec §3).
+
+        Nothing is written and nothing is deleted: the row survives with
+        its markers intact, so opening the file still resumes where the
+        viewer left off. This is the invariant that lets Watch drop the
+        video without also dropping the viewer's place in it.
+        """
+        fid = _seed_loft(
+            media_import_db,
+            file_id="preserveddd1",
+            filename="Preserved.loft",
+            published_at="20260801",
+            created_at="2026-08-01 00:00:00",
+        )
+        played_at = _days_ago(30)
+        _seed_history(
+            media_import_db, fid, 123.5, 300.0, last_played_at=played_at
+        )
+
+        assert _watch(client, "continue") == []
+
+        db = media_import_db()
+        try:
+            row = db.execute(
+                text(
+                    "SELECT playback_position, duration, last_played_at "
+                    "FROM watch_history WHERE file_id = :f"
+                ),
+                {"f": fid},
+            ).mappings().one()
+        finally:
+            db.close()
+        assert row["playback_position"] == 123.5
+        assert row["duration"] == 300.0
+        assert row["last_played_at"] == played_at
 
     def test_another_viewers_progress_is_invisible(
         self, client, media_import_db
