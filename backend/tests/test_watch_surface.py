@@ -465,6 +465,214 @@ class TestWatchLanes:
         )
 
 
+class TestRegularSourceCap:
+    """Regular sources shows the newest few *from each source*.
+
+    Spec ``2026-08-19-watch-lane-bounds.md`` §2. Before this, the lane
+    ran the same query as ``feed`` with a different display_mode, so it
+    was the recent-videos list shown a second time. The cap is what
+    gives it a property a chronological list cannot have: one source
+    cannot crowd out the others.
+    """
+
+    @staticmethod
+    def _source(session, ref: str, videos: list[tuple[str, str]]) -> list[str]:
+        """Seed one regular subscription and its videos.
+
+        ``videos`` is ``[(file_id, published_at)]``, newest last is not
+        assumed — ordering is asserted by the tests, not by the fixture.
+        """
+        sub_id = _seed_subscription(
+            session, display_mode="regular", ref=ref
+        )
+        ids = []
+        for file_id, published in videos:
+            fid = _seed_loft(
+                session,
+                file_id=file_id,
+                filename=f"{file_id}.loft",
+                published_at=published,
+                created_at="2026-08-01 00:00:00",
+            )
+            _link(session, sub_id, fid)
+            ids.append(fid)
+        return ids
+
+    def test_a_source_contributes_only_its_newest_two(
+        self, client, media_import_db
+    ):
+        self._source(
+            media_import_db,
+            "chan1",
+            [
+                ("v1aaaaaaaaaa", "20260801"),
+                ("v2aaaaaaaaaa", "20260802"),
+                ("v3aaaaaaaaaa", "20260803"),
+                ("v4aaaaaaaaaa", "20260804"),
+                ("v5aaaaaaaaaa", "20260805"),
+            ],
+        )
+
+        items = _watch(client, "regular")
+        assert [i["file_id"] for i in items] == [
+            "v5aaaaaaaaaa",
+            "v4aaaaaaaaaa",
+        ]
+
+    def test_a_busy_source_cannot_crowd_out_a_quiet_one(
+        self, client, media_import_db
+    ):
+        """The property that justifies the lane's existence.
+
+        Every one of ``busy``'s uploads is newer than ``quiet``'s only
+        one. Ordered chronologically — which is what this lane did
+        before — ``quiet`` never appears until the fifth row. The point
+        of Regular sources is that it does.
+        """
+        self._source(
+            media_import_db,
+            "busy",
+            [
+                ("b1aaaaaaaaaa", "20260806"),
+                ("b2aaaaaaaaaa", "20260807"),
+                ("b3aaaaaaaaaa", "20260808"),
+                ("b4aaaaaaaaaa", "20260809"),
+                ("b5aaaaaaaaaa", "20260810"),
+            ],
+        )
+        self._source(media_import_db, "quiet", [("q1aaaaaaaaaa", "20260801")])
+
+        items = [i["file_id"] for i in _watch(client, "regular")]
+        assert items == ["b5aaaaaaaaaa", "b4aaaaaaaaaa", "q1aaaaaaaaaa"]
+
+    def test_every_source_survives_the_lane_limit(
+        self, client, media_import_db
+    ):
+        """Seven sources yield fourteen rows; the lane asks for twelve.
+
+        Ordering across sources is unchanged, so every source's newest
+        video sorts above every source's second — which means the two
+        rows that overflow are second entries, and **no source is
+        silently dropped whole**. Cutting per source instead would let
+        one source's second video displace another source's only
+        appearance, undoing the reason the cap exists (spec §5).
+        """
+        for idx in range(7):
+            # Source 0 published most recently, source 6 longest ago.
+            day = 20 - idx
+            self._source(
+                media_import_db,
+                f"chan{idx}",
+                [
+                    (f"s{idx}anewwwwww", f"202608{day:02d}"),
+                    (f"s{idx}bolddddddd", f"202607{day:02d}"),
+                ],
+            )
+
+        items = [i["file_id"] for i in _watch(client, "regular", limit=12)]
+        assert len(items) == 12
+        # Every source is represented, the stalest one included.
+        for idx in range(7):
+            assert f"s{idx}anewwwwww" in items
+        # What overflowed is the oldest second entries, and only those.
+        assert "s5bolddddddd" not in items
+        assert "s6bolddddddd" not in items
+
+    def test_a_shared_video_consumes_one_sources_slot(
+        self, client, media_import_db
+    ):
+        """Collapsing to one row per file decides the partition too.
+
+        A video reachable from two subscriptions is attributed to
+        ``MIN(s.id)`` — and that attribution is the partition key, so it
+        occupies a slot in exactly one source rather than in both.
+        """
+        first = _seed_subscription(
+            media_import_db, display_mode="regular", ref="first"
+        )
+        second = _seed_subscription(
+            media_import_db, display_mode="regular", ref="second"
+        )
+        shared = _seed_loft(
+            media_import_db,
+            file_id="sharedddddd2",
+            filename="Shared.loft",
+            published_at="20260810",
+            created_at="2026-08-01 00:00:00",
+        )
+        _link(media_import_db, first, shared)
+        _link(media_import_db, second, shared)
+        for file_id, published in (
+            ("firstaaaaaa1", "20260809"),
+            ("firstaaaaaa2", "20260808"),
+        ):
+            fid = _seed_loft(
+                media_import_db,
+                file_id=file_id,
+                filename=f"{file_id}.loft",
+                published_at=published,
+                created_at="2026-08-01 00:00:00",
+            )
+            _link(media_import_db, first, fid)
+        other = _seed_loft(
+            media_import_db,
+            file_id="secondaaaaa1",
+            filename="Second.loft",
+            published_at="20260807",
+            created_at="2026-08-01 00:00:00",
+        )
+        _link(media_import_db, second, other)
+
+        items = [i["file_id"] for i in _watch(client, "regular")]
+        # One row for the shared video, and it fills a slot in `first`
+        # only — so `first` contributes it plus one more, not two more.
+        assert items == ["sharedddddd2", "firstaaaaaa1", "secondaaaaa1"]
+
+    def test_completed_videos_are_not_treated_differently(
+        self, client, media_import_db
+    ):
+        """The cap ranks by date, never by playback state (spec §2).
+
+        Dropping watched videos from the lane was considered and
+        rejected: the parent spec §2.2 commits to subduing them without
+        reordering. A cap that quietly skipped them would retract that
+        by the back door.
+        """
+        ids = self._source(
+            media_import_db,
+            "chan1",
+            [
+                ("c1aaaaaaaaaa", "20260801"),
+                ("c2aaaaaaaaaa", "20260802"),
+                ("c3aaaaaaaaaa", "20260803"),
+            ],
+        )
+        # The newest one is finished; it still holds its slot.
+        _seed_history(media_import_db, ids[2], 300.0, 300.0)
+
+        items = _watch(client, "regular")
+        assert [i["file_id"] for i in items] == [
+            "c3aaaaaaaaaa",
+            "c2aaaaaaaaaa",
+        ]
+        assert items[0]["playback"]["state"] == "completed"
+
+    def test_feed_is_never_capped(self, client, media_import_db):
+        """``feed`` keeps every video: it is the chronological lane."""
+        sub_id = _seed_subscription(media_import_db, display_mode="feed")
+        for idx in range(5):
+            fid = _seed_loft(
+                media_import_db,
+                file_id=f"f{idx}aaaaaaaaa",
+                filename=f"F{idx}.loft",
+                published_at=f"2026080{idx + 1}",
+                created_at="2026-08-01 00:00:00",
+            )
+            _link(media_import_db, sub_id, fid)
+
+        assert len(_watch(client, "feed")) == 5
+
+
 class TestContinueWatching:
     def test_includes_library_only_and_one_off_imports(
         self, client, media_import_db

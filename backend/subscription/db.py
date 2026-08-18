@@ -311,6 +311,14 @@ _PUBLISHED_SORT_KEY = """
         END
 """
 
+# The columns a lane returns. Spelled out for the final SELECT so the
+# collapse/rank scaffolding (``published_sort``, ``rn``) stays internal
+# instead of riding along in the row dicts.
+_WATCH_OUTPUT_COLUMNS = (
+    "file_id, filename, title, thumbnail_path, duration, created_at, "
+    "url, channel, published_at, subscription_id, subscription_title"
+)
+
 # Every Watch row is a live .loft on this drive. ``active_file_filter``
 # lives in the ORM and this module speaks raw SQL, so the two NULL
 # checks are spelled out — they are the same Active-state definition
@@ -334,6 +342,12 @@ _WATCH_COLUMNS = """
 # the viewer left off (spec 2026-08-19-watch-lane-bounds.md §3).
 CONTINUE_STALE_DAYS = 7
 
+# How many videos each source contributes to the Regular sources lane.
+# Small on purpose: the lane answers "what is new from the sources I
+# follow", and two rows is enough to answer it without any one source
+# taking the screen (spec 2026-08-19-watch-lane-bounds.md §2).
+REGULAR_PER_SOURCE = 2
+
 
 def list_watch_lane(
     drive: str,
@@ -341,6 +355,7 @@ def list_watch_lane(
     *,
     limit: int,
     offset: int,
+    per_source_limit: int | None = None,
 ) -> list[dict]:
     """Recent .loft imports from subscriptions set to ``display_mode``.
 
@@ -349,38 +364,75 @@ def list_watch_lane(
     to one per file. ``MIN(s.id)`` picks a stable subscription to
     attribute it to rather than multiplying the item across lanes.
 
+    ``per_source_limit`` keeps only that many videos per attributed
+    subscription — the ``regular`` lane's whole reason to exist, since a
+    merged chronological list is always dominated by whichever source
+    publishes most (spec 2026-08-19-watch-lane-bounds.md §2). ``None``
+    means no cap, which is what ``feed`` uses: that lane *is* the
+    chronological view.
+
     Deliberately returns no total count: Watch is not an inbox and must
     never render a backlog figure (spec §2.2).
     """
+    # The sort key reaches into ``m.published_at`` / ``f.created_at``,
+    # neither of which survives the collapse under its own name. It is
+    # projected as a column so the window (and the final ORDER BY) can
+    # rank by exactly the same expression the uncapped lane sorts by.
+    collapsed = (
+        f"SELECT {_WATCH_COLUMNS}, "
+        " MIN(s.id) AS subscription_id, "
+        " COALESCE("
+        "   MIN(s.display_title), MIN(s.source_ref)"
+        " ) AS subscription_title, "
+        f" {_PUBLISHED_SORT_KEY} AS published_sort "
+        "FROM files f "
+        "JOIN loft_metadata m ON m.file_id = f.id "
+        "JOIN subscription_videos sv ON sv.file_id = f.id "
+        "JOIN subscriptions s ON s.id = sv.subscription_id "
+        "WHERE f.drive = :drive "
+        "  AND f.deleted_at IS NULL "
+        "  AND f.missing_since IS NULL "
+        "  AND s.drive = :drive "
+        "  AND s.display_mode = :mode "
+        "GROUP BY f.id"
+    )
+    order = "ORDER BY published_sort DESC, created_at DESC "
+    params: dict = {
+        "drive": drive,
+        "mode": display_mode,
+        "limit": limit,
+        "offset": offset,
+    }
+
+    if per_source_limit is None:
+        sql = (
+            f"WITH collapsed AS ({collapsed}) "
+            f"SELECT {_WATCH_OUTPUT_COLUMNS} FROM collapsed "
+            f"{order}"
+            "LIMIT :limit OFFSET :offset"
+        )
+    else:
+        # Ranking happens after the collapse, so a video shared by two
+        # subscriptions consumes a slot in the one it was attributed
+        # to — not in both.
+        sql = (
+            f"WITH collapsed AS ({collapsed}), "
+            "ranked AS ("
+            "  SELECT *, ROW_NUMBER() OVER ("
+            "    PARTITION BY subscription_id "
+            "    ORDER BY published_sort DESC, created_at DESC"
+            "  ) AS rn FROM collapsed"
+            ") "
+            f"SELECT {_WATCH_OUTPUT_COLUMNS} FROM ranked "
+            "WHERE rn <= :per_source "
+            f"{order}"
+            "LIMIT :limit OFFSET :offset"
+        )
+        params["per_source"] = per_source_limit
+
     db = SessionLocal()
     try:
-        rows = db.execute(
-            text(
-                f"SELECT {_WATCH_COLUMNS}, "
-                " MIN(s.id) AS subscription_id, "
-                " COALESCE("
-                "   MIN(s.display_title), MIN(s.source_ref)"
-                " ) AS subscription_title "
-                "FROM files f "
-                "JOIN loft_metadata m ON m.file_id = f.id "
-                "JOIN subscription_videos sv ON sv.file_id = f.id "
-                "JOIN subscriptions s ON s.id = sv.subscription_id "
-                "WHERE f.drive = :drive "
-                "  AND f.deleted_at IS NULL "
-                "  AND f.missing_since IS NULL "
-                "  AND s.drive = :drive "
-                "  AND s.display_mode = :mode "
-                "GROUP BY f.id "
-                f"ORDER BY {_PUBLISHED_SORT_KEY} DESC, f.created_at DESC "
-                "LIMIT :limit OFFSET :offset"
-            ),
-            {
-                "drive": drive,
-                "mode": display_mode,
-                "limit": limit,
-                "offset": offset,
-            },
-        ).mappings().all()
+        rows = db.execute(text(sql), params).mappings().all()
     finally:
         db.close()
     return [dict(r) for r in rows]
