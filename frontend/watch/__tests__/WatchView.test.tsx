@@ -134,7 +134,7 @@ describe("WatchView", () => {
     expect(screen.getByText("Watched")).toBeInTheDocument();
   });
 
-  it("shows a resume affordance and progress bar for started videos", async () => {
+  it("shows how far into a started video the viewer is", async () => {
     laneResponses({
       continue: [
         makeItem({
@@ -147,10 +147,44 @@ describe("WatchView", () => {
     render(<WatchView drive="d" hasSurfacedSources onGoToManage={() => {}} />);
 
     await screen.findByText("Half watched");
-    expect(screen.getByText("Resume")).toBeInTheDocument();
     expect(screen.getByTestId("watch-progress-bar")).toHaveStyle({
       width: "10%",
     });
+  });
+
+  it.each([
+    ["in progress", { position: 30, duration: 300, state: "in_progress" }],
+    ["not started", null],
+  ] as const)(
+    "offers no play button for a %s video — the card is the link",
+    async (_label, playback) => {
+      laneResponses({
+        feed: [makeItem({ title: "Clickable", playback })],
+      });
+      render(
+        <WatchView drive="d" hasSurfacedSources onGoToManage={() => {}} />,
+      );
+
+      await screen.findByText("Clickable");
+      // Both went to the same route as the thumbnail one row above.
+      expect(screen.queryByText("Play")).toBeNull();
+      expect(screen.queryByText("Resume")).toBeNull();
+    },
+  );
+
+  it("makes the title a link, not just the thumbnail", async () => {
+    // Removing the play button without this would leave the title inert
+    // and cost the card a tap target on mobile rather than gaining one.
+    laneResponses({
+      feed: [makeItem({ file_id: "titledddddd1", title: "Tap me" })],
+    });
+    render(<WatchView drive="d" hasSurfacedSources onGoToManage={() => {}} />);
+
+    const title = await screen.findByText("Tap me");
+    expect(title.closest("a")).toHaveAttribute(
+      "href",
+      "/files/titledddddd1",
+    );
   });
 
   it("still renders a video whose playback state is unknown", async () => {
