@@ -2,7 +2,29 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { listWatch, WATCH_PAGE_SIZE, type WatchItem, type WatchLane } from "../../api";
+import {
+  listWatch,
+  WATCH_LANE_CONFIG,
+  type WatchItem,
+  type WatchLane,
+  type WatchLaneConfig,
+} from "../../api";
+
+/**
+ * "A full page came back" is the only has-more signal there is, and a
+ * bounded lane must refuse it — being full is what a lane capped at 6
+ * or 12 always looks like.
+ *
+ * One function rather than the same expression at both call sites: the
+ * first page and a later one have to agree, and two independent copies
+ * of one rule drift.
+ */
+function hasAnotherPage(
+  rows: WatchItem[],
+  { pageable, limit }: WatchLaneConfig,
+): boolean {
+  return pageable && rows.length === limit;
+}
 
 export interface WatchLaneState {
   items: WatchItem[];
@@ -10,7 +32,10 @@ export interface WatchLaneState {
   /** True while a "load more" page is in flight, not the first load. */
   loadingMore: boolean;
   error: string | null;
-  /** A full page came back, so another one may exist. */
+  /**
+   * A full page came back on a lane that pages, so another one may
+   * exist. Always false on a bounded lane — see `WATCH_LANE_CONFIG`.
+   */
   hasMore: boolean;
   loadMore: () => void;
   reload: () => void;
@@ -24,8 +49,14 @@ export interface WatchLaneState {
  * There is no total to report: "a full page came back" is the only
  * has-more signal, deliberately, because Watch must never render a
  * backlog count (spec §2.2).
+ *
+ * On a lane declared non-pageable that signal is refused outright, so
+ * a bounded lane cannot infer more pages from its own fullness — which
+ * is exactly what a lane capped at 6 or 12 always looks like.
  */
 export function useWatchLane(drive: string, lane: WatchLane): WatchLaneState {
+  const config = WATCH_LANE_CONFIG[lane];
+  const { limit } = config;
   const [items, setItems] = useState<WatchItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -38,11 +69,11 @@ export function useWatchLane(drive: string, lane: WatchLane): WatchLaneState {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    listWatch(drive, lane)
+    listWatch(drive, lane, { limit })
       .then((rows) => {
         if (cancelled) return;
         setItems(rows);
-        setHasMore(rows.length === WATCH_PAGE_SIZE);
+        setHasMore(hasAnotherPage(rows, config));
       })
       .catch((e: unknown) => {
         if (cancelled) return;
@@ -56,12 +87,12 @@ export function useWatchLane(drive: string, lane: WatchLane): WatchLaneState {
     return () => {
       cancelled = true;
     };
-  }, [drive, lane, reloadKey]);
+  }, [drive, lane, limit, config, reloadKey]);
 
   const loadMore = useCallback(() => {
     if (loadingMore || loading || !hasMore) return;
     setLoadingMore(true);
-    listWatch(drive, lane, { offset: items.length })
+    listWatch(drive, lane, { limit, offset: items.length })
       .then((rows) => {
         // Offset paging can repeat an item if a sync lands between
         // pages. Dropping duplicates here keeps React keys unique
@@ -70,7 +101,7 @@ export function useWatchLane(drive: string, lane: WatchLane): WatchLaneState {
           const seen = new Set(prev.map((i) => i.file_id));
           return [...prev, ...rows.filter((r) => !seen.has(r.file_id))];
         });
-        setHasMore(rows.length === WATCH_PAGE_SIZE);
+        setHasMore(hasAnotherPage(rows, config));
       })
       .catch(() => {
         // A failed "load more" leaves what is already on screen alone;
@@ -78,7 +109,7 @@ export function useWatchLane(drive: string, lane: WatchLane): WatchLaneState {
         setHasMore(false);
       })
       .finally(() => setLoadingMore(false));
-  }, [drive, lane, items.length, hasMore, loading, loadingMore]);
+  }, [drive, lane, limit, config, items.length, hasMore, loading, loadingMore]);
 
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
 

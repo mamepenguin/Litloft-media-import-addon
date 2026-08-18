@@ -12,6 +12,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import WatchView from "@/addons/media_import/watch";
+import { WATCH_LANE_CONFIG } from "@/addons/media_import/api";
 import type { WatchItem, WatchLane } from "@/addons/media_import/api";
 
 const mockListWatch = vi.fn();
@@ -213,7 +214,8 @@ describe("WatchView", () => {
   });
 
   it("pages a lane without asking for a total", async () => {
-    const page1 = Array.from({ length: 24 }, (_, i) =>
+    const size = WATCH_LANE_CONFIG.feed.limit;
+    const page1 = Array.from({ length: size }, (_, i) =>
       makeItem({ file_id: `p1x${String(i).padStart(9, "0")}`, title: `A${i}` }),
     );
     const page2 = [makeItem({ file_id: "p2xaaaaaaaaa", title: "B0" })];
@@ -227,6 +229,48 @@ describe("WatchView", () => {
 
     fireEvent.click(await screen.findByText("Show more"));
     await screen.findByText("B0");
-    expect(mockListWatch).toHaveBeenCalledWith("d", "feed", { offset: 24 });
+    expect(mockListWatch).toHaveBeenCalledWith("d", "feed", {
+      limit: size,
+      offset: size,
+    });
   });
+
+  it("asks each lane for its own size", async () => {
+    render(<WatchView drive="d" hasSurfacedSources onGoToManage={() => {}} />);
+    await waitFor(() => expect(mockListWatch).toHaveBeenCalledTimes(3));
+
+    // A single shared page size would be wrong for slices that grow at
+    // completely different rates (spec §4).
+    for (const lane of ["continue", "regular", "feed"] as WatchLane[]) {
+      expect(mockListWatch).toHaveBeenCalledWith("d", lane, {
+        limit: WATCH_LANE_CONFIG[lane].limit,
+      });
+    }
+    expect(WATCH_LANE_CONFIG.continue.limit).toBeLessThan(
+      WATCH_LANE_CONFIG.feed.limit,
+    );
+  });
+
+  it.each(["continue", "regular"] as WatchLane[])(
+    "never offers to page the %s lane, even when it comes back full",
+    async (lane) => {
+      const full = Array.from(
+        { length: WATCH_LANE_CONFIG[lane].limit },
+        (_, i) =>
+          makeItem({
+            file_id: `${lane.slice(0, 3)}${String(i).padStart(9, "0")}`,
+            title: `${lane}-${i}`,
+          }),
+      );
+      laneResponses({ [lane]: full });
+      render(
+        <WatchView drive="d" hasSurfacedSources onGoToManage={() => {}} />,
+      );
+
+      await screen.findByText(`${lane}-0`);
+      // A full page is the only has-more signal there is, so a bounded
+      // lane has to refuse it rather than infer more pages exist.
+      expect(screen.queryByText("Show more")).toBeNull();
+    },
+  );
 });
