@@ -903,7 +903,17 @@ async def list_watch(
             for row in rows
         ]
 
-    rows = subdb.list_watch_lane(drive, lane, limit=limit, offset=offset)
+    rows = subdb.list_watch_lane(
+        drive,
+        lane,
+        limit=limit,
+        offset=offset,
+        # `regular` is bounded per source; `feed` is the chronological
+        # lane and stays uncapped (spec 2026-08-19-watch-lane-bounds §2).
+        per_source_limit=(
+            subdb.REGULAR_PER_SOURCE if lane == "regular" else None
+        ),
+    )
 
     # Progress is an annotation on an already-complete list. Losing it
     # costs the badges and nothing else — a video must never disappear

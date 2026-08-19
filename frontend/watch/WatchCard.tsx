@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useTranslations } from "next-intl";
-import { ExternalLink, ListPlus, Play } from "lucide-react";
+import { ExternalLink, ListPlus } from "lucide-react";
 
 import type { WatchItem } from "../api";
 
@@ -75,7 +75,15 @@ export default function WatchCard({ item, onAddToCollection }: Props) {
 
       <div className="flex min-w-0 flex-1 flex-col p-3">
         <h3 className="line-clamp-2 text-sm font-semibold text-text-primary">
-          {item.title || item.filename}
+          {/* The thumbnail is not the only way in: without this the
+              title would be inert, and dropping the play button below
+              would cost the card a tap target instead of gaining one. */}
+          <Link
+            href={`/files/${item.file_id}`}
+            className="rounded-lg transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
+          >
+            {item.title || item.filename}
+          </Link>
         </h3>
         <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-text-muted">
           {item.channel && <span className="truncate">{item.channel}</span>}
@@ -83,14 +91,10 @@ export default function WatchCard({ item, onAddToCollection }: Props) {
           {published && <span>{published}</span>}
         </div>
 
+        {/* No play/resume button: it went to the same route as the
+            thumbnail and the title, one row below both. What is left
+            here are the two things the card cannot already do. */}
         <div className="mt-2.5 flex items-center gap-1">
-          <Link
-            href={`/files/${item.file_id}`}
-            className="inline-flex items-center gap-1 rounded-2xl px-2 py-1 text-xs text-text-muted transition-colors hover:bg-bg-elevated hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
-          >
-            <Play size={13} />
-            {inProgress ? t("action.resume") : t("action.play")}
-          </Link>
           <button
             type="button"
             onClick={() => onAddToCollection(item)}

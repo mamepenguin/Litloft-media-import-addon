@@ -443,19 +443,42 @@ export interface WatchItem {
   playback: WatchPlayback | null;
 }
 
-export const WATCH_PAGE_SIZE = 24;
+export interface WatchLaneConfig {
+  limit: number;
+  /** Whether a full page means "ask for another one". */
+  pageable: boolean;
+}
+
+/**
+ * How much of each lane to show, and whether it grows.
+ *
+ * Per lane rather than shared, because the three slices differ in kind
+ * and not only in size. `continue` is a short list of what you are in
+ * the middle of; it is bounded so that it stays that. `regular` is
+ * already bounded by construction on the server (the newest few from
+ * each source), so paging has nothing well-defined to return. Only
+ * `feed` is a chronological list where digging further back is a real
+ * thing to want.
+ *
+ * Spec: 2026-08-19-watch-lane-bounds.md §4.
+ */
+export const WATCH_LANE_CONFIG: Record<WatchLane, WatchLaneConfig> = {
+  continue: { limit: 6, pageable: false },
+  regular: { limit: 12, pageable: false },
+  feed: { limit: 12, pageable: true },
+};
 
 /**
  * Fetch one bounded page of one Watch lane.
  *
  * There is deliberately no total: Watch is a lens over the library,
  * not an inbox, and must never show a backlog count. A full page back
- * is the only "there may be more" signal.
+ * is the only "there may be more" signal — and only `feed` acts on it.
  */
 export async function listWatch(
   drive: string,
   lane: WatchLane,
-  { limit = WATCH_PAGE_SIZE, offset = 0 } = {},
+  { limit = WATCH_LANE_CONFIG[lane].limit, offset = 0 } = {},
 ): Promise<WatchItem[]> {
   const params = new URLSearchParams({
     lane,

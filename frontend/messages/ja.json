@@ -42,8 +42,6 @@
         "completed": "視聴済み"
       },
       "action": {
-        "play": "再生",
-        "resume": "続きから",
         "addToCollection": "コレクションに追加",
         "openSource": "配信元のページを開く"
       },

@@ -42,8 +42,6 @@
         "completed": "Watched"
       },
       "action": {
-        "play": "Play",
-        "resume": "Resume",
         "addToCollection": "Add to collection",
         "openSource": "Open the source page"
       },
