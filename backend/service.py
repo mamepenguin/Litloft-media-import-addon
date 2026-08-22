@@ -24,7 +24,6 @@ from app.services.provider_registry import detect_provider
 from app.services.scanner import register_single_file
 from sqlalchemy import text
 
-from app.services.ws import broadcast_from_thread, manager
 from app.services import event_hooks
 
 from .schemas import LoftFetchItem, SttMode
@@ -983,10 +982,16 @@ class LoftManager:
             ):
                 self._download_stt_and_notify(item)
 
-            broadcast_from_thread("files.updated", {
-                "file_id": item.file_id,
-                "drive": file_record.drive,
-            }, drive=file_record.drive)
+            # Through event_hooks, not straight to the broadcaster. Core
+            # derives the browser event (``drive.file_updated``) from the
+            # emit, so a direct broadcast is invisible to the file list.
+            # The drive is passed explicitly to save core a lookup — we
+            # already know it.
+            event_hooks.emit_sync(
+                "files.updated",
+                {"file_ids": [item.file_id]},
+                drives=[file_record.drive],
+            )
 
         except Exception:
             db.rollback()
@@ -1021,10 +1026,10 @@ class LoftManager:
             # Its reconcile pass detects the adjacent .stt_temp audio and
             # queues the normal whisper task for this .loft.
             event_hooks.emit_sync("scan.complete", {"drive": file_record.drive})
-            broadcast_from_thread(
+            event_hooks.emit_sync(
                 "files.updated",
-                {"file_id": item.file_id, "drive": file_record.drive},
-                drive=file_record.drive,
+                {"file_ids": [item.file_id]},
+                drives=[file_record.drive],
             )
             return temp_path
         except Exception:
