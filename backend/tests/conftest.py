@@ -59,12 +59,11 @@ def media_import_db(tmp_path, monkeypatch):
     # Silence side-effects that have no in-test infrastructure:
     #   - WS broadcast (no running event loop in fetch worker thread)
     #   - intelligence event hook (no addon registry in unit tests)
-    monkeypatch.setattr(
-        service, "broadcast_from_thread", lambda *_a, **_kw: None
-    )
-    monkeypatch.setattr(
-        manager_mod, "broadcast_from_thread", lambda *_a, **_kw: None
-    )
+    #
+    # Only the worker still broadcasts directly, and rightly so: its events
+    # are addon-owned (``media_import.subscription.*``). Core-owned names
+    # like ``files.updated`` go through ``event_hooks`` instead, so core can
+    # derive the browser event from them.
     monkeypatch.setattr(
         worker_mod, "broadcast_from_thread", lambda *_a, **_kw: None
     )

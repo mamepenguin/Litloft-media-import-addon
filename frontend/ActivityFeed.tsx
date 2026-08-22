@@ -69,7 +69,10 @@ export default function ActivityFeed({ drive, refreshKey }: Props) {
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
 
-  const filesUpdated = useWebSocket("files.updated");
+  // Core derives this from the `files.updated` emit; the addon no longer
+  // broadcasts a raw `files.updated` of its own. The payload carries the
+  // drive, which is all this feed reads from it.
+  const filesUpdated = useWebSocket("drive.file_updated");
 
   async function load() {
     if (!drive) return;

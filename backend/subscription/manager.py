@@ -31,7 +31,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import app.config as config
-from app.services.ws import broadcast_from_thread
+from app.services import event_hooks
 
 from ..service import (
     _save_loft_thumbnail,
@@ -601,10 +601,11 @@ class SubscriptionManager:
                 )
 
         try:
-            broadcast_from_thread(
-                "files.updated",
-                {"file_id": file_id, "drive": drive},
-                drive=drive,
+            # Through event_hooks so core derives the browser event
+            # (``drive.file_updated``); a direct broadcast never reaches
+            # the file list.
+            event_hooks.emit_sync(
+                "files.updated", {"file_ids": [file_id]}, drives=[drive]
             )
         except Exception:  # pragma: no cover — best-effort UI notify
             pass
