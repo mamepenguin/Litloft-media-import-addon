@@ -10,6 +10,7 @@ const YT_STATE_PLAYING = 1;
 type PlayerEvents = {
   onReady: (e: { target: unknown }) => void | Promise<void>;
   onStateChange: (e: { data: number }) => void;
+  onError: (e: { data: number }) => void;
 };
 
 /** Captured from the most recent `new YT.Player(...)` call. */
@@ -691,5 +692,62 @@ describe("YouTubeEmbed player UI choice", () => {
 
     expect(player.seekTo).toHaveBeenCalledWith(123, true);
     expect(container.querySelector("[data-player-gestures]")).toBeInTheDocument();
+  });
+});
+
+// The owner-disabled-embedding error (101/150) is rejected at the
+// iframe level and is unaffected by playerVars.controls, so neither
+// control skin can recover it — only linking out to youtube.com works.
+describe("YouTubeEmbed embedding-restricted fallback", () => {
+  it("replaces the player with a link to youtube.com", async () => {
+    const { container } = await mountPlayer();
+    await act(async () => {
+      lastOptions!.events.onError({ data: 101 });
+    });
+
+    expect(player.destroy).toHaveBeenCalled();
+    expect(container.querySelector("[data-player-gestures]")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Seek")).not.toBeInTheDocument();
+
+    const link = screen.getByRole("link", { name: "Watch on YouTube" });
+    expect(link).toHaveAttribute(
+      "href",
+      "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    );
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  });
+
+  it("also falls back on the legacy duplicate error code", async () => {
+    await mountPlayer();
+    await act(async () => {
+      lastOptions!.events.onError({ data: 150 });
+    });
+    expect(
+      screen.getByRole("link", { name: "Watch on YouTube" }),
+    ).toBeInTheDocument();
+  });
+
+  it("ignores error codes unrelated to embedding restrictions", async () => {
+    const { container } = await mountPlayer();
+    await act(async () => {
+      // 2 = invalid parameter value; not an embedding restriction.
+      lastOptions!.events.onError({ data: 2 });
+    });
+    expect(player.destroy).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("link", { name: "Watch on YouTube" }),
+    ).not.toBeInTheDocument();
+    expect(container.querySelector("[data-player-gestures]")).toBeInTheDocument();
+  });
+
+  it("drops the manual player-UI toggle once restricted", async () => {
+    await mountPlayer();
+    await act(async () => {
+      lastOptions!.events.onError({ data: 101 });
+    });
+    expect(
+      screen.queryByRole("button", { name: "Back to the Litloft player" }),
+    ).not.toBeInTheDocument();
   });
 });

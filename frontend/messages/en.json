@@ -264,7 +264,9 @@
       "playerUi": "Player",
       "playerUiLitloft": "Litloft",
       "playerUiYouTube": "YouTube",
-      "backToLitloftPlayer": "Back to the Litloft player"
+      "backToLitloftPlayer": "Back to the Litloft player",
+      "embedRestricted": "Embedded playback is disabled for this video",
+      "watchOnYouTube": "Watch on YouTube"
     }
   }
 }

@@ -264,7 +264,9 @@
       "playerUi": "プレイヤー",
       "playerUiLitloft": "Litloft",
       "playerUiYouTube": "YouTube",
-      "backToLitloftPlayer": "Litloft のプレイヤーに戻す"
+      "backToLitloftPlayer": "Litloft のプレイヤーに戻す",
+    "embedRestricted": "この動画は埋め込み再生が無効です",
+    "watchOnYouTube": "YouTubeで見る"
     }
   }
 }
