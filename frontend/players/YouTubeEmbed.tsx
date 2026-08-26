@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
+import { ExternalLink } from "lucide-react";
 import {
   createYouTubeController,
   type MediaController,
@@ -21,6 +22,13 @@ import { PlayerUiToggle } from "./PlayerUiToggle";
 const YT_STATE_ENDED = 0;
 const YT_STATE_PLAYING = 1;
 const YT_STATE_BUFFERING = 3;
+
+// The video owner disallows embedded playback. Both codes mean the same
+// thing (150 is a legacy duplicate of 101) and neither is affected by
+// playerVars.controls — the iframe is refused regardless of which skin
+// it would have drawn, so there is no working player to fall back to
+// inside the embed at all.
+const YT_ERROR_EMBED_NOT_ALLOWED = new Set([101, 150]);
 
 /**
  * How far the player's reported duration may drift from our own
@@ -99,6 +107,11 @@ export default function YouTubeEmbed({
   >(null);
   const controllerRef = useRef<MediaController | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
+  // The video's owner disallows embedding (YT error 101/150). No
+  // playerVars combination recovers this — it's rejected at the iframe
+  // level — so once set, the fallback link-out replaces the frame
+  // entirely instead of the usual custom/YouTube control skins.
+  const [embedRestricted, setEmbedRestricted] = useState(false);
   // Held in state (not just the ref) so the control bar renders as soon
   // as the player is ready — and tagged with the UI it was built for.
   //
@@ -224,6 +237,7 @@ export default function YouTubeEmbed({
     if (!videoId) return;
     let cancelled = false;
     setLoadFailed(false);
+    setEmbedRestricted(false);
 
     loadYouTubeIframeApi()
       .then((YT) => {
@@ -321,6 +335,21 @@ export default function YouTubeEmbed({
                 onEndedRef.current?.();
               }
             },
+            onError: ({ data }) => {
+              if (cancelled) return;
+              if (!YT_ERROR_EMBED_NOT_ALLOWED.has(data)) return;
+              setEmbedRestricted(true);
+              onMediaController?.(null);
+              controllerRef.current = null;
+              setSession(null);
+              try {
+                playerRef.current?.destroy?.();
+              } catch {
+                // Already gone.
+              }
+              playerRef.current = null;
+              hostRef.current?.replaceChildren();
+            },
           },
         });
         playerRef.current = player;
@@ -399,6 +428,35 @@ export default function YouTubeEmbed({
 
   if (!videoId || loadFailed) {
     return null;
+  }
+
+  if (embedRestricted) {
+    return (
+      <div className="w-full">
+        <div
+          className="relative w-full overflow-hidden bg-black md:rounded-xl"
+          style={{ paddingTop: "56.25%" }}
+        >
+          <img
+            src={`/api/files/${fileId}/thumbnail`}
+            alt=""
+            className="absolute inset-0 h-full w-full object-cover opacity-40"
+          />
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-4 text-center text-white">
+            <p className="text-sm">{tmi("embedRestricted")}</p>
+            <a
+              href={`https://www.youtube.com/watch?v=${videoId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-2 rounded-2xl bg-white/20 px-4 py-2 text-sm font-medium hover:bg-white/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
+            >
+              <ExternalLink size={16} aria-hidden="true" />
+              {tmi("watchOnYouTube")}
+            </a>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   // The gesture overlay (drawn by MediaControls) is the only way to
