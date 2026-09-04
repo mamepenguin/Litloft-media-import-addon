@@ -104,7 +104,11 @@ describe("SubscriptionDetailPanel — folder edit", () => {
     await waitFor(() =>
       expect(mockPatch).toHaveBeenCalledWith("d", 1, { folder_path: "YouTube/new" }),
     );
-    expect(screen.queryByTestId("folder-input")).not.toBeInTheDocument();
+    // The request having been sent is not the same event as the panel
+    // leaving edit mode: that waits on the response.
+    await waitFor(() =>
+      expect(screen.queryByTestId("folder-input")).not.toBeInTheDocument(),
+    );
   });
 
   it("cancel restores original value and closes input", async () => {
