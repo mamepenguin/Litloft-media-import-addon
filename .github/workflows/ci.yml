@@ -20,6 +20,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Nothing here writes to the repository; the cross-repository checkouts read
+# public repositories only.
+permissions:
+  contents: read
+
 jobs:
   backend:
     # This addon runs in the core process: Dockerfile.test COPYs backend/app/
