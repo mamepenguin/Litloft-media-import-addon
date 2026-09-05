@@ -7,6 +7,8 @@ import {
   useState,
 } from "react";
 import { useTranslations } from "next-intl";
+
+import { Button } from "@/components/Button";
 import {
   ChevronDown,
   ChevronUp,
@@ -423,14 +425,15 @@ export default function Composer({
         )}
 
         <div className="flex items-center justify-end">
-          <button
+          <Button
+            variant="primary"
+            size="lg"
             onClick={handleSubmit}
             disabled={!url.trim() || !drive || submitting}
-            className="rounded-2xl bg-accent px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:bg-sand disabled:text-warm-silver disabled:cursor-not-allowed"
             data-testid="composer-submit"
           >
             {submitLabel}
-          </button>
+          </Button>
         </div>
       </div>
 
