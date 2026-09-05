@@ -108,12 +108,67 @@ describe("MediaImportPage navigation", () => {
       expect(screen.getByTestId("watch-view")).toBeInTheDocument(),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Manage" }));
+    // `tab`, not `button`: these two views are one page, so core's
+    // `PageTabs` gives them a tablist rather than a set of navigations.
+    fireEvent.click(screen.getByRole("tab", { name: "Manage" }));
     expect(screen.queryByTestId("watch-view")).toBeNull();
     expect(screen.getByTestId("composer-collapsed")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Watch" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Watch" }));
     expect(screen.getByTestId("watch-view")).toBeInTheDocument();
+  });
+
+  it("states the page and the drive in one header", async () => {
+    mockListSubscriptions.mockResolvedValue([makeSubscription("feed")]);
+    render(<MediaImportPage />);
+    await waitFor(() =>
+      expect(screen.getByTestId("watch-view")).toBeInTheDocument(),
+    );
+    // The one `<h1>` comes from core's `PageHeader` now; the drive name
+    // moved from a span floated opposite the title to the header's scope
+    // line, which is where "what am I looking at" belongs.
+    const heading = screen.getByRole("heading", { level: 1 });
+    expect(heading).toHaveTextContent("Media Import");
+    expect(screen.getByText("drive: d")).toBeInTheDocument();
+  });
+
+  it("says which view is selected, in the tablist's own vocabulary", async () => {
+    mockListSubscriptions.mockResolvedValue([makeSubscription("feed")]);
+    render(<MediaImportPage />);
+    await waitFor(() =>
+      expect(screen.getByTestId("watch-view")).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("tab", { name: "Watch" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByRole("tab", { name: "Manage" })).toHaveAttribute(
+      "aria-selected",
+      "false",
+    );
+    // And not also `aria-current`: that names the current *page* among
+    // navigations, and these two are one page. Carrying both said the same
+    // thing in two vocabularies, which is the pairing `PageTabs` exists to
+    // take apart.
+    for (const tab of screen.getAllByRole("tab")) {
+      expect(tab).not.toHaveAttribute("aria-current");
+    }
+  });
+
+  it("gives the tablist a panel to point at", async () => {
+    // A tablist promises that activating a tab swaps a region. Without a
+    // `tabpanel` a screen reader is told that and never told which region.
+    mockListSubscriptions.mockResolvedValue([makeSubscription("feed")]);
+    render(<MediaImportPage />);
+    await waitFor(() =>
+      expect(screen.getByTestId("watch-view")).toBeInTheDocument(),
+    );
+    const panel = screen.getByRole("tabpanel");
+    expect(panel).toHaveAccessibleName("Watch");
+    expect(panel).toContainElement(screen.getByTestId("watch-view"));
+
+    fireEvent.click(screen.getByRole("tab", { name: "Manage" }));
+    expect(screen.getByRole("tabpanel")).toHaveAccessibleName("Manage");
   });
 
   it("falls back to Manage when subscriptions cannot be read", async () => {

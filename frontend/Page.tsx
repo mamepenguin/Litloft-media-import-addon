@@ -8,6 +8,9 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 
+import { PageHeader } from "@/components/PageHeader";
+import { PageTabs } from "@/components/PageTabs";
+
 import { listSubscriptions } from "./api";
 import ActivityFeed from "./ActivityFeed";
 import Composer from "./Composer";
@@ -38,7 +41,8 @@ import WatchView from "./watch";
  * picker — that would cross drive boundaries (hako cRNeIvcbhz449BwTmof5m).
  */
 
-type View = "watch" | "manage";
+const TABS = ["watch", "manage"] as const;
+type View = (typeof TABS)[number];
 
 export default function MediaImportPage() {
   const params = useParams();
@@ -85,35 +89,35 @@ export default function MediaImportPage() {
 
   return (
     <div className="space-y-8 p-4 sm:p-6">
-      <header className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <h1 className="text-2xl font-bold text-text-primary">{t("title")}</h1>
-        <span className="text-xs text-text-muted">
-          {t("driveLabel", { drive: currentDrive })}
-        </span>
-      </header>
+      {/* This page's underline tabs are what core's `PageTabs` was modelled
+          on, so adopting it here is the first time that component has a
+          caller and the first check that the shape it settled on fits the
+          screen it came from. Two differences arrived with it, both
+          deliberate on core's side: the drive name moves from a floated
+          span to the header's `scope` line, and the buttons trade
+          `aria-current="page"` for `aria-selected`. `aria-current` names the
+          current page among navigations; these two views are one page, and
+          carrying both said the same thing in two vocabularies. */}
+      <PageHeader
+        title={t("title")}
+        scope={t("driveLabel", { drive: currentDrive })}
+        tabs={
+          <PageTabs
+            items={TABS.map((key) => ({ key, label: t(`nav.${key}`) }))}
+            current={view}
+            onSelect={(key) => setView(key as View)}
+            label={t("nav.label")}
+          />
+        }
+      />
 
-      <nav
-        className="flex gap-1 border-b border-bg-border"
-        aria-label={t("nav.label")}
-      >
-        {(["watch", "manage"] as const).map((key) => (
-          <button
-            key={key}
-            type="button"
-            aria-current={view === key ? "page" : undefined}
-            onClick={() => setView(key)}
-            className={[
-              "-mb-px rounded-t-xl border-b-2 px-4 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring",
-              view === key
-                ? "border-accent font-semibold text-text-primary"
-                : "border-transparent text-text-muted hover:text-text-primary",
-            ].join(" ")}
-          >
-            {t(`nav.${key}`)}
-          </button>
-        ))}
-      </nav>
-
+      {/* `PageTabs` promises a tablist when its items do not navigate, and a
+          tablist without a panel is half of that promise: a screen reader is
+          told activating a tab swaps a region, and nothing says which region.
+          Named rather than `aria-labelledby`-ed, because core generates the
+          tab ids and does not expose them — the weaker of the two bindings,
+          and the one this side can make on its own. */}
+      <div role="tabpanel" aria-label={t(`nav.${view}`)}>
       {view === "watch" ? (
         <WatchView
           drive={currentDrive}
@@ -141,6 +145,7 @@ export default function MediaImportPage() {
           </section>
         </>
       )}
+      </div>
     </div>
   );
 }
