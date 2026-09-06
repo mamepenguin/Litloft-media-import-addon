@@ -74,7 +74,12 @@ export default function WatchCard({ item, onAddToCollection }: Props) {
       </Link>
 
       <div className="flex min-w-0 flex-1 flex-col p-3">
-        <h3 className="line-clamp-2 text-sm font-semibold text-text-primary">
+        {/* Not a heading. A lane of cards emitting one heading each puts
+            every video title at the same outline depth as the lane names
+            above them, which is a claim about document structure that a
+            grid of siblings does not make (core UI redesign D-5). The
+            name is the link's accessible name either way. */}
+        <span className="block line-clamp-2 text-sm font-semibold text-text-primary">
           {/* The thumbnail is not the only way in: without this the
               title would be inert, and dropping the play button below
               would cost the card a tap target instead of gaining one. */}
@@ -84,7 +89,7 @@ export default function WatchCard({ item, onAddToCollection }: Props) {
           >
             {item.title || item.filename}
           </Link>
-        </h3>
+        </span>
         <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-text-muted">
           {item.channel && <span className="truncate">{item.channel}</span>}
           {item.channel && published && <span>·</span>}

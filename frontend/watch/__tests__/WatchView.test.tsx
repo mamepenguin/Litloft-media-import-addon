@@ -127,9 +127,13 @@ describe("WatchView", () => {
     render(<WatchView drive="d" hasSurfacedSources onGoToManage={() => {}} />);
 
     const lane = await screen.findByTestId("watch-lane-feed");
-    const titles = Array.from(lane.querySelectorAll("h3")).map(
-      (h) => h.textContent,
-    );
+    // Read the title element rather than a heading tag: a card title is
+    // not a heading. Not `a[href^='/files/']` — the thumbnail is a second
+    // link to the same file, and on a finished video it carries the
+    // "Watched" badge as its text.
+    const titles = Array.from(
+      lane.querySelectorAll("[data-testid^='watch-card-']"),
+    ).map((card) => card.querySelector(".line-clamp-2")?.textContent?.trim());
     expect(titles).toEqual(["Finished", "Fresh"]);
     expect(screen.getByText("Watched")).toBeInTheDocument();
   });
