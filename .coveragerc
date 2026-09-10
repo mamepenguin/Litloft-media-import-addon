@@ -1,0 +1,24 @@
+# The measured population for `--cov=addons.media_import`.
+#
+# This addon's tests live *inside* the package that coverage measures:
+# `Dockerfile.test` copies `backend/` to `addons/media_import/`, and
+# `backend/tests/` comes with it. coverage.py's `source=<package>` therefore
+# counted the tests as production code, at essentially 100%, and they are
+# larger than the code they test — 7904 lines against 5290.
+#
+# Measured, same tests either way:
+#
+#     tests counted:  5083 statements, 93% lines
+#     tests omitted:  1913 statements, 82.4% lines / 80.5% with branches
+#
+# So 3170 of 5083 statements — 62% of what was being reported — were files
+# that cannot fail to be covered. A floor over that population would have
+# been a gate on the tests testing themselves.
+#
+# The sibling `cloud-sync` addon does not have this defect and needs no such
+# file: its Dockerfile copies tests to `addons/cloud-sync/tests/`, outside the
+# measured `addons/cloud_sync` package. The difference is the hyphen, not a
+# decision anyone made.
+[run]
+omit =
+    addons/media_import/tests/*

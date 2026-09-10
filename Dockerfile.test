@@ -18,6 +18,11 @@ RUN touch addons/__init__.py
 
 # Test config + tests
 COPY addons/media_import/pytest.ini ./pytest.ini
+# The measured population; see the file for what it omits and why.
+COPY addons/media_import/.coveragerc ./.coveragerc
 
-CMD ["pytest", "-v", "--tb=short", "addons/media_import/tests/", \
-     "--cov=addons.media_import", "--cov-report=term-missing"]
+# Both the test path and the coverage flags moved out of this CMD: the path was
+# duplicating `testpaths`, and the flags now live in `pytest.ini`'s `addopts`
+# so that a partial run is measured too. The floor is not here — it is added by
+# the CI step, because it is a claim about a complete run.
+CMD ["pytest", "-v", "--tb=short"]
