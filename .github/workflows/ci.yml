@@ -106,9 +106,11 @@ jobs:
       # thing keeping them out, and breaking its prefix is silent: measured,
       # the total becomes 91.46% and the gate stays green.
       #
-      # So the population is asserted, not just the percentage. The check is on
-      # the property that can break rather than on a file count, which would
-      # fail every time a module is added.
+      # So the population is compared too, as a set, against an independent
+      # walk of this checkout. Filtering the report for test paths — what this
+      # step did before — reads the observation twice and so holds only that
+      # one direction; `scripts/check-coverage-population.py` says what the
+      # other direction is and what it measured.
       - name: Verify the floor was applied, over the right population
         shell: bash
         env:
@@ -116,30 +118,7 @@ jobs:
         run: |
           set -euo pipefail
           report="$RUNNER_TEMP/cov/cov.json"
-          if [ ! -f "$report" ]; then
-            echo "::error::$report was not written — PYTEST_ADDOPTS did not reach pytest,"
-            echo "::error::which means --cov-fail-under did not either and nothing was gated."
-            exit 1
-          fi
-          python3 - "$report" "$COV_FLOOR" <<'PY'
-          import json, sys
-          report, floor = sys.argv[1], float(sys.argv[2])
-          data = json.load(open(report))
-          files = sorted(data["files"])
-          total = data["totals"]["percent_covered"]
-
-          tests = [f for f in files if "/tests/" in f or f.startswith("tests/")]
-          if tests:
-              print("::error::test files are inside the measured population —")
-              print("::error::.coveragerc's omit is not matching. The total rises when this breaks.")
-              for f in tests:
-                  print(f"  {f}")
-              sys.exit(1)
-
-          print(f"coverage {total:.4f}% against a floor of {floor}%, over {len(files)} production modules")
-          if total < floor:
-              sys.exit(f"::error::{total:.4f}% is below {floor}% and the run did not fail — the floor is not being enforced")
-          PY
+          python3 addon/scripts/check-coverage-population.py "$report" "$COV_FLOOR"
 
   frontend:
     # This addon's frontend has no runner of its own. Its components import
