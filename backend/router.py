@@ -76,6 +76,13 @@ ADDON_META = {
     "icon": "link",
     "scope": "drive",
     "href": "/addons/media_import",
+    "navigation": {
+        "label": "YouTube & Feeds",
+        "i18n_key": "mediaImport.sidebar.label",
+        "icon": "rss",
+        "placement": "sources",
+        "priority": 10,
+    },
     "slots": {
         "loft-metadata": [
             {"id": "loft-metadata", "label": "Loft Metadata", "priority": 10},
