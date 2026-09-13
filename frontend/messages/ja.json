@@ -265,8 +265,19 @@
       "playerUiLitloft": "Litloft",
       "playerUiYouTube": "YouTube",
       "backToLitloftPlayer": "Litloft のプレイヤーに戻す",
-    "embedRestricted": "この動画は埋め込み再生が無効です",
-    "watchOnYouTube": "YouTubeで見る"
+      "embedRestricted": "この動画は埋め込み再生が無効です",
+      "watchOnYouTube": "YouTubeで見る"
+    },
+    "importFromUrl": {
+      "menuItem": "URL から取り込む",
+      "title": "URL から取り込む",
+      "url": "動画の URL",
+      "folder": "保存先",
+      "submit": "取り込む",
+      "submitting": "取り込み中...",
+      "errorFallback": "取り込みに失敗しました",
+      "subscriptionUrl": "チャンネル・プレイリスト・フィードの URL です。購読は Media Import のページから行ってください。",
+      "openManage": "Media Import を開く"
     }
   }
 }

@@ -32,6 +32,12 @@ import {
   getLastFolder,
   rememberFolder,
 } from "./lib/smartFolderMemory";
+import { isSubscriptionKind } from "./lib/subscriptionKind";
+import {
+  STT_MODE_STORAGE_KEY,
+  STT_MODES,
+  readStoredSttMode,
+} from "./lib/sttMode";
 
 /**
  * URL composer for Media Import.
@@ -60,18 +66,6 @@ interface PendingItem {
   createdAt: number;
 }
 
-const STT_MODE_STORAGE_KEY = "media_import.stt_mode_v1";
-const STT_MODES: SttMode[] = ["manual", "missing_captions", "always"];
-
-function readStoredSttMode(): SttMode {
-  if (typeof window === "undefined") return "manual";
-  const raw = window.localStorage.getItem(STT_MODE_STORAGE_KEY);
-  return STT_MODES.includes(raw as SttMode) ? (raw as SttMode) : "manual";
-}
-
-function isSubscriptionKind(kind: SubscriptionKind): boolean {
-  return kind === "channel" || kind === "playlist" || kind === "feed";
-}
 
 function extractUrl(e: React.DragEvent): string | null {
   const uri = e.dataTransfer.getData("text/uri-list");

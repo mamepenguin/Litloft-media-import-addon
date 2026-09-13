@@ -267,6 +267,17 @@
       "backToLitloftPlayer": "Back to the Litloft player",
       "embedRestricted": "Embedded playback is disabled for this video",
       "watchOnYouTube": "Watch on YouTube"
+    },
+    "importFromUrl": {
+      "menuItem": "Import from URL",
+      "title": "Import from URL",
+      "url": "Video URL",
+      "folder": "Save to",
+      "submit": "Import",
+      "submitting": "Importing...",
+      "errorFallback": "Import failed",
+      "subscriptionUrl": "This is a channel, playlist or feed. Subscribe to it from the Media Import page.",
+      "openManage": "Open Media Import"
     }
   }
 }

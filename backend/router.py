@@ -13,9 +13,6 @@ Endpoints:
 - POST /api/addons/media_import/subscriptions/{id}/videos/{item_id}/retry
 - GET  /api/addons/media_import/watch?lane=...&drive=X  — Watch lane projection
 
-Slot:
-- ``loft-metadata`` — channel/description/captions panel under the player.
-
 On startup:
 - Ensures the ``loft_metadata`` table exists (idempotent).
 - Registers the youtube/vimeo/soundcloud providers in core's
@@ -82,6 +79,9 @@ ADDON_META = {
     "slots": {
         "loft-metadata": [
             {"id": "loft-metadata", "label": "Loft Metadata", "priority": 10},
+        ],
+        "folder-actions-menu": [
+            {"id": "media-import-url", "label": "Import from URL", "priority": 20},
         ],
     },
 }
