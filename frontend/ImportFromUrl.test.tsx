@@ -117,6 +117,12 @@ function storageSnapshot(): Record<string, string | null> {
   return out;
 }
 
+function settle() {
+  return act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+}
+
 function policyLoaded() {
   return waitFor(() =>
     expect(fetchSpy.mock.calls.map((c) => String(c[0]))).toContain("/api/drives/d/addon-policies"),
@@ -224,6 +230,8 @@ describe("Import from URL dialog", () => {
   });
 
   it("starts at the Add menu's folder and sends the folder the user picked", async () => {
+    rememberFolder("d", "youtube", "video", "remembered");
+    const before = storageSnapshot();
     renderRow({ path: "videos/yt" });
     openDialog();
     expect(screen.getByLabelText("folder")).toHaveValue("videos/yt");
@@ -233,6 +241,7 @@ describe("Import from URL dialog", () => {
 
     await waitFor(() => expect(mockCreateLoft).toHaveBeenCalledTimes(1));
     expect(mockCreateLoft.mock.calls[0].slice(0, 3)).toEqual([VIDEO, "d", "videos/other"]);
+    expect(storageSnapshot()).toEqual(before);
   });
 
   it("passes the stored speech-to-text mode", async () => {
@@ -389,5 +398,63 @@ describe("Import from URL dialog when the policy settles after it opened", () =>
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(onDialogOpenChange.mock.calls).toEqual([[true], [false]]);
+  });
+});
+
+describe("Import from URL dialog submitting", () => {
+  it("classifies the URL against the Add menu's drive", async () => {
+    renderRow({ path: "videos" });
+    openDialog();
+    submitUrl(VIDEO);
+    await waitFor(() => expect(mockCreateLoft).toHaveBeenCalledTimes(1));
+    expect(mockResolveUrl.mock.calls).toEqual([[VIDEO, "d"]]);
+  });
+
+  it("sends one import however many times Enter is pressed while it is pending", async () => {
+    let release!: (v: unknown) => void;
+    mockResolveUrl.mockReturnValue(
+      new Promise((r) => {
+        release = r;
+      }),
+    );
+    renderRow({ path: "videos" });
+    openDialog();
+    const field = screen.getByLabelText("Video URL");
+    fireEvent.change(field, { target: { value: VIDEO } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    fireEvent.keyDown(field, { key: "Enter" });
+    await act(async () => {
+      release({ kind: "video", provider: "youtube", ref: "abc" });
+    });
+    await waitFor(() => expect(mockCreateLoft).toHaveBeenCalledTimes(1));
+    await settle();
+    expect(mockResolveUrl).toHaveBeenCalledTimes(1);
+    expect(mockCreateLoft).toHaveBeenCalledTimes(1);
+  });
+
+  it("can import again after a failed import", async () => {
+    mockCreateLoft.mockRejectedValueOnce(new Error("Failed to create link"));
+    renderRow({ path: "videos" });
+    openDialog();
+    submitUrl(VIDEO);
+    await screen.findByText("Failed to create link");
+
+    const button = screen.getByRole("button", { name: "Import" });
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    await waitFor(() => expect(mockCreateLoft).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("can import again after the subscription notice", async () => {
+    mockResolveUrl.mockResolvedValueOnce({ kind: "channel", provider: "youtube", ref: "r" });
+    renderRow({ path: "videos" });
+    openDialog();
+    submitUrl("https://www.youtube.com/@someone");
+    await screen.findByText(/Subscribe to it from the Media Import page/);
+
+    submitUrl(VIDEO);
+    await waitFor(() => expect(mockCreateLoft).toHaveBeenCalledTimes(1));
+    expect(mockCreateLoft.mock.calls[0].slice(0, 3)).toEqual([VIDEO, "d", "videos"]);
   });
 });
