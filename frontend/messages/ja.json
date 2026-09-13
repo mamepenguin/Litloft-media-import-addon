@@ -9,6 +9,9 @@
     "retrying": "再試行中..."
   },
   "mediaImport": {
+    "sidebar": {
+      "label": "YouTube とフィード"
+    },
     "title": "メディア取り込み",
     "driveLabel": "ドライブ: {drive}",
     "loadingDrive": "ドライブを読み込み中...",
