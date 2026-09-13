@@ -6,6 +6,7 @@ import { rememberFolder, _resetMemoryForTests } from "@/addons/media_import/lib/
 import { STT_MODE_STORAGE_KEY } from "@/addons/media_import/lib/sttMode";
 import { AddonSlot } from "@/components/AddonSlot";
 import { AddonSlotsProvider } from "@/components/AddonSlotsProvider";
+import { AddButton } from "@/components/AddButton";
 import { ShortcutsProvider } from "@/components/ShortcutsProvider";
 import { _resetPolicyCache } from "@/hooks/usePolicy";
 import { invalidateAddonsCache } from "@/lib/addons";
@@ -104,6 +105,15 @@ afterEach(() => {
   invalidateAddonsCache();
 });
 
+function storageSnapshot(): Record<string, string | null> {
+  const out: Record<string, string | null> = {};
+  for (let i = 0; i < window.localStorage.length; i += 1) {
+    const key = window.localStorage.key(i)!;
+    out[key] = window.localStorage.getItem(key);
+  }
+  return out;
+}
+
 function policyLoaded() {
   return waitFor(() =>
     expect(fetchSpy.mock.calls.map((c) => String(c[0]))).toContain("/api/drives/d/addon-policies"),
@@ -197,7 +207,8 @@ describe("Import from URL row and the drive catalogue", () => {
 describe("Import from URL dialog", () => {
   it("starts at the drive root for path '' even with a remembered folder, and leaves the memory alone", async () => {
     rememberFolder("d", "youtube", "video", "remembered");
-    const before = JSON.stringify(Object.entries(window.localStorage));
+    const before = storageSnapshot();
+    expect(before).not.toEqual({});
     renderRow({ path: "" });
     openDialog();
     expect(screen.getByLabelText("folder")).toHaveValue("");
@@ -206,7 +217,7 @@ describe("Import from URL dialog", () => {
 
     await waitFor(() => expect(mockCreateLoft).toHaveBeenCalledTimes(1));
     expect(mockCreateLoft.mock.calls[0].slice(0, 3)).toEqual([VIDEO, "d", ""]);
-    expect(JSON.stringify(Object.entries(window.localStorage))).toBe(before);
+    expect(storageSnapshot()).toEqual(before);
   });
 
   it("starts at the Add menu's folder and sends the folder the user picked", async () => {
@@ -302,5 +313,50 @@ describe("Import from URL dialog", () => {
     submitUrl(VIDEO);
     await waitFor(() => expect(mockCreateLoft).toHaveBeenCalledTimes(2));
     expect(mockCreateLoft.mock.calls[0]).toEqual(mockCreateLoft.mock.calls[1]);
+  });
+});
+
+describe("Import from URL dialog inside the Add menu", () => {
+  async function openFromAdd() {
+    render(
+      <ShortcutsProvider>
+        <AddonSlotsProvider>
+          <AddButton addonProps={{ drive: "d", path: "videos" }} />
+        </AddonSlotsProvider>
+      </ShortcutsProvider>,
+    );
+    const trigger = screen.getByRole("button", { name: /Add/ });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("menuitem", { name: ROW }));
+    return { trigger, dialog: screen.getByRole("dialog", { name: ROW }) };
+  }
+
+  it("keeps the dialog and what was typed when it is pressed and typed into", async () => {
+    await openFromAdd();
+    const field = screen.getByLabelText("Video URL");
+    fireEvent.pointerDown(field);
+    fireEvent.change(field, { target: { value: VIDEO } });
+    fireEvent.click(field);
+    fireEvent.pointerDown(screen.getByLabelText("folder"));
+    fireEvent.change(screen.getByLabelText("folder"), { target: { value: "videos/new" } });
+
+    expect(screen.getByRole("dialog", { name: ROW })).toBeInTheDocument();
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+    expect(screen.getByLabelText("Video URL")).toHaveValue(VIDEO);
+    expect(screen.getByLabelText("folder")).toHaveValue("videos/new");
+  });
+
+  it("closes only the dialog on the first Escape and the menu on the second", async () => {
+    const { trigger } = await openFromAdd();
+    const field = screen.getByLabelText("Video URL");
+    fireEvent.keyDown(field, { key: "Escape" });
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
   });
 });
