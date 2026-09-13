@@ -9,6 +9,7 @@ URL を `.loft` ファイル（reference）として取り込み、メタデー�
 - 字幕 (.vtt) のダウンロードと dedup
 - 公式 provider 実装の提供（YouTube / Vimeo / SoundCloud）
 - `LoftMetadataPanel` を `loft-metadata` slot に注入
+- Add メニュー（`folder-actions-menu`）に「URL から取り込む」行を注入。開いた場所のフォルダを保存先の初期値にして動画を 1 件取り込む。チャンネル・プレイリスト・フィードの購読はページの Manage で行う
 - `loft_metadata` テーブル所有
 
 実ファイル DL（yt-dlp で動画を mp4 として保存）は **Downloader アドオン**の責務。
@@ -68,5 +69,7 @@ docker compose up -d --build
   }
 }
 ```
+
+`url_import: false` のドライブでは Add メニューの「URL から取り込む」行が出ない。
 
 未指定キーは graceful degradation で enable される。
