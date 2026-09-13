@@ -9,6 +9,9 @@
     "retrying": "Retrying..."
   },
   "mediaImport": {
+    "sidebar": {
+      "label": "YouTube & Feeds"
+    },
     "title": "Media Import",
     "driveLabel": "drive: {drive}",
     "loadingDrive": "Loading drive...",
