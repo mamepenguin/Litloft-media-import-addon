@@ -270,8 +270,11 @@ describe("Import from URL dialog", () => {
     "sends nothing for a %s URL and keeps the dialog and its input",
     async (kind) => {
       mockResolveUrl.mockResolvedValue({ kind, provider: "youtube", ref: "r" });
+      rememberFolder("d", "youtube", kind as "channel", "remembered");
+      const before = storageSnapshot();
       const { onRequestClose } = renderRow({ path: "videos" });
       openDialog();
+      fireEvent.change(screen.getByLabelText("folder"), { target: { value: "videos/sub" } });
       submitUrl("https://www.youtube.com/@someone");
 
       const notice = await screen.findByText(/Subscribe to it from the Media Import page/);
@@ -285,23 +288,28 @@ describe("Import from URL dialog", () => {
       expect(mockSyncSubscription).not.toHaveBeenCalled();
       expect(screen.getByRole("dialog", { name: ROW })).toBeInTheDocument();
       expect(screen.getByLabelText("Video URL")).toHaveValue("https://www.youtube.com/@someone");
-      expect(screen.getByLabelText("folder")).toHaveValue("videos");
+      expect(screen.getByLabelText("folder")).toHaveValue("videos/sub");
       expect(onRequestClose).not.toHaveBeenCalled();
+      expect(storageSnapshot()).toEqual(before);
     },
   );
 
   it("keeps the dialog, the URL and the folder when the import fails", async () => {
     mockCreateLoft.mockRejectedValue(new Error("Failed to create link"));
+    rememberFolder("d", "youtube", "video", "remembered");
+    const before = storageSnapshot();
     const { onRequestClose, onDialogOpenChange } = renderRow({ path: "videos" });
     openDialog();
+    fireEvent.change(screen.getByLabelText("folder"), { target: { value: "videos/sub" } });
     submitUrl(VIDEO);
 
     expect(await screen.findByText("Failed to create link")).toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: ROW })).toBeInTheDocument();
     expect(screen.getByLabelText("Video URL")).toHaveValue(VIDEO);
-    expect(screen.getByLabelText("folder")).toHaveValue("videos");
+    expect(screen.getByLabelText("folder")).toHaveValue("videos/sub");
     expect(onRequestClose).not.toHaveBeenCalled();
     expect(onDialogOpenChange.mock.calls).toEqual([[true]]);
+    expect(storageSnapshot()).toEqual(before);
   });
 
   it("returns to the menu on cancel without asking it to close", () => {
@@ -456,5 +464,29 @@ describe("Import from URL dialog submitting", () => {
     submitUrl(VIDEO);
     await waitFor(() => expect(mockCreateLoft).toHaveBeenCalledTimes(1));
     expect(mockCreateLoft.mock.calls[0].slice(0, 3)).toEqual([VIDEO, "d", "videos"]);
+  });
+});
+
+describe("Import from URL dialog importing after its row was hidden", () => {
+  it("closes the menu and reports the dialog closed", async () => {
+    let release!: () => void;
+    policyGate = new Promise<void>((r) => {
+      release = r;
+    });
+    policyAnswer = "disabled";
+    const { onRequestClose, onDialogOpenChange } = renderRow({ path: "videos" });
+    openDialog();
+    await act(async () => {
+      release();
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("menuitem", { name: ROW })).not.toBeInTheDocument(),
+    );
+
+    submitUrl(VIDEO);
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(onRequestClose).toHaveBeenCalledTimes(1);
+    expect(onDialogOpenChange.mock.calls).toEqual([[true], [false]]);
   });
 });
