@@ -47,12 +47,15 @@ export default function ImportFromUrlMenuItem({
     onRequestClose?.();
   }, [onDialogOpenChange, onRequestClose]);
 
-  if (!drive) return null;
-  if (!policy.isLoading && !policy.enabled) return null;
+  // The gate hides the row only. A dialog opened while the policy was
+  // still loading stays until the user leaves it.
+  const rowHidden = !drive || (!policy.isLoading && !policy.enabled);
 
   return (
     <>
-      <ActionMenuItem icon={LinkIcon} label={t("menuItem")} onClick={handleOpen} />
+      {!rowHidden && (
+        <ActionMenuItem icon={LinkIcon} label={t("menuItem")} onClick={handleOpen} />
+      )}
       {open && (
         <ImportFromUrlDialog
           drive={drive}

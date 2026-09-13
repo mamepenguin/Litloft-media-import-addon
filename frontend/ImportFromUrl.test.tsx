@@ -47,6 +47,7 @@ vi.mock("next/link", () => ({
 
 type PolicyAnswer = "enabled" | "disabled" | "error";
 let policyAnswer: PolicyAnswer;
+let policyGate: Promise<void> | null = null;
 let catalogue: { addons: Record<string, unknown>; slots: Record<string, unknown> };
 
 function json(data: unknown, status = 200): Response {
@@ -59,6 +60,7 @@ function json(data: unknown, status = 200): Response {
 const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
   const url = String(input);
   if (url === "/api/drives/d/addon-policies") {
+    if (policyGate) await policyGate;
     if (policyAnswer === "error") return json({}, 500);
     return json({
       addons: {
@@ -92,6 +94,7 @@ beforeEach(() => {
   invalidateAddonsCache();
   window.localStorage.clear();
   policyAnswer = "enabled";
+  policyGate = null;
   catalogue = MEDIA_IMPORT_CATALOGUE;
   mockResolveUrl.mockResolvedValue({ kind: "video", provider: "youtube", ref: "abc" });
   mockCreateLoft.mockResolvedValue({ file_id: "f1", filename: "x.loft" });
@@ -358,5 +361,33 @@ describe("Import from URL dialog inside the Add menu", () => {
 
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
+  });
+});
+
+describe("Import from URL dialog when the policy settles after it opened", () => {
+  it("keeps the dialog and its input, and still reports its close", async () => {
+    let release!: () => void;
+    policyGate = new Promise<void>((r) => {
+      release = r;
+    });
+    policyAnswer = "disabled";
+    const { onDialogOpenChange } = renderRow({ path: "videos" });
+    openDialog();
+    fireEvent.change(screen.getByLabelText("Video URL"), { target: { value: VIDEO } });
+
+    await act(async () => {
+      release();
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("menuitem", { name: ROW })).not.toBeInTheDocument(),
+    );
+
+    expect(screen.getByRole("dialog", { name: ROW })).toBeInTheDocument();
+    expect(screen.getByLabelText("Video URL")).toHaveValue(VIDEO);
+    expect(screen.getByLabelText("folder")).toHaveValue("videos");
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(onDialogOpenChange.mock.calls).toEqual([[true], [false]]);
   });
 });
