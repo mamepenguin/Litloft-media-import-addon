@@ -832,8 +832,8 @@ def _playback_state(position: float, duration: float) -> PlaybackState:
     """Map core WatchHistory markers onto the three Watch states.
 
     The 90% threshold is the core's own continue-watching gate; keeping
-    the same number here is what stops the badge and the lane from
-    disagreeing. A ``0 / 0`` row is the view-only record the file detail
+    the same number here is what stops this badge and Home's Continue
+    watching row from disagreeing. A ``0 / 0`` row is the view-only record the file detail
     page writes on open — it means the page was opened, never that the
     video was watched (spec §4.1).
     """
@@ -863,7 +863,7 @@ def _to_watch_item(row: dict, playback: WatchPlayback | None) -> WatchItem:
 
 @router.get("/watch", response_model=list[WatchItem])
 async def list_watch(
-    lane: WatchLane = Query(..., description="continue | regular | feed"),
+    lane: WatchLane = Query(..., description="regular | feed"),
     drive: str = Query(..., description="Drive name (required)"),
     limit: int = Query(24, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -879,9 +879,8 @@ async def list_watch(
     lens over the library, not an inbox with a backlog figure
     (spec §2.2 / §5.2).
 
-    ``continue`` needs a viewer identity and is empty without one; the
-    other two lanes are viewer-independent and still render, just
-    without progress badges.
+    Both lanes are viewer-independent; without a viewer identity they
+    still render, just without progress badges.
     """
     scoped = _scoped_drive(x_lit_drive, unlocked_groups)
     if drive != scoped:
@@ -889,26 +888,6 @@ async def list_watch(
             status_code=400,
             detail="drive query does not match X-Lit-Drive scope",
         )
-
-    if lane == "continue":
-        if viewer_id is None:
-            return []
-        rows = subdb.list_watch_continue(
-            drive, viewer_id, limit=limit, offset=offset
-        )
-        return [
-            _to_watch_item(
-                row,
-                WatchPlayback(
-                    position=row["playback_position"],
-                    duration=row["playback_duration"],
-                    state=_playback_state(
-                        row["playback_position"], row["playback_duration"]
-                    ),
-                ),
-            )
-            for row in rows
-        ]
 
     rows = subdb.list_watch_lane(
         drive,

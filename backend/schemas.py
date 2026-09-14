@@ -235,11 +235,10 @@ class ResolveConflictResponse(BaseModel):
 # ---- Watch surface -------------------------------------------------
 
 
-WatchLane = Literal["continue", "regular", "feed"]
+WatchLane = Literal["regular", "feed"]
 """Which slice of the library a Watch request is asking for.
 
-One lane per request so each paginates on its own; the page fires
-three. Requesting them together would force a single limit across
+One lane per request so each paginates on its own. Requesting them together would force a single limit across
 lanes that grow at completely different rates.
 """
 

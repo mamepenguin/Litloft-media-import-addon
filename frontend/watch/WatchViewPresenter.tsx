@@ -7,7 +7,6 @@ import type { WatchLaneState } from "./hooks/useWatchLane";
 import WatchLaneSection from "./WatchLaneSection";
 
 export interface WatchViewPresenterProps {
-  continueWatching: WatchLaneState;
   regular: WatchLaneState;
   feed: WatchLaneState;
   /** False when no subscription on this drive is set to feed/regular. */
@@ -17,7 +16,6 @@ export interface WatchViewPresenterProps {
 }
 
 export default function WatchViewPresenter({
-  continueWatching,
   regular,
   feed,
   hasSurfacedSources,
@@ -26,22 +24,14 @@ export default function WatchViewPresenter({
 }: WatchViewPresenterProps) {
   const t = useTranslations("mediaImport.watch");
 
-  const anyLoading =
-    continueWatching.loading || regular.loading || feed.loading;
+  const anyLoading = regular.loading || feed.loading;
   const nothingToShow =
     !anyLoading &&
-    continueWatching.items.length === 0 &&
     regular.items.length === 0 &&
     feed.items.length === 0;
 
   return (
     <div className="space-y-8" data-testid="watch-view">
-      <WatchLaneSection
-        testId="watch-lane-continue"
-        heading={t("lane.continue")}
-        state={continueWatching}
-        onAddToCollection={onAddToCollection}
-      />
       <WatchLaneSection
         testId="watch-lane-regular"
         heading={t("lane.regular")}
