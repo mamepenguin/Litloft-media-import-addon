@@ -34,7 +34,7 @@ docker compose up -d --build
 | POST | /api/addons/media_import/link | URL → `.loft` 生成（drive, folder_path 指定） |
 | GET | /api/addons/media_import/link/{file_id}/metadata | loft_metadata 取得 |
 | POST | /api/addons/media_import/link/{file_id}/refresh | メタデータ・字幕の再取得をキュー |
-| GET | /api/addons/media_import/watch | Watch 面の 1 レーン（`lane=continue\|regular\|feed`） |
+| GET | /api/addons/media_import/watch | Watch 面の 1 レーン（`lane=regular\|feed`） |
 
 ## Watch 面
 
@@ -44,7 +44,7 @@ docker compose up -d --build
 
 | モード | 意味 | Watch での扱い |
 |---|---|---|
-| `library`（既定） | 取り込んで検索対象にする | レーンに出さない。再生途中なら「再生途中」には出る |
+| `library`（既定） | 取り込んで検索対象にする | レーンに出さない |
 | `feed` | 新しいうちは気になるかもしれない | 新着レーンに時系列で並ぶ |
 | `regular` | 習慣的に見るソース | よく見るソースレーンに優先表示 |
 

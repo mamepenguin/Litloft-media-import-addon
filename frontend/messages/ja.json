@@ -37,7 +37,6 @@
     },
     "watch": {
       "lane": {
-        "continue": "再生途中",
         "regular": "よく見るソース",
         "feed": "新着"
       },

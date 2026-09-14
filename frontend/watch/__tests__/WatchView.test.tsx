@@ -9,7 +9,7 @@
  * Media Import list.
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import WatchView from "@/addons/media_import/watch";
 import { WATCH_LANE_CONFIG } from "@/addons/media_import/api";
@@ -78,9 +78,9 @@ describe("WatchView", () => {
 
   it("fetches each lane separately so they page independently", async () => {
     render(<WatchView drive="d" hasSurfacedSources onGoToManage={() => {}} />);
-    await waitFor(() => expect(mockListWatch).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(mockListWatch).toHaveBeenCalledTimes(2));
     const lanes = mockListWatch.mock.calls.map((c) => c[1]);
-    expect(new Set(lanes)).toEqual(new Set(["continue", "regular", "feed"]));
+    expect(lanes.sort()).toEqual(["feed", "regular"]);
   });
 
   it("renders each item in the lane it came from", async () => {
@@ -140,7 +140,7 @@ describe("WatchView", () => {
 
   it("shows how far into a started video the viewer is", async () => {
     laneResponses({
-      continue: [
+      feed: [
         makeItem({
           file_id: "startedaaaaa",
           title: "Half watched",
@@ -251,6 +251,33 @@ describe("WatchView", () => {
     expect(empty.textContent).toContain("Nothing to show right now");
   });
 
+  it.each(["regular", "feed"] as WatchLane[])(
+    "shows no empty state while the %s lane has videos",
+    async (lane) => {
+      laneResponses({ [lane]: [makeItem({ title: "Only one" })] });
+      render(<WatchView drive="d" hasSurfacedSources onGoToManage={() => {}} />);
+
+      await screen.findByText("Only one");
+      expect(screen.queryByTestId("watch-empty")).toBeNull();
+    },
+  );
+
+  it.each(["regular", "feed"] as WatchLane[])(
+    "shows no empty state while the %s lane is still loading",
+    async (pending) => {
+      mockListWatch.mockImplementation((_drive: string, lane: WatchLane) =>
+        lane === pending ? new Promise(() => {}) : Promise.resolve([]),
+      );
+      render(<WatchView drive="d" hasSurfacedSources onGoToManage={() => {}} />);
+
+      await waitFor(() => expect(mockListWatch).toHaveBeenCalledTimes(2));
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
+      expect(screen.queryByTestId("watch-empty")).toBeNull();
+    },
+  );
+
   it("pages a lane without asking for a total", async () => {
     const size = WATCH_LANE_CONFIG.feed.limit;
     const page1 = Array.from({ length: size }, (_, i) =>
@@ -275,21 +302,17 @@ describe("WatchView", () => {
 
   it("asks each lane for its own size", async () => {
     render(<WatchView drive="d" hasSurfacedSources onGoToManage={() => {}} />);
-    await waitFor(() => expect(mockListWatch).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(mockListWatch).toHaveBeenCalledTimes(2));
 
-    // A single shared page size would be wrong for slices that grow at
-    // completely different rates (spec §4).
-    for (const lane of ["continue", "regular", "feed"] as WatchLane[]) {
-      expect(mockListWatch).toHaveBeenCalledWith("d", lane, {
-        limit: WATCH_LANE_CONFIG[lane].limit,
-      });
-    }
-    expect(WATCH_LANE_CONFIG.continue.limit).toBeLessThan(
-      WATCH_LANE_CONFIG.feed.limit,
-    );
+    expect(
+      mockListWatch.mock.calls.map(([, lane, opts]) => [lane, opts]).sort(),
+    ).toEqual([
+      ["feed", { limit: 12 }],
+      ["regular", { limit: 12 }],
+    ]);
   });
 
-  it.each(["continue", "regular"] as WatchLane[])(
+  it.each(["regular"] as WatchLane[])(
     "never offers to page the %s lane, even when it comes back full",
     async (lane) => {
       const full = Array.from(

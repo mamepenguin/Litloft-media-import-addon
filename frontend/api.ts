@@ -411,7 +411,7 @@ export async function listActivity(
  * Which slice of the library to ask for. One lane per request so each
  * paginates independently — they grow at very different rates.
  */
-export type WatchLane = "continue" | "regular" | "feed";
+export type WatchLane = "regular" | "feed";
 
 export type PlaybackState = "not_started" | "in_progress" | "completed";
 
@@ -452,9 +452,8 @@ export interface WatchLaneConfig {
 /**
  * How much of each lane to show, and whether it grows.
  *
- * Per lane rather than shared, because the three slices differ in kind
- * and not only in size. `continue` is a short list of what you are in
- * the middle of; it is bounded so that it stays that. `regular` is
+ * Per lane rather than shared, because the slices differ in kind and
+ * not only in size. `regular` is
  * already bounded by construction on the server (the newest few from
  * each source), so paging has nothing well-defined to return. Only
  * `feed` is a chronological list where digging further back is a real
@@ -463,7 +462,6 @@ export interface WatchLaneConfig {
  * Spec: 2026-08-19-watch-lane-bounds.md §4.
  */
 export const WATCH_LANE_CONFIG: Record<WatchLane, WatchLaneConfig> = {
-  continue: { limit: 6, pageable: false },
   regular: { limit: 12, pageable: false },
   feed: { limit: 12, pageable: true },
 };

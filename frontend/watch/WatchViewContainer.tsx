@@ -23,7 +23,7 @@ interface Props {
 /**
  * The Watch surface: a read projection over the library.
  *
- * Three independently paged lanes plus core's own CollectionPicker for
+ * Independently paged lanes plus core's own CollectionPicker for
  * the "actually watch this later" case. Media Import deliberately adds
  * no Watch Later storage of its own — an explicit intention to watch a
  * single video belongs in an existing Core Collection (spec §2.3).
@@ -33,7 +33,6 @@ export default function WatchViewContainer({
   hasSurfacedSources,
   onGoToManage,
 }: Props) {
-  const continueWatching = useWatchLane(drive, "continue");
   const regular = useWatchLane(drive, "regular");
   const feed = useWatchLane(drive, "feed");
 
@@ -42,7 +41,6 @@ export default function WatchViewContainer({
   return (
     <>
       <WatchViewPresenter
-        continueWatching={continueWatching}
         regular={regular}
         feed={feed}
         hasSurfacedSources={hasSurfacedSources}
