@@ -9,6 +9,7 @@ import { X } from "lucide-react";
 import { Button } from "@/components/Button";
 import { useDialogPortalTarget } from "@/components/DialogPortal";
 import { FolderPicker } from "@/components/FolderPicker";
+import { useImeKeyGuard } from "@/lib/ime";
 import { useShortcuts } from "@/hooks/useShortcuts";
 import { OVERLAY_PRIORITY } from "@/lib/shortcuts";
 
@@ -39,6 +40,7 @@ export default function ImportFromUrlDialog({ drive, path, onCancel, onImported 
   const [error, setError] = useState<string | null>(null);
   const [needsSubscription, setNeedsSubscription] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const ime = useImeKeyGuard();
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -129,8 +131,10 @@ export default function ImportFromUrlDialog({ drive, path, onCancel, onImported 
                 setUrl(e.target.value);
                 setNeedsSubscription(false);
               }}
+              onCompositionEnd={ime.onCompositionEnd}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                if (ime.isImeKeystroke(e)) return;
+                if (e.key === "Enter") {
                   e.preventDefault();
                   void handleSubmit();
                 }

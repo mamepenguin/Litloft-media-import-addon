@@ -9,6 +9,7 @@ import {
 import { useTranslations } from "next-intl";
 
 import { Button } from "@/components/Button";
+import { useImeKeyGuard } from "@/lib/ime";
 import {
   ChevronDown,
   ChevronUp,
@@ -109,6 +110,7 @@ export default function Composer({
   const [dragOver, setDragOver] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
+  const ime = useImeKeyGuard();
 
   useEffect(() => {
     setSttMode(readStoredSttMode());
@@ -299,8 +301,10 @@ export default function Composer({
             onChange={(e) => setUrl(e.target.value)}
             placeholder={t("composer.urlPlaceholder")}
             className="w-full rounded-2xl border border-bg-border bg-bg-primary px-4 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-focus-ring focus:outline-none"
+            onCompositionEnd={ime.onCompositionEnd}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+              if (ime.isImeKeystroke(e)) return;
+              if (e.key === "Enter") {
                 e.preventDefault();
                 handleSubmit();
               }
