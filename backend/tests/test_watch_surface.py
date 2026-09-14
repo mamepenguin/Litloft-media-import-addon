@@ -664,6 +664,25 @@ class TestRegularSourceCap:
 
 
 class TestPlaybackBadges:
+    def test_a_started_video_carries_its_own_progress(
+        self, client, media_import_db
+    ):
+        sub_id = _seed_subscription(media_import_db, display_mode="feed")
+        fid = _seed_loft(
+            media_import_db,
+            file_id="halfwatched1",
+            filename="Half.loft",
+            published_at="20260801",
+            created_at="2026-08-01 00:00:00",
+        )
+        _link(media_import_db, sub_id, fid)
+        _seed_history(media_import_db, fid, 30.0, 300.0)
+
+        items = _watch(client, "feed")
+        assert [(i["file_id"], i["playback"]) for i in items] == [
+            (fid, {"position": 30.0, "duration": 300.0, "state": "in_progress"})
+        ]
+
     def test_completed_lane_item_keeps_its_place(self, client, media_import_db):
         """Completed styling must not reorder the lane (spec §9)."""
         sub_id = _seed_subscription(media_import_db, display_mode="feed")

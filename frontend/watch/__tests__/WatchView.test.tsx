@@ -304,11 +304,12 @@ describe("WatchView", () => {
     render(<WatchView drive="d" hasSurfacedSources onGoToManage={() => {}} />);
     await waitFor(() => expect(mockListWatch).toHaveBeenCalledTimes(2));
 
-    for (const lane of ["regular", "feed"] as WatchLane[]) {
-      expect(mockListWatch).toHaveBeenCalledWith("d", lane, {
-        limit: WATCH_LANE_CONFIG[lane].limit,
-      });
-    }
+    expect(
+      mockListWatch.mock.calls.map(([, lane, opts]) => [lane, opts]).sort(),
+    ).toEqual([
+      ["feed", { limit: 12 }],
+      ["regular", { limit: 12 }],
+    ]);
   });
 
   it.each(["regular"] as WatchLane[])(
