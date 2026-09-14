@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import Composer from "@/addons/media_import/Composer";
+import { COMPOSITION_GRACE_MS } from "@/lib/ime";
 import {
   _resetMemoryForTests,
   rememberFolder,
@@ -284,5 +285,58 @@ describe("Composer submit dispatch", () => {
     await waitFor(() => {
       expect(screen.getByTestId("composer-error")).toHaveTextContent("Boom");
     });
+  });
+});
+
+describe("Composer IME composition", () => {
+  const URL_TYPED = "https://example.com/動画";
+  let now: ReturnType<typeof vi.spyOn> | null = null;
+
+  afterEach(() => {
+    now?.mockRestore();
+    now = null;
+  });
+
+  function renderWithConvertedUrl() {
+    mockCreateLoft.mockResolvedValue({ file_id: "f1", filename: "x.loft" });
+    render(<Composer drive="d" initialExpanded={true} onCreated={() => {}} />);
+    const input = screen.getByPlaceholderText("https://...");
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: URL_TYPED } });
+    fireEvent.compositionEnd(input, { data: "動画" });
+    return input;
+  }
+
+  it("does not import on the Enter that confirms a conversion", () => {
+    now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    const input = renderWithConvertedUrl();
+    now.mockReturnValue(1_000_000 + COMPOSITION_GRACE_MS - 1);
+
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 13 });
+
+    expect(mockCreateLoft).not.toHaveBeenCalled();
+    expect(mockCreateSubscription).not.toHaveBeenCalled();
+  });
+
+  it("does not import on an Enter the IME still owns", () => {
+    const input = renderWithConvertedUrl();
+    fireEvent.compositionStart(input);
+
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
+
+    expect(mockCreateLoft).not.toHaveBeenCalled();
+    expect(mockCreateSubscription).not.toHaveBeenCalled();
+  });
+
+  it("imports once on an Enter pressed after the grace window", async () => {
+    now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    const input = renderWithConvertedUrl();
+    now.mockReturnValue(1_000_000 + COMPOSITION_GRACE_MS);
+
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 13 });
+
+    await waitFor(() => expect(mockCreateLoft).toHaveBeenCalledTimes(1));
+    expect(mockCreateLoft.mock.calls[0][0]).toBe(URL_TYPED);
   });
 });

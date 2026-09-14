@@ -10,6 +10,7 @@ import { AddButton } from "@/components/AddButton";
 import { ShortcutsProvider } from "@/components/ShortcutsProvider";
 import { _resetPolicyCache } from "@/hooks/usePolicy";
 import { invalidateAddonsCache } from "@/lib/addons";
+import { COMPOSITION_GRACE_MS } from "@/lib/ime";
 
 const mockResolveUrl = vi.fn();
 const mockCreateLoft = vi.fn();
@@ -488,5 +489,62 @@ describe("Import from URL dialog importing after its row was hidden", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(onRequestClose).toHaveBeenCalledTimes(1);
     expect(onDialogOpenChange.mock.calls).toEqual([[true], [false]]);
+  });
+});
+
+describe("Import from URL dialog IME composition", () => {
+  let now: ReturnType<typeof vi.spyOn> | null = null;
+
+  afterEach(() => {
+    now?.mockRestore();
+    now = null;
+  });
+
+  function openWithConvertedUrl() {
+    renderRow({ path: "videos" });
+    openDialog();
+    const field = screen.getByLabelText("Video URL");
+    fireEvent.compositionStart(field);
+    fireEvent.change(field, { target: { value: VIDEO } });
+    fireEvent.compositionEnd(field, { data: VIDEO });
+    return field;
+  }
+
+  it("does not import on the Enter that confirms a conversion", async () => {
+    now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    const field = openWithConvertedUrl();
+    now.mockReturnValue(1_000_000 + COMPOSITION_GRACE_MS - 1);
+
+    fireEvent.keyDown(field, { key: "Enter", keyCode: 13 });
+    await settle();
+
+    expect(mockResolveUrl).not.toHaveBeenCalled();
+    expect(mockCreateLoft).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: ROW })).toBeInTheDocument();
+  });
+
+  it("does not import on an Enter the IME still owns", async () => {
+    const field = openWithConvertedUrl();
+    fireEvent.compositionStart(field);
+
+    fireEvent.keyDown(field, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(field, { key: "Enter", keyCode: 229 });
+    await settle();
+
+    expect(mockResolveUrl).not.toHaveBeenCalled();
+    expect(mockCreateLoft).not.toHaveBeenCalled();
+  });
+
+  it("imports once on an Enter pressed after the grace window", async () => {
+    now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    const field = openWithConvertedUrl();
+    now.mockReturnValue(1_000_000 + COMPOSITION_GRACE_MS);
+
+    fireEvent.keyDown(field, { key: "Enter", keyCode: 13 });
+
+    await waitFor(() => expect(mockCreateLoft).toHaveBeenCalledTimes(1));
+    await settle();
+    expect(mockResolveUrl.mock.calls).toEqual([[VIDEO, "d"]]);
+    expect(mockCreateLoft).toHaveBeenCalledTimes(1);
   });
 });
