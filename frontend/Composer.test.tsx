@@ -319,7 +319,9 @@ describe("Composer IME composition", () => {
   });
 
   it("does not import on an Enter the IME still owns", () => {
+    now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
     const input = renderWithConvertedUrl();
+    now.mockReturnValue(1_000_000 + COMPOSITION_GRACE_MS);
     fireEvent.compositionStart(input);
 
     fireEvent.keyDown(input, { key: "Enter", isComposing: true });

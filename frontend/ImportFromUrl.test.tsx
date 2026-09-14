@@ -524,7 +524,9 @@ describe("Import from URL dialog IME composition", () => {
   });
 
   it("does not import on an Enter the IME still owns", async () => {
+    now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
     const field = openWithConvertedUrl();
+    now.mockReturnValue(1_000_000 + COMPOSITION_GRACE_MS);
     fireEvent.compositionStart(field);
 
     fireEvent.keyDown(field, { key: "Enter", isComposing: true });
