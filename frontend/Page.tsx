@@ -113,13 +113,10 @@ export default function MediaImportPage() {
 
   return (
     <PageFrame width="full" header={header}>
-      <div className="space-y-8 px-4 pb-6">
+      <div className="space-y-8 px-4 pb-6 pt-6">
       {/* `PageTabs` promises a tablist when its items do not navigate, and a
           tablist without a panel is half of that promise: a screen reader is
-          told activating a tab swaps a region, and nothing says which region.
-          Named rather than `aria-labelledby`-ed, because core generates the
-          tab ids and does not expose them — the weaker of the two bindings,
-          and the one this side can make on its own. */}
+          told activating a tab swaps a region, and nothing says which region. */}
       <div role="tabpanel" aria-label={t(`nav.${view}`)}>
       {view === "watch" ? (
         <WatchView
