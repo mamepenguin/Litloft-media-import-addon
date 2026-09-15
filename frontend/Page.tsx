@@ -8,6 +8,9 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 
+import { Rss } from "lucide-react";
+
+import { PageFrame } from "@/components/PageFrame";
 import { PageHeader } from "@/components/PageHeader";
 import { PageTabs } from "@/components/PageTabs";
 
@@ -79,38 +82,38 @@ export default function MediaImportPage() {
     };
   }, [currentDrive]);
 
-  if (!currentDrive || view === null) {
-    return (
-      <div className="p-4 text-sm text-text-muted sm:p-6">
-        {t("loadingDrive")}
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-8 p-4 sm:p-6">
-      {/* This page's underline tabs are what core's `PageTabs` was modelled
-          on, so adopting it here is the first time that component has a
-          caller and the first check that the shape it settled on fits the
-          screen it came from. Two differences arrived with it, both
-          deliberate on core's side: the drive name moves from a floated
-          span to the header's `scope` line, and the buttons trade
-          `aria-current="page"` for `aria-selected`. `aria-current` names the
-          current page among navigations; these two views are one page, and
-          carrying both said the same thing in two vocabularies. */}
-      <PageHeader
-        title={t("title")}
-        scope={t("driveLabel", { drive: currentDrive })}
-        tabs={
+  // The scope line names the drive and no count: the subscription list is
+  // read once on mount, so a number here would go stale the moment a source
+  // is added below it.
+  const header = (
+    <PageHeader
+      titleIcon={Rss}
+      title={t("sidebar.label")}
+      scope={currentDrive || undefined}
+      tabs={
+        view === null ? undefined : (
           <PageTabs
             items={TABS.map((key) => ({ key, label: t(`nav.${key}`) }))}
             current={view}
             onSelect={(key) => setView(key as View)}
             label={t("nav.label")}
           />
-        }
-      />
+        )
+      }
+    />
+  );
 
+  if (!currentDrive || view === null) {
+    return (
+      <PageFrame width="full" header={header}>
+        <div className="px-4 pb-6 text-sm text-text-muted">{t("loadingDrive")}</div>
+      </PageFrame>
+    );
+  }
+
+  return (
+    <PageFrame width="full" header={header}>
+      <div className="space-y-8 px-4 pb-6">
       {/* `PageTabs` promises a tablist when its items do not navigate, and a
           tablist without a panel is half of that promise: a screen reader is
           told activating a tab swaps a region, and nothing says which region.
@@ -146,6 +149,7 @@ export default function MediaImportPage() {
         </>
       )}
       </div>
-    </div>
+      </div>
+    </PageFrame>
   );
 }

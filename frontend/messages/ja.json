@@ -12,8 +12,6 @@
     "sidebar": {
       "label": "YouTube とフィード"
     },
-    "title": "メディア取り込み",
-    "driveLabel": "ドライブ: {drive}",
     "loadingDrive": "ドライブを読み込み中...",
     "nav": {
       "label": "メディア取り込みの表示切り替え",
