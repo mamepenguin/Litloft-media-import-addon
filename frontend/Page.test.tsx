@@ -124,12 +124,23 @@ describe("MediaImportPage navigation", () => {
     await waitFor(() =>
       expect(screen.getByTestId("watch-view")).toBeInTheDocument(),
     );
-    // The one `<h1>` comes from core's `PageHeader` now; the drive name
-    // moved from a span floated opposite the title to the header's scope
-    // line, which is where "what am I looking at" belongs.
+    // Titled with the sidebar row that opened it, and the drive on the
+    // scope line.
     const heading = screen.getByRole("heading", { level: 1 });
-    expect(heading).toHaveTextContent("Media Import");
-    expect(screen.getByText("drive: d")).toBeInTheDocument();
+    expect(heading.textContent).toBe("YouTube & Feeds");
+    expect(heading.nextElementSibling?.textContent).toBe("d");
+    const header = heading.closest("header")!;
+    expect(header.querySelector("svg.lucide-rss")).not.toBeNull();
+    expect(header.parentElement?.getAttribute("data-page-frame")).toBe("full");
+  });
+
+  it("draws the header before it knows which view to land on", () => {
+    mockListSubscriptions.mockReturnValue(new Promise(() => {}));
+    render(<MediaImportPage />);
+    const heading = screen.getByRole("heading", { level: 1 });
+    expect(heading.textContent).toBe("YouTube & Feeds");
+    expect(heading.closest("header")!.parentElement?.getAttribute("data-page-frame")).toBe("full");
+    expect(screen.queryByRole("tab")).toBeNull();
   });
 
   it("says which view is selected, in the tablist's own vocabulary", async () => {
