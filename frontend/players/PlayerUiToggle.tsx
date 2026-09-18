@@ -12,15 +12,6 @@ export interface PlayerUiToggleProps {
  * Chooses which player UI is on screen: Litloft's own controls, or
  * YouTube's.
  *
- * Worth being plain about what this does and does not control. It sets
- * `playerVars.controls` and drops `playsinline`; that is the whole
- * mechanism. On iOS the browser then refuses inline playback and opens
- * its own full-screen player, which is where a Picture-in-Picture
- * button lives — unreachable otherwise, since a cross-origin iframe
- * puts its `<video>` beyond our reach. That outcome is the reason to
- * use this, but it belongs to the platform, not to us, so the label
- * describes the choice we actually make.
- *
  * Rendered into the settings sheet through MediaControls' `settingsExtra`
  * slot, which core keeps opaque so it needs no notion of YouTube.
  */
