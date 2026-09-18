@@ -93,11 +93,12 @@ const URL_UNDER_TEST = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 async function mountPlayer(
   durationHint: number | null = 600,
   onEnded?: () => void,
+  url: string = URL_UNDER_TEST,
 ) {
   const utils = render(
     <YouTubeEmbed
       fileId="abc123456789"
-      url={URL_UNDER_TEST}
+      url={url}
       durationHint={durationHint}
       onEnded={onEnded}
     />,
@@ -719,16 +720,16 @@ describe("YouTubeEmbed system fullscreen", () => {
 
   const openButton = () => screen.queryByRole("button", { name: "Open in the iOS player" });
 
-  async function openSettings() {
-    await mountPlayer();
+  async function openSettings(url?: string) {
+    await mountPlayer(600, undefined, url);
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
   }
 
   it("asks the shell to open this video in the iOS player", async () => {
     installShell(3);
-    await openSettings();
+    await openSettings("https://www.youtube.com/watch?v=M7lc1UVf-VE");
     fireEvent.click(openButton()!);
-    expect(posted).toContainEqual({ type: "embed.fullscreen", videoId: "dQw4w9WgXcQ" });
+    expect(posted).toContainEqual({ type: "embed.fullscreen", videoId: "M7lc1UVf-VE" });
   });
 
   it("is not offered by a shell that cannot do it", async () => {
