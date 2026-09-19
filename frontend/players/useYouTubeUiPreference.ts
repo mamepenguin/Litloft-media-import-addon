@@ -17,14 +17,6 @@ export function readYouTubeUiPreference(): boolean {
  * Whether to hand playback back to YouTube's own player UI instead of
  * drawing Litloft's.
  *
- * What this actually selects is `playerVars.controls`, plus dropping
- * `playsinline`. The visible consequence on iOS is that the browser
- * stops allowing inline playback and opens its own full-screen player
- * — which is the only place Picture-in-Picture can be reached from,
- * since a cross-origin iframe puts its `<video>` out of reach. That
- * outcome is the reason anyone would want this, but it is the
- * platform's doing rather than something we can ask for.
- *
  * Off by default: Litloft's controls are the point of the embed, and
  * this trades away the gestures, the subtitle toggle and the speed
  * sheet along with them.

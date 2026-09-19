@@ -93,11 +93,12 @@ const URL_UNDER_TEST = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 async function mountPlayer(
   durationHint: number | null = 600,
   onEnded?: () => void,
+  url: string = URL_UNDER_TEST,
 ) {
   const utils = render(
     <YouTubeEmbed
       fileId="abc123456789"
-      url={URL_UNDER_TEST}
+      url={url}
       durationHint={durationHint}
       onEnded={onEnded}
     />,
@@ -590,8 +591,6 @@ describe("YouTubeEmbed player UI choice", () => {
   });
 
   it("hands the player its own UI when asked", async () => {
-    // playsinline goes with it: that hand-off to the browser's own
-    // full-screen player is the only route to Picture-in-Picture.
     window.localStorage.setItem(STORAGE_KEY, "true");
     await mountPlayer();
     expect(lastOptions!.playerVars.controls).toBe(1);
@@ -698,6 +697,53 @@ describe("YouTubeEmbed player UI choice", () => {
 // The owner-disabled-embedding error (101/150) is rejected at the
 // iframe level and is unaffected by playerVars.controls, so neither
 // control skin can recover it — only linking out to youtube.com works.
+describe("YouTubeEmbed system fullscreen", () => {
+  interface ShellWindow extends Window {
+    webkit?: unknown;
+    __litloftShell?: { version: number };
+  }
+  const win = () => window as ShellWindow;
+  let posted: unknown[];
+
+  function installShell(version: number) {
+    posted = [];
+    win().__litloftShell = { version };
+    win().webkit = {
+      messageHandlers: { litloft: { postMessage: (body: unknown) => posted.push(body) } },
+    };
+  }
+
+  afterEach(() => {
+    delete win().webkit;
+    delete win().__litloftShell;
+  });
+
+  const openButton = () => screen.queryByRole("button", { name: "Open in the iOS player" });
+
+  async function openSettings(url?: string) {
+    await mountPlayer(600, undefined, url);
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  }
+
+  it("asks the shell to open this video in the iOS player", async () => {
+    installShell(3);
+    await openSettings("https://www.youtube.com/watch?v=M7lc1UVf-VE");
+    fireEvent.click(openButton()!);
+    expect(posted).toContainEqual({ type: "embed.fullscreen", videoId: "M7lc1UVf-VE" });
+  });
+
+  it("is not offered by a shell that cannot do it", async () => {
+    installShell(2);
+    await openSettings();
+    expect(openButton()).not.toBeInTheDocument();
+  });
+
+  it("is not offered outside the shell", async () => {
+    await openSettings();
+    expect(openButton()).not.toBeInTheDocument();
+  });
+});
+
 describe("YouTubeEmbed embedding-restricted fallback", () => {
   it("replaces the player with a link to youtube.com", async () => {
     const { container } = await mountPlayer();

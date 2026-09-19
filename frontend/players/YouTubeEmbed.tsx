@@ -15,6 +15,11 @@ import { useShortcuts } from "@/hooks/useShortcuts";
 import type { LoftEmbedProps } from "@/components/loft/types";
 import MediaControls from "@/components/player/MediaControls";
 import { useFullscreen } from "@/components/player/hooks/useFullscreen";
+import { SystemFullscreenButton } from "@/components/player/NativeSettingsRows";
+import {
+  requestEmbedFullscreen,
+  shellHasSystemFullscreen,
+} from "@/lib/nativeBridge";
 import { loadYouTubeIframeApi } from "./loadYouTubeIframeApi";
 import { useYouTubeUiPreference } from "./useYouTubeUiPreference";
 import { PlayerUiToggle } from "./PlayerUiToggle";
@@ -265,12 +270,6 @@ export default function YouTubeEmbed({
             // NOT removable either way, and must not be covered — see
             // the gesture overlay's interactive gate.
             controls: youtubeUi ? 1 : 0,
-            // Only meaningful while the controls are ours: without it
-            // iOS refuses inline playback and hands the video to its
-            // own full-screen player, where our controls cannot be
-            // reached. Dropping it in YouTube-UI mode is deliberate —
-            // that hand-off is what puts a Picture-in-Picture button
-            // on screen, which no API of ours can produce.
             ...(youtubeUi ? {} : { playsinline: 1 }),
             disablekb: youtubeUi ? 0 : 1,
             modestbranding: 1,
@@ -510,6 +509,13 @@ export default function YouTubeEmbed({
           isPseudoFullscreen={fullscreen.isPseudo}
           interactive={gesturesInteractive}
           onBoostingChange={setBoosting}
+          settingsToggles={
+            shellHasSystemFullscreen() ? (
+              <SystemFullscreenButton
+                onOpen={() => requestEmbedFullscreen(videoId)}
+              />
+            ) : null
+          }
           settingsExtra={
             <PlayerUiToggle youtubeUi={youtubeUi} onChange={setYoutubeUi} />
           }
