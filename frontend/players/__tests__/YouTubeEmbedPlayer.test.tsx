@@ -162,7 +162,9 @@ afterEach(() => {
 
 describe("YouTubeEmbed player configuration", () => {
   describe("the cover over a frame that has not painted", () => {
-    const POSTER = "/api/files/abc123456789/thumbnail";
+    // Not the URL the old implementation built for itself: an expected
+    // value copied from the implementation cannot catch its return.
+    const POSTER = "/fixtures/poster-under-test.png";
     const renderCovered = () =>
       render(
         <YouTubeEmbed
@@ -181,6 +183,13 @@ describe("YouTubeEmbed player configuration", () => {
       // The classes are the behaviour: an always-transparent cover ships
       // this change as a no-op, and jsdom computes no styles.
       expect(cover()!.getAttribute("src")).toBe(POSTER);
+      // Drawn after the host the iframe replaces, or the iframe paints
+      // over it and the frame is black again with every class intact.
+      const frame = cover()!.closest('[data-testid="player-frame"]')!;
+      const host = frame.querySelector(":scope > div:not([data-player-gestures])")!;
+      expect(
+        host.compareDocumentPosition(cover()!) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
       expect(cover()!.className).toContain("opacity-100");
       expect(cover()!.className).not.toContain("opacity-0");
       // Fading it in would show the black frame through it on a rebuild.
@@ -208,7 +217,11 @@ describe("YouTubeEmbed player configuration", () => {
       utils.unmount();
     });
 
-    it("covers the frame again when the player is rebuilt for another video", async () => {
+    it("covers the frame again when the viewer switches player skin", async () => {
+      // The rebuild a viewer can actually cause: the file's own url never
+      // changes under a mounted player, and a different file remounts the
+      // whole view.
+      window.localStorage.setItem("media-import-youtube-ui", "true");
       const utils = renderCovered();
       await waitFor(() => expect(lastOptions).not.toBeNull());
       await act(async () => {
@@ -216,18 +229,27 @@ describe("YouTubeEmbed player configuration", () => {
       });
       expect(cover()!.className).toContain("opacity-0");
 
-      lastOptions = null;
-      utils.rerender(
-        <YouTubeEmbed
-          fileId="abc123456789"
-          url="https://www.youtube.com/watch?v=zzzzzzzzzzz"
-          durationHint={600}
-          posterUrl={POSTER}
-        />,
-      );
-      await waitFor(() => expect(lastOptions).not.toBeNull());
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole("button", { name: "Back to the Litloft player" }),
+        );
+      });
+      await waitFor(() => expect(lastOptions!.playerVars.controls).toBe(0));
 
       expect(cover()!.className).toContain("opacity-100");
+      window.localStorage.clear();
+      utils.unmount();
+    });
+
+    it("covers the frame for a viewer whose stored skin is YouTube's", async () => {
+      // That preference is read in an effect, so this skin is also every
+      // first open for such a viewer, not only a toggle away.
+      window.localStorage.setItem("media-import-youtube-ui", "true");
+      const utils = renderCovered();
+      await waitFor(() => expect(lastOptions!.playerVars.controls).toBe(1));
+
+      expect(cover()!.className).toContain("opacity-100");
+      window.localStorage.clear();
       utils.unmount();
     });
 
