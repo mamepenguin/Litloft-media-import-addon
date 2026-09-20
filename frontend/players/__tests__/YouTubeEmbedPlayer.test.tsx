@@ -161,38 +161,97 @@ afterEach(() => {
 });
 
 describe("YouTubeEmbed player configuration", () => {
-  it("holds the file's own thumbnail over the frame until the player is ready", async () => {
-    const utils = render(
-      <YouTubeEmbed fileId="abc123456789" url={URL_UNDER_TEST} durationHint={600} />,
-    );
-    await waitFor(() => expect(lastOptions).not.toBeNull());
+  describe("the cover over a frame that has not painted", () => {
+    const POSTER = "/api/files/abc123456789/thumbnail";
+    const renderCovered = () =>
+      render(
+        <YouTubeEmbed
+          fileId="abc123456789"
+          url={URL_UNDER_TEST}
+          durationHint={600}
+          posterUrl={POSTER}
+        />,
+      );
+    const cover = () => screen.queryByTestId("player-poster");
 
-    // YouTube's iframe is black until its poster is up; without this the
-    // page flashes on every open.
-    const poster = screen.getByTestId("player-poster");
-    expect(poster.getAttribute("src")).toBe("/api/files/abc123456789/thumbnail");
-    expect(poster.className).toContain("pointer-events-none");
-    expect(poster.getAttribute("data-covered")).toBe("true");
+    it("holds the file's own picture over the frame, visibly, until the player is ready", async () => {
+      const utils = renderCovered();
+      await waitFor(() => expect(lastOptions).not.toBeNull());
 
-    await act(async () => {
-      await lastOptions!.events.onReady({ target: player });
+      // The classes are the behaviour: an always-transparent cover ships
+      // this change as a no-op, and jsdom computes no styles.
+      expect(cover()!.getAttribute("src")).toBe(POSTER);
+      expect(cover()!.className).toContain("opacity-100");
+      expect(cover()!.className).not.toContain("opacity-0");
+      // Fading it in would show the black frame through it on a rebuild.
+      expect(cover()!.className).not.toContain("transition-opacity");
+
+      await act(async () => {
+        await lastOptions!.events.onReady({ target: player });
+      });
+
+      expect(cover()!.className).toContain("opacity-0");
+      expect(cover()!.className).toContain("transition-opacity");
+      utils.unmount();
     });
-    expect(screen.getByTestId("player-poster").getAttribute("data-covered")).toBe("false");
-    utils.unmount();
-  });
 
-  it("lets the frame go when the player reports an error instead", async () => {
-    const utils = render(
-      <YouTubeEmbed fileId="abc123456789" url={URL_UNDER_TEST} durationHint={600} />,
-    );
-    await waitFor(() => expect(lastOptions).not.toBeNull());
-    expect(screen.getByTestId("player-poster").getAttribute("data-covered")).toBe("true");
+    it("lets the frame go when the player reports an error instead", async () => {
+      const utils = renderCovered();
+      await waitFor(() => expect(lastOptions).not.toBeNull());
+      expect(cover()!.className).toContain("opacity-100");
 
-    await act(async () => {
-      lastOptions!.events.onError({ data: 5 });
+      await act(async () => {
+        lastOptions!.events.onError({ data: 5 });
+      });
+
+      expect(cover()!.className).toContain("opacity-0");
+      utils.unmount();
     });
-    expect(screen.getByTestId("player-poster").getAttribute("data-covered")).toBe("false");
-    utils.unmount();
+
+    it("covers the frame again when the player is rebuilt for another video", async () => {
+      const utils = renderCovered();
+      await waitFor(() => expect(lastOptions).not.toBeNull());
+      await act(async () => {
+        await lastOptions!.events.onReady({ target: player });
+      });
+      expect(cover()!.className).toContain("opacity-0");
+
+      lastOptions = null;
+      utils.rerender(
+        <YouTubeEmbed
+          fileId="abc123456789"
+          url="https://www.youtube.com/watch?v=zzzzzzzzzzz"
+          durationHint={600}
+          posterUrl={POSTER}
+        />,
+      );
+      await waitFor(() => expect(lastOptions).not.toBeNull());
+
+      expect(cover()!.className).toContain("opacity-100");
+      utils.unmount();
+    });
+
+    it("covers nothing for a file that has no picture of its own", async () => {
+      const utils = render(
+        <YouTubeEmbed fileId="abc123456789" url={URL_UNDER_TEST} durationHint={600} />,
+      );
+      await waitFor(() => expect(lastOptions).not.toBeNull());
+
+      // The thumbnail route answers 200 with a placeholder for a file with
+      // none, so a cover here would be a grey card over the player.
+      expect(cover()).toBeNull();
+      utils.unmount();
+    });
+
+    it("takes no clicks and says nothing to a screen reader", async () => {
+      const utils = renderCovered();
+      await waitFor(() => expect(lastOptions).not.toBeNull());
+
+      expect(cover()!.className).toContain("pointer-events-none");
+      expect(cover()!.getAttribute("aria-hidden")).toBe("true");
+      expect(cover()!.getAttribute("alt")).toBe("");
+      utils.unmount();
+    });
   });
 
   it("turns off the YouTube chrome and forces inline playback", async () => {

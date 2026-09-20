@@ -99,6 +99,7 @@ export default function YouTubeEmbed({
   durationHint,
   onEnded,
   mediaSessionMetadata,
+  posterUrl,
 }: LoftEmbedProps) {
   const videoId = extractYouTubeId(url);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -504,24 +505,21 @@ export default function YouTubeEmbed({
       />
 
       {/* Faded rather than removed: the iframe paints black for a frame
-          between the player reporting ready and its own poster going up. */}
-      <img
-        src={`/api/files/${fileId}/thumbnail`}
-        alt=""
-        aria-hidden="true"
-        data-testid="player-poster"
-        data-covered={playerReady ? "false" : "true"}
-        className={[
-          "pointer-events-none absolute inset-0 h-full w-full object-cover",
-          "transition-opacity duration-200",
-          playerReady ? "opacity-0" : "opacity-100",
-        ].join(" ")}
-        onError={(e) => {
-          // A file with no thumbnail would otherwise show the browser's
-          // broken-image mark over the player.
-          e.currentTarget.style.display = "none";
-        }}
-      />
+          between the player reporting ready and its own poster going up.
+          The fade is on the way out only — on a rebuild the cover has to
+          be there before the frame goes black, not after. */}
+      {posterUrl && (
+        <img
+          src={posterUrl}
+          alt=""
+          aria-hidden="true"
+          data-testid="player-poster"
+          className={[
+            "pointer-events-none absolute inset-0 h-full w-full object-cover",
+            playerReady ? "opacity-0 transition-opacity duration-200" : "opacity-100",
+          ].join(" ")}
+        />
+      )}
 
       {/* In YouTube-UI mode the player draws its own controls, and ours
           would sit on top of them — including the gesture overlay,
