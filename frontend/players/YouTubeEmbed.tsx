@@ -155,6 +155,9 @@ export default function YouTubeEmbed({
   // to stop treating downward travel as a dismiss for the duration, or
   // the drift that comes with a planted finger closes the frame.
   const [boosting, setBoosting] = useState(false);
+  // YouTube's iframe paints black until its own poster is up. The file's
+  // thumbnail stands in until then, so opening a video does not flash.
+  const [playerReady, setPlayerReady] = useState(false);
 
   // Which player UI is on screen. Switching rebuilds the iframe, since
   // playerVars are read once at construction and never again.
@@ -254,6 +257,7 @@ export default function YouTubeEmbed({
         // long gone — replaced by the iframe that has since been
         // destroyed — so reusing it would hand the API a detached node.
         host.replaceChildren();
+        setPlayerReady(false);
         const mount = document.createElement("div");
         mount.className = "h-full w-full";
         host.appendChild(mount);
@@ -284,6 +288,7 @@ export default function YouTubeEmbed({
           events: {
             onReady: async ({ target }) => {
               if (cancelled) return;
+              setPlayerReady(true);
               playerRef.current = target as YouTubePlayerLike & {
                 destroy(): void;
               };
@@ -336,6 +341,7 @@ export default function YouTubeEmbed({
             },
             onError: ({ data }) => {
               if (cancelled) return;
+              setPlayerReady(true);
               if (!YT_ERROR_EMBED_NOT_ALLOWED.has(data)) return;
               setEmbedRestricted(true);
               onMediaController?.(null);
@@ -495,6 +501,26 @@ export default function YouTubeEmbed({
       <div
         ref={hostRef}
         className="absolute inset-0 [&>iframe]:h-full [&>iframe]:w-full [&>iframe]:border-0"
+      />
+
+      {/* Faded rather than removed: the iframe paints black for a frame
+          between the player reporting ready and its own poster going up. */}
+      <img
+        src={`/api/files/${fileId}/thumbnail`}
+        alt=""
+        aria-hidden="true"
+        data-testid="player-poster"
+        data-covered={playerReady ? "false" : "true"}
+        className={[
+          "pointer-events-none absolute inset-0 h-full w-full object-cover",
+          "transition-opacity duration-200",
+          playerReady ? "opacity-0" : "opacity-100",
+        ].join(" ")}
+        onError={(e) => {
+          // A file with no thumbnail would otherwise show the browser's
+          // broken-image mark over the player.
+          e.currentTarget.style.display = "none";
+        }}
       />
 
       {/* In YouTube-UI mode the player draws its own controls, and ours

@@ -161,6 +161,40 @@ afterEach(() => {
 });
 
 describe("YouTubeEmbed player configuration", () => {
+  it("holds the file's own thumbnail over the frame until the player is ready", async () => {
+    const utils = render(
+      <YouTubeEmbed fileId="abc123456789" url={URL_UNDER_TEST} durationHint={600} />,
+    );
+    await waitFor(() => expect(lastOptions).not.toBeNull());
+
+    // YouTube's iframe is black until its poster is up; without this the
+    // page flashes on every open.
+    const poster = screen.getByTestId("player-poster");
+    expect(poster.getAttribute("src")).toBe("/api/files/abc123456789/thumbnail");
+    expect(poster.className).toContain("pointer-events-none");
+    expect(poster.getAttribute("data-covered")).toBe("true");
+
+    await act(async () => {
+      await lastOptions!.events.onReady({ target: player });
+    });
+    expect(screen.getByTestId("player-poster").getAttribute("data-covered")).toBe("false");
+    utils.unmount();
+  });
+
+  it("lets the frame go when the player reports an error instead", async () => {
+    const utils = render(
+      <YouTubeEmbed fileId="abc123456789" url={URL_UNDER_TEST} durationHint={600} />,
+    );
+    await waitFor(() => expect(lastOptions).not.toBeNull());
+    expect(screen.getByTestId("player-poster").getAttribute("data-covered")).toBe("true");
+
+    await act(async () => {
+      lastOptions!.events.onError({ data: 5 });
+    });
+    expect(screen.getByTestId("player-poster").getAttribute("data-covered")).toBe("false");
+    utils.unmount();
+  });
+
   it("turns off the YouTube chrome and forces inline playback", async () => {
     await mountPlayer();
     expect(lastOptions!.playerVars.controls).toBe(0);
