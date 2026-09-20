@@ -99,6 +99,7 @@ export default function YouTubeEmbed({
   durationHint,
   onEnded,
   mediaSessionMetadata,
+  posterUrl,
 }: LoftEmbedProps) {
   const videoId = extractYouTubeId(url);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -155,6 +156,9 @@ export default function YouTubeEmbed({
   // to stop treating downward travel as a dismiss for the duration, or
   // the drift that comes with a planted finger closes the frame.
   const [boosting, setBoosting] = useState(false);
+  // YouTube's iframe paints black until its own poster is up. The file's
+  // thumbnail stands in until then, so opening a video does not flash.
+  const [playerReady, setPlayerReady] = useState(false);
 
   // Which player UI is on screen. Switching rebuilds the iframe, since
   // playerVars are read once at construction and never again.
@@ -254,6 +258,7 @@ export default function YouTubeEmbed({
         // long gone — replaced by the iframe that has since been
         // destroyed — so reusing it would hand the API a detached node.
         host.replaceChildren();
+        setPlayerReady(false);
         const mount = document.createElement("div");
         mount.className = "h-full w-full";
         host.appendChild(mount);
@@ -284,6 +289,7 @@ export default function YouTubeEmbed({
           events: {
             onReady: async ({ target }) => {
               if (cancelled) return;
+              setPlayerReady(true);
               playerRef.current = target as YouTubePlayerLike & {
                 destroy(): void;
               };
@@ -336,6 +342,7 @@ export default function YouTubeEmbed({
             },
             onError: ({ data }) => {
               if (cancelled) return;
+              setPlayerReady(true);
               if (!YT_ERROR_EMBED_NOT_ALLOWED.has(data)) return;
               setEmbedRestricted(true);
               onMediaController?.(null);
@@ -496,6 +503,23 @@ export default function YouTubeEmbed({
         ref={hostRef}
         className="absolute inset-0 [&>iframe]:h-full [&>iframe]:w-full [&>iframe]:border-0"
       />
+
+      {/* Faded rather than removed: the iframe paints black for a frame
+          between the player reporting ready and its own poster going up.
+          The fade is on the way out only — on a rebuild the cover has to
+          be there before the frame goes black, not after. */}
+      {posterUrl && (
+        <img
+          src={posterUrl}
+          alt=""
+          aria-hidden="true"
+          data-testid="player-poster"
+          className={[
+            "pointer-events-none absolute inset-0 h-full w-full object-cover",
+            playerReady ? "opacity-0 transition-opacity duration-200" : "opacity-100",
+          ].join(" ")}
+        />
+      )}
 
       {/* In YouTube-UI mode the player draws its own controls, and ours
           would sit on top of them — including the gesture overlay,
