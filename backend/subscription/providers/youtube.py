@@ -65,6 +65,10 @@ _ATOM_NS = "{http://www.w3.org/2005/Atom}"
 _YT_NS = "{http://www.youtube.com/xml/schemas/2015}"
 
 
+class _ListingUnavailable(Exception):
+    """No source produced a listing for this channel."""
+
+
 _VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _CHANNEL_ID_RE = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
 _PLAYLIST_ID_RE = re.compile(r"^(PL|UU|FL|RD|OL|LL)[A-Za-z0-9_-]+$")
@@ -368,9 +372,19 @@ class YouTubeProvider:
                     f"UC... channel id; got {ref.ref!r}. SubscriptionManager "
                     f"must canonicalize handles before calling list_items."
                 )
-            if limit is None or limit <= _RSS_MAX_ITEMS:
-                return self._list_channel_via_rss(ref.ref, limit)
             url = f"https://www.youtube.com/channel/{ref.ref}/videos"
+            if limit is None or limit <= _RSS_MAX_ITEMS:
+                headers = self._list_channel_via_rss(ref.ref, limit)
+                if headers is not None:
+                    return headers
+                # A cron sync arrives with limit=None, which yt-dlp reads
+                # as "the channel's entire history".
+                headers = self._yt_dlp_headers(url, limit or _RSS_MAX_ITEMS)
+                if not headers:
+                    # Neither source produced a listing. Returning [] would
+                    # advance last_synced_at and clear the backoff.
+                    raise _ListingUnavailable(ref.ref)
+                return headers
             return self._yt_dlp_headers(url, limit)
 
         if ref.kind == REF_KIND_PLAYLIST:
@@ -381,13 +395,33 @@ class YouTubeProvider:
 
     def _list_channel_via_rss(
         self, channel_id: str, limit: int | None
-    ) -> list[ItemHeader]:
+    ) -> list[ItemHeader] | None:
+        """The feed's items, or None when the feed did not produce a listing.
+
+        An empty list means the feed answered and the channel has no
+        videos. The two must stay distinguishable: the caller falls back
+        to yt-dlp for None and accepts [] as the answer.
+        """
         url = (
             "https://www.youtube.com/feeds/videos.xml"
             f"?channel_id={channel_id}"
         )
-        body = _http_get_bytes(url)
-        root = ET.fromstring(body)
+        try:
+            body = _http_get_bytes(url)
+            root = ET.fromstring(body)
+        except Exception as exc:
+            logger.warning(
+                "RSS listing failed for %s (%s); falling back to yt-dlp",
+                channel_id, type(exc).__name__,
+            )
+            return None
+        if root.tag != f"{_ATOM_NS}feed":
+            logger.warning(
+                "RSS listing for %s answered with %s, not a feed; "
+                "falling back to yt-dlp",
+                channel_id, root.tag,
+            )
+            return None
         headers: list[ItemHeader] = []
         for entry in root.findall(f"{_ATOM_NS}entry"):
             vid_el = entry.find(f"{_YT_NS}videoId")

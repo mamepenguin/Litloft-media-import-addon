@@ -37,6 +37,7 @@ class _FakeWorker:
     accept: bool = True
     enqueued: list[tuple[int, str]] = field(default_factory=list)
     accept_per_id: dict[int, bool] = field(default_factory=dict)
+    on_accept: object = None
 
     async def enqueue_sync(
         self,
@@ -47,7 +48,23 @@ class _FakeWorker:
         item_id: str | None = None,
     ) -> bool:
         self.enqueued.append((subscription_id, kind))
-        return self.accept_per_id.get(subscription_id, self.accept)
+        accepted = self.accept_per_id.get(subscription_id, self.accept)
+        if accepted and self.on_accept is not None:
+            self.on_accept(subscription_id)
+        return accepted
+
+
+@dataclass
+class _ConsumingManager:
+    """Drops each id once it has been enqueued, as a successful sync does."""
+
+    pending: list[int] = field(default_factory=list)
+
+    def list_eligible_for_cron(self, now: datetime) -> list[int]:
+        return list(self.pending)
+
+    def consume(self, subscription_id: int) -> None:
+        self.pending.remove(subscription_id)
 
 
 def _build_scheduler(manager, worker):
@@ -99,6 +116,55 @@ class TestTickOnce:
         assert enqueued == 2
         # All three are still attempted — dedup is the worker's job.
         assert [sid for sid, _ in wkr.enqueued] == [1, 2, 3]
+
+    def test_sweep_stops_at_the_cap(self):
+        mgr = _FakeManager(default_eligible=[1, 2, 3, 4, 5])
+        wkr = _FakeWorker()
+        sched = _build_scheduler(mgr, wkr)
+        sched.MAX_ENQUEUE_PER_SWEEP = 2
+
+        async def _scenario():
+            return await sched.tick_once()
+
+        enqueued = asyncio.run(_scenario())
+        assert enqueued == 2
+        assert [sid for sid, _ in wkr.enqueued] == [1, 2]
+
+    def test_overflow_is_consumed_by_later_sweeps(self):
+        # cron_due holds no state, so a subscription the cap skipped is
+        # eligible again on the next sweep.
+        mgr = _ConsumingManager(pending=[1, 2, 3, 4, 5])
+        wkr = _FakeWorker(on_accept=lambda sid: mgr.consume(sid))
+        sched = _build_scheduler(mgr, wkr)
+        sched.MAX_ENQUEUE_PER_SWEEP = 2
+
+        async def _scenario():
+            return [await sched.tick_once() for _ in range(3)]
+
+        assert asyncio.run(_scenario()) == [2, 2, 1]
+        assert [sid for sid, _ in wkr.enqueued] == [1, 2, 3, 4, 5]
+
+    def test_rejected_enqueues_do_not_consume_capacity(self):
+        # A subscription already running is not new load, so it must not
+        # take one of the sweep's slots.
+        mgr = _FakeManager(default_eligible=[1, 2, 3, 4])
+        wkr = _FakeWorker(accept_per_id={1: False, 2: False})
+        sched = _build_scheduler(mgr, wkr)
+        sched.MAX_ENQUEUE_PER_SWEEP = 2
+
+        async def _scenario():
+            return await sched.tick_once()
+
+        enqueued = asyncio.run(_scenario())
+        assert enqueued == 2
+        assert [sid for sid, _ in wkr.enqueued] == [1, 2, 3, 4]
+
+    def test_shipped_cap(self):
+        from addons.media_import.subscription.scheduler import (
+            SubscriptionScheduler,
+        )
+
+        assert SubscriptionScheduler.MAX_ENQUEUE_PER_SWEEP == 3
 
     def test_explicit_now_is_passed_to_manager(self):
         mgr = _FakeManager(default_eligible=[])
