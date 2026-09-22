@@ -30,6 +30,7 @@ inserting the row, so the DB always stores ``UC...`` form.
 """
 from __future__ import annotations
 
+import http.client
 import logging
 import re
 import tempfile
@@ -377,7 +378,10 @@ class YouTubeProvider:
                 try:
                     return self._list_channel_via_rss(ref.ref, limit)
                 except (
-                    urllib.error.URLError, ET.ParseError, _FeedUnavailable
+                    OSError,
+                    http.client.HTTPException,
+                    ET.ParseError,
+                    _FeedUnavailable,
                 ) as exc:
                     logger.warning(
                         "RSS listing failed for %s (%s); falling back to yt-dlp",
@@ -385,7 +389,15 @@ class YouTubeProvider:
                     )
                     # A cron sync arrives with limit=None, which yt-dlp reads
                     # as "the channel's entire history".
-                    return self._yt_dlp_headers(url, limit or _RSS_MAX_ITEMS)
+                    headers = self._yt_dlp_headers(
+                        url, limit or _RSS_MAX_ITEMS
+                    )
+                    if not headers:
+                        # yt-dlp reports success with no entries for a consent
+                        # or bot-check page. Returning [] here would advance
+                        # last_synced_at and clear the backoff.
+                        raise exc
+                    return headers
             return self._yt_dlp_headers(url, limit)
 
         if ref.kind == REF_KIND_PLAYLIST:

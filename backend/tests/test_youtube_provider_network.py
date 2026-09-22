@@ -6,6 +6,7 @@ mocked here — provider tests should not hit the network or run yt-dlp.
 """
 from __future__ import annotations
 
+import http.client
 import urllib.error
 from pathlib import Path
 from unittest.mock import patch
@@ -104,6 +105,8 @@ class TestListItemsChannelLargeLimitFallback:
             {"id": "vid222222222", "title": "Twelve", "upload_date": None},
         ]
         with patch(
+            "addons.media_import.subscription.providers.youtube._http_get_bytes",
+        ) as mock_fetch, patch(
             "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
             return_value=flat_entries,
         ) as mock_flat:
@@ -111,8 +114,20 @@ class TestListItemsChannelLargeLimitFallback:
         # The fallback URL must point at the channel's videos tab.
         called_url, called_limit = mock_flat.call_args[0]
         assert "channel/UCabcdefghijklmnopqrstuv" in called_url
+        assert mock_fetch.call_count == 0
         assert called_limit == 50
         assert [i.item_id for i in items] == ["vid111111111", "vid222222222"]
+
+    def test_empty_backfill_is_a_legitimate_answer(
+        self, provider: YouTubeProvider
+    ) -> None:
+        # Nothing failed here, so there is no failure to re-raise.
+        ref = SubscriptionRef(kind=REF_KIND_CHANNEL, ref="UCabcdefghijklmnopqrstuv")
+        with patch(
+            "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
+            return_value=[],
+        ):
+            assert provider.list_items(ref, limit=50) == []
 
 
 class TestListItemsChannelRSSFallback:
@@ -226,6 +241,57 @@ class TestListItemsChannelRSSFallback:
             with pytest.raises(RuntimeError):
                 provider.list_items(self._ref(), limit=None)
 
+    def test_response_phase_failure_also_falls_back(
+        self, provider: YouTubeProvider
+    ) -> None:
+        # urllib wraps the connect phase in URLError; a body cut short
+        # after the status line arrives as http.client.IncompleteRead.
+        with patch(
+            "addons.media_import.subscription.providers.youtube._http_get_bytes",
+            side_effect=http.client.IncompleteRead(b"", 10),
+        ), patch(
+            "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
+            return_value=self._FLAT_ENTRIES,
+        ) as mock_flat:
+            items = provider.list_items(self._ref(), limit=None)
+
+        _, called_limit = mock_flat.call_args[0]
+        assert called_limit == 15
+        assert [i.item_id for i in items] == ["fb_vid_aaaa", "fb_vid_bbbb"]
+
+    def test_read_timeout_also_falls_back(
+        self, provider: YouTubeProvider
+    ) -> None:
+        with patch(
+            "addons.media_import.subscription.providers.youtube._http_get_bytes",
+            side_effect=TimeoutError("timed out"),
+        ), patch(
+            "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
+            return_value=self._FLAT_ENTRIES,
+        ) as mock_flat:
+            provider.list_items(self._ref(), limit=None)
+
+        assert mock_flat.call_count == 1
+
+    def test_empty_fallback_reraises_the_rss_failure(
+        self, provider: YouTubeProvider
+    ) -> None:
+        # yt-dlp served a consent or bot-check page reports success with no
+        # entries. Returning [] would advance last_synced_at and clear the
+        # cooldown, reporting a healthy subscription that imports nothing.
+        error = urllib.error.HTTPError(
+            "https://www.youtube.com/feeds/videos.xml", 404, "Not Found", {}, None
+        )
+        with patch(
+            "addons.media_import.subscription.providers.youtube._http_get_bytes",
+            side_effect=error,
+        ), patch(
+            "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
+            return_value=[],
+        ):
+            with pytest.raises(urllib.error.HTTPError):
+                provider.list_items(self._ref(), limit=None)
+
     def test_successful_rss_does_not_reach_yt_dlp(
         self, provider: YouTubeProvider
     ) -> None:
@@ -261,6 +327,18 @@ class TestListItemsPlaylist:
         assert "playlist?list=PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf" in called_url
         assert mock_fetch.call_count == 0
         assert [i.item_id for i in items] == ["p_vid_a_aaaa", "p_vid_b_bbbb"]
+
+    def test_empty_playlist_is_a_legitimate_answer(
+        self, provider: YouTubeProvider
+    ) -> None:
+        ref = SubscriptionRef(
+            kind=REF_KIND_PLAYLIST, ref="PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf"
+        )
+        with patch(
+            "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
+            return_value=[],
+        ):
+            assert provider.list_items(ref, limit=None) == []
 
 
 # ---- fetch_item ---------------------------------------------------
