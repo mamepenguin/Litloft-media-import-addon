@@ -86,6 +86,30 @@ class TestListItemsChannelViaRSS:
         assert len(items) == 1
         assert items[0].item_id == "abc12345678"
 
+    def test_fetch_runs_for_real_against_a_patched_opener(
+        self, provider: YouTubeProvider
+    ) -> None:
+        # The other tests patch _http_get_bytes, so nothing executes its
+        # body. Patch one layer lower so a defect inside it is visible.
+        ref = SubscriptionRef(kind=REF_KIND_CHANNEL, ref="UCabcdefghijklmnopqrstuv")
+        with patch(
+            "addons.media_import.subscription.providers.youtube"
+            "._youtube_opener.open",
+        ) as mock_open, patch(
+            "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
+        ) as mock_flat:
+            mock_open.return_value.__enter__.return_value.read.return_value = (
+                _RSS_SAMPLE
+            )
+            items = provider.list_items(ref, limit=None)
+
+        assert mock_flat.call_count == 0
+        assert [i.item_id for i in items] == ["abc12345678", "def12345678"]
+        assert mock_open.call_args[0][0] == (
+            "https://www.youtube.com/feeds/videos.xml"
+            "?channel_id=UCabcdefghijklmnopqrstuv"
+        )
+
     def test_rejects_non_canonical_channel_ref(
         self, provider: YouTubeProvider
     ) -> None:

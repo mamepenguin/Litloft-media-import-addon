@@ -411,12 +411,14 @@ class YouTubeProvider:
             root = ET.fromstring(body)
         except Exception as exc:
             logger.warning(
-                "RSS listing failed for %s (%s)", channel_id, type(exc).__name__
+                "RSS listing failed for %s (%s); falling back to yt-dlp",
+                channel_id, type(exc).__name__,
             )
             return None
         if root.tag != f"{_ATOM_NS}feed":
             logger.warning(
-                "RSS listing for %s answered with %s, not a feed",
+                "RSS listing for %s answered with %s, not a feed; "
+                "falling back to yt-dlp",
                 channel_id, root.tag,
             )
             return None
