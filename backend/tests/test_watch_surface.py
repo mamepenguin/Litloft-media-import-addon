@@ -239,7 +239,18 @@ class TestDisplayMode:
         assert subdb.count_surfaced_subscriptions(DRIVE) == 0
 
     def test_new_subscription_defaults_to_library(self, media_import_db):
-        sub_id = _seed_subscription(media_import_db, display_mode="library")
+        from addons.media_import.subscription import db as subdb
+
+        # display_mode deliberately omitted: this is the default under test.
+        sub_id = subdb.insert_subscription(
+            provider="fakeyt",
+            source_kind="channel",
+            source_ref="chan-default",
+            drive=DRIVE,
+            folder_path="",
+            cooldown_minutes=60,
+            include_no_transcript=False,
+        )
         db = media_import_db()
         try:
             row = db.execute(
