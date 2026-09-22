@@ -13,7 +13,10 @@ from unittest.mock import patch
 
 import pytest
 
-from addons.media_import.subscription.providers.youtube import YouTubeProvider
+from addons.media_import.subscription.providers.youtube import (
+    YouTubeProvider,
+    _ListingUnavailable,
+)
 from addons.media_import.subscription.registry import (
     ERROR_NO_TRANSCRIPT,
     ERROR_PERMANENT,
@@ -106,15 +109,17 @@ class TestListItemsChannelLargeLimitFallback:
         ]
         with patch(
             "addons.media_import.subscription.providers.youtube._http_get_bytes",
+            return_value=_RSS_SAMPLE,
         ) as mock_fetch, patch(
             "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
             return_value=flat_entries,
         ) as mock_flat:
             items = provider.list_items(ref, limit=50)
+
+        assert mock_fetch.call_count == 0
         # The fallback URL must point at the channel's videos tab.
         called_url, called_limit = mock_flat.call_args[0]
         assert "channel/UCabcdefghijklmnopqrstuv" in called_url
-        assert mock_fetch.call_count == 0
         assert called_limit == 50
         assert [i.item_id for i in items] == ["vid111111111", "vid222222222"]
 
@@ -273,7 +278,7 @@ class TestListItemsChannelRSSFallback:
 
         assert mock_flat.call_count == 1
 
-    def test_empty_fallback_reraises_the_rss_failure(
+    def test_empty_fallback_raises_rather_than_reporting_no_videos(
         self, provider: YouTubeProvider
     ) -> None:
         # yt-dlp served a consent or bot-check page reports success with no
@@ -288,9 +293,50 @@ class TestListItemsChannelRSSFallback:
         ), patch(
             "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
             return_value=[],
-        ):
-            with pytest.raises(urllib.error.HTTPError):
+        ) as mock_flat:
+            with pytest.raises(_ListingUnavailable):
                 provider.list_items(self._ref(), limit=None)
+
+        assert mock_flat.call_count == 1
+
+    def test_a_bug_after_the_parse_is_not_turned_into_a_fallback(
+        self, provider: YouTubeProvider
+    ) -> None:
+        # Only fetching and parsing are treated as "the feed did not
+        # answer". A defect in the code that maps entries must surface,
+        # not be logged as a transport failure and hidden behind yt-dlp.
+        with patch(
+            "addons.media_import.subscription.providers.youtube._http_get_bytes",
+            return_value=_RSS_SAMPLE,
+        ), patch(
+            "addons.media_import.subscription.providers.youtube.ItemHeader",
+            side_effect=RuntimeError("mapping is broken"),
+        ), patch(
+            "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
+        ) as mock_flat:
+            with pytest.raises(RuntimeError, match="mapping is broken"):
+                provider.list_items(self._ref(), limit=None)
+
+        assert mock_flat.call_count == 0
+
+    def test_empty_feed_is_answered_without_the_fallback(
+        self, provider: YouTubeProvider
+    ) -> None:
+        # A valid feed with no entries means the channel has no videos.
+        # That is an answer, not a failure.
+        empty_feed = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<feed xmlns="http://www.w3.org/2005/Atom"><title>T</title></feed>'
+        )
+        with patch(
+            "addons.media_import.subscription.providers.youtube._http_get_bytes",
+            return_value=empty_feed,
+        ), patch(
+            "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
+        ) as mock_flat:
+            assert provider.list_items(self._ref(), limit=None) == []
+
+        assert mock_flat.call_count == 0
 
     def test_successful_rss_does_not_reach_yt_dlp(
         self, provider: YouTubeProvider
