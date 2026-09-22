@@ -26,6 +26,9 @@ logger = logging.getLogger(__name__)
 class SubscriptionScheduler:
     SWEEP_INTERVAL_SECONDS: float = 60.0
     STARTUP_GRACE_SECONDS: float = 30.0
+    # Spreads a fleet that all came due at once, so the listing calls do
+    # not arrive as one burst. Overflow returns on the next sweep.
+    MAX_ENQUEUE_PER_SWEEP: int = 3
 
     def __init__(
         self,
@@ -74,6 +77,8 @@ class SubscriptionScheduler:
                     "scheduler: subscription %d enqueued for cron sync",
                     sub_id,
                 )
+                if enqueued >= self.MAX_ENQUEUE_PER_SWEEP:
+                    break
         return enqueued
 
     async def _run(self) -> None:

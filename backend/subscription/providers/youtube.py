@@ -65,6 +65,10 @@ _ATOM_NS = "{http://www.w3.org/2005/Atom}"
 _YT_NS = "{http://www.youtube.com/xml/schemas/2015}"
 
 
+class _FeedUnavailable(Exception):
+    """The feed endpoint answered with a document that is not a feed."""
+
+
 _VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _CHANNEL_ID_RE = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
 _PLAYLIST_ID_RE = re.compile(r"^(PL|UU|FL|RD|OL|LL)[A-Za-z0-9_-]+$")
@@ -368,9 +372,20 @@ class YouTubeProvider:
                     f"UC... channel id; got {ref.ref!r}. SubscriptionManager "
                     f"must canonicalize handles before calling list_items."
                 )
-            if limit is None or limit <= _RSS_MAX_ITEMS:
-                return self._list_channel_via_rss(ref.ref, limit)
             url = f"https://www.youtube.com/channel/{ref.ref}/videos"
+            if limit is None or limit <= _RSS_MAX_ITEMS:
+                try:
+                    return self._list_channel_via_rss(ref.ref, limit)
+                except (
+                    urllib.error.URLError, ET.ParseError, _FeedUnavailable
+                ) as exc:
+                    logger.warning(
+                        "RSS listing failed for %s (%s); falling back to yt-dlp",
+                        ref.ref, type(exc).__name__,
+                    )
+                    # A cron sync arrives with limit=None, which yt-dlp reads
+                    # as "the channel's entire history".
+                    return self._yt_dlp_headers(url, limit or _RSS_MAX_ITEMS)
             return self._yt_dlp_headers(url, limit)
 
         if ref.kind == REF_KIND_PLAYLIST:
@@ -388,6 +403,10 @@ class YouTubeProvider:
         )
         body = _http_get_bytes(url)
         root = ET.fromstring(body)
+        # An error page that happens to be well-formed XML would otherwise
+        # yield zero entries, which reads as "no new videos".
+        if root.tag != f"{_ATOM_NS}feed":
+            raise _FeedUnavailable(root.tag)
         headers: list[ItemHeader] = []
         for entry in root.findall(f"{_ATOM_NS}entry"):
             vid_el = entry.find(f"{_YT_NS}videoId")

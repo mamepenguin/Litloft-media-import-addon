@@ -832,6 +832,42 @@ class TestCronEligibility:
             datetime(2026, 5, 1, 14, 30, tzinfo=UTC)
         ) == [sub_id]
 
+    def test_longest_waiting_comes_first(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        # The scheduler takes a bounded prefix of this list, so a stable
+        # id order would keep serving the same few subscriptions.
+        from datetime import UTC, datetime
+
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        mgr = SubscriptionManager()
+        recent = _create_subscription(mgr, drive="d", folder="recent")
+        stale = _create_subscription(mgr, drive="d", folder="stale")
+        never = _create_subscription(mgr, drive="d", folder="never")
+
+        now = datetime(2026, 5, 1, 12, 0, 0, tzinfo=UTC)
+        db = media_import_db()
+        try:
+            for sub_id, synced in (
+                (recent, "2026-05-01T09:00:00+00:00"),
+                (stale, "2026-04-28T09:00:00+00:00"),
+            ):
+                db.execute(
+                    text(
+                        "UPDATE subscriptions SET last_synced_at = :t "
+                        "WHERE id = :id"
+                    ),
+                    {"t": synced, "id": sub_id},
+                )
+            db.commit()
+        finally:
+            db.close()
+
+        assert mgr.list_eligible_for_cron(now) == [never, stale, recent]
+
 
 class TestCooldownHelpers:
     def test_set_and_clear_cooldown_until_round_trip(

@@ -602,7 +602,7 @@ def load_eligible_cron_rows(
                 " cooldown_until "
                 "FROM subscriptions "
                 "WHERE is_enabled = 1 "
-                "ORDER BY id"
+                "ORDER BY last_synced_at IS NOT NULL, last_synced_at, id"
             )
         ).mappings().all()
     finally:

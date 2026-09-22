@@ -6,6 +6,7 @@ mocked here — provider tests should not hit the network or run yt-dlp.
 """
 from __future__ import annotations
 
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -114,6 +115,132 @@ class TestListItemsChannelLargeLimitFallback:
         assert [i.item_id for i in items] == ["vid111111111", "vid222222222"]
 
 
+class TestListItemsChannelRSSFallback:
+    """The RSS feed endpoint goes down for days at a time upstream, returning
+    404 or 500 for channels that exist. yt-dlp keeps working through it.
+    """
+
+    _FLAT_ENTRIES = [
+        {"id": "fb_vid_aaaa", "title": "Fallback A", "upload_date": "20260901"},
+        {"id": "fb_vid_bbbb", "title": "Fallback B", "upload_date": "20260902"},
+    ]
+
+    def _ref(self) -> SubscriptionRef:
+        return SubscriptionRef(
+            kind=REF_KIND_CHANNEL, ref="UCabcdefghijklmnopqrstuv"
+        )
+
+    def test_http_error_falls_back_to_yt_dlp_capped_at_rss_size(
+        self, provider: YouTubeProvider
+    ) -> None:
+        # A cron sync arrives with limit=None. Handing that to yt-dlp
+        # unchanged enumerates the channel's entire history.
+        error = urllib.error.HTTPError(
+            "https://www.youtube.com/feeds/videos.xml", 404, "Not Found", {}, None
+        )
+        with patch(
+            "addons.media_import.subscription.providers.youtube._http_get_bytes",
+            side_effect=error,
+        ), patch(
+            "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
+            return_value=self._FLAT_ENTRIES,
+        ) as mock_flat:
+            items = provider.list_items(self._ref(), limit=None)
+
+        called_url, called_limit = mock_flat.call_args[0]
+        assert called_url == (
+            "https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv/videos"
+        )
+        assert called_limit == 15
+        assert [i.item_id for i in items] == ["fb_vid_aaaa", "fb_vid_bbbb"]
+
+    def test_unparseable_body_falls_back_to_yt_dlp(
+        self, provider: YouTubeProvider
+    ) -> None:
+        # Google's error page, whose unquoted attribute values are not XML.
+        with patch(
+            "addons.media_import.subscription.providers.youtube._http_get_bytes",
+            return_value=(
+                b"<!DOCTYPE html>\n<html lang=en>\n  <meta charset=utf-8>\n"
+                b"  <title>Error 404 (Not Found)!!1</title>\n"
+            ),
+        ), patch(
+            "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
+            return_value=self._FLAT_ENTRIES,
+        ) as mock_flat:
+            items = provider.list_items(self._ref(), limit=None)
+
+        _, called_limit = mock_flat.call_args[0]
+        assert called_limit == 15
+        assert [i.item_id for i in items] == ["fb_vid_aaaa", "fb_vid_bbbb"]
+
+    def test_non_feed_document_falls_back_to_yt_dlp(
+        self, provider: YouTubeProvider
+    ) -> None:
+        # Well-formed XML with no Atom entries parses cleanly and yields an
+        # empty list, which is indistinguishable from "no new videos".
+        with patch(
+            "addons.media_import.subscription.providers.youtube._http_get_bytes",
+            return_value=b"<html><body><p>404.</p></body></html>",
+        ), patch(
+            "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
+            return_value=self._FLAT_ENTRIES,
+        ) as mock_flat:
+            items = provider.list_items(self._ref(), limit=None)
+
+        _, called_limit = mock_flat.call_args[0]
+        assert called_limit == 15
+        assert [i.item_id for i in items] == ["fb_vid_aaaa", "fb_vid_bbbb"]
+
+    def test_explicit_small_limit_survives_the_fallback(
+        self, provider: YouTubeProvider
+    ) -> None:
+        error = urllib.error.HTTPError(
+            "https://www.youtube.com/feeds/videos.xml", 500, "Server Error", {}, None
+        )
+        with patch(
+            "addons.media_import.subscription.providers.youtube._http_get_bytes",
+            side_effect=error,
+        ), patch(
+            "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
+            return_value=self._FLAT_ENTRIES,
+        ) as mock_flat:
+            provider.list_items(self._ref(), limit=5)
+
+        _, called_limit = mock_flat.call_args[0]
+        assert called_limit == 5
+
+    def test_both_paths_failing_raises(self, provider: YouTubeProvider) -> None:
+        # Swallowing this would be indistinguishable from "no new videos",
+        # and the cron backoff would never fire.
+        error = urllib.error.HTTPError(
+            "https://www.youtube.com/feeds/videos.xml", 404, "Not Found", {}, None
+        )
+        with patch(
+            "addons.media_import.subscription.providers.youtube._http_get_bytes",
+            side_effect=error,
+        ), patch(
+            "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
+            side_effect=RuntimeError("yt-dlp exploded"),
+        ):
+            with pytest.raises(RuntimeError):
+                provider.list_items(self._ref(), limit=None)
+
+    def test_successful_rss_does_not_reach_yt_dlp(
+        self, provider: YouTubeProvider
+    ) -> None:
+        with patch(
+            "addons.media_import.subscription.providers.youtube._http_get_bytes",
+            return_value=_RSS_SAMPLE,
+        ), patch(
+            "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
+        ) as mock_flat:
+            items = provider.list_items(self._ref(), limit=None)
+
+        assert mock_flat.call_count == 0
+        assert [i.item_id for i in items] == ["abc12345678", "def12345678"]
+
+
 class TestListItemsPlaylist:
     def test_playlist_uses_yt_dlp(self, provider: YouTubeProvider) -> None:
         ref = SubscriptionRef(
@@ -124,12 +251,15 @@ class TestListItemsPlaylist:
             {"id": "p_vid_b_bbbb", "title": "B", "upload_date": "20260102"},
         ]
         with patch(
+            "addons.media_import.subscription.providers.youtube._http_get_bytes",
+        ) as mock_fetch, patch(
             "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
             return_value=flat_entries,
         ) as mock_flat:
             items = provider.list_items(ref, limit=None)
         called_url, _ = mock_flat.call_args[0]
         assert "playlist?list=PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf" in called_url
+        assert mock_fetch.call_count == 0
         assert [i.item_id for i in items] == ["p_vid_a_aaaa", "p_vid_b_bbbb"]
 
 
