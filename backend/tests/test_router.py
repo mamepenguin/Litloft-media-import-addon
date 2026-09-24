@@ -342,6 +342,39 @@ class TestLinkDriveAccess:
         assert res.status_code == 400
         assert enqueued == []
 
+    @pytest.mark.parametrize("method,path", ENDPOINTS)
+    def test_absent_drive_header_returns_400(
+        self, client, media_import_db, enqueued, method, path
+    ) -> None:
+        _seed_loft(media_import_db, "fabsent001", "drv")
+        del client.headers["X-Lit-Drive"]
+
+        res = client.request(method, path.format(id="fabsent001"))
+
+        assert res.status_code == 400
+        assert enqueued == []
+
+    def test_percent_encoded_non_ascii_drive_is_decoded(
+        self, client, media_import_db, enqueued
+    ) -> None:
+        from urllib.parse import quote
+
+        _seed_loft(media_import_db, "fnonascii1", "動画")
+        headers = {"X-Lit-Drive": quote("動画")}
+
+        meta = client.get(
+            "/api/addons/media_import/link/fnonascii1/metadata",
+            headers=headers,
+        )
+        refresh = client.post(
+            "/api/addons/media_import/link/fnonascii1/refresh",
+            headers=headers,
+        )
+
+        assert meta.status_code == 200
+        assert refresh.status_code == 200
+        assert enqueued == [("fnonascii1", "https://x", "動画")]
+
     @pytest.mark.parametrize("state", ["deleted", "missing"])
     @pytest.mark.parametrize("method,path", ENDPOINTS)
     def test_inactive_file_returns_404(
