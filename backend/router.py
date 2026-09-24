@@ -112,10 +112,8 @@ def _scoped_drive(
     if not x_lit_drive:
         raise HTTPException(status_code=400, detail="Drive context required")
     drive = unquote(x_lit_drive)
-    try:
-        config.get_drive_path(drive)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Drive not found")
+    # Also the existence check: it answers an unknown drive exactly as a
+    # locked one. A separate lookup here would let a caller tell them apart.
     check_drive_access(drive, unlocked_groups)
     return drive
 

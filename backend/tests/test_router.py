@@ -97,24 +97,6 @@ class TestCreateLoftEndpoint:
         )
         assert res.status_code == 422
 
-    def test_rejects_unknown_drive(self, client, monkeypatch) -> None:
-        import app.config as config
-
-        def _raise(_name: str):
-            raise ValueError("unknown drive")
-
-        monkeypatch.setattr(config, "get_drive_path", _raise)
-
-        res = client.post(
-            "/api/addons/media_import/link",
-            json={
-                "url": "https://www.youtube.com/watch?v=abc",
-                "drive": "missing",
-                "folder_path": "",
-            },
-        )
-        assert res.status_code == 404
-
 
 class TestMetadataEndpoint:
     def test_returns_404_when_metadata_missing(self, client) -> None:
