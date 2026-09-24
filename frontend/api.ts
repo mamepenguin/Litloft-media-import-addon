@@ -63,18 +63,24 @@ export async function generateLoftStt(
 
 export async function getLoftMetadata(
   fileId: string,
+  drive: string,
 ): Promise<LoftMetadata | null> {
   const res = await fetch(`${BASE}/link/${fileId}/metadata`, {
     credentials: "include",
+    headers: driveHeaders(drive),
   });
   if (!res.ok) return null;
   return res.json();
 }
 
-export async function refreshLoft(fileId: string): Promise<void> {
+export async function refreshLoft(
+  fileId: string,
+  drive: string,
+): Promise<void> {
   await fetch(`${BASE}/link/${fileId}/refresh`, {
     method: "POST",
     credentials: "include",
+    headers: driveHeaders(drive),
   });
 }
 

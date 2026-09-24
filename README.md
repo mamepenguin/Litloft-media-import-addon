@@ -36,6 +36,8 @@ docker compose up -d --build
 | POST | /api/addons/media_import/link/{file_id}/refresh | メタデータ・字幕の再取得をキュー |
 | GET | /api/addons/media_import/watch | Watch 面の 1 レーン（`lane=regular\|feed`） |
 
+`/link` 系はすべて `X-Lit-Drive` ヘッダー（percent-encode したドライブ名）が必須。無ければ 400、ロック中のドライブや別ドライブのファイルを指すと 404 を返す。
+
 ## Watch 面
 
 ページは **Watch**（見る）と **Manage**（管理）の 2 ビューに分かれる。
