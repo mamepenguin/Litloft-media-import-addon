@@ -179,10 +179,37 @@ async def create_loft(
     return LoftCreateResponse(file_id=file_id, filename=filename)
 
 
+def _require_active_file_in_drive(db, file_id: str, scoped_drive: str) -> None:
+    """404 unless ``file_id`` is an active file on the scoped drive.
+
+    ``loft_metadata`` has no drive column, so the core ``File`` row is the
+    only thing that ties a metadata row to a drive.
+    """
+    from app.models import File, active_file_filter
+
+    found = (
+        db.query(File.id)
+        .filter(
+            File.id == file_id,
+            File.drive == scoped_drive,
+            active_file_filter(),
+        )
+        .first()
+    )
+    if not found:
+        raise HTTPException(status_code=404, detail="File not found")
+
+
 @router.get("/link/{file_id}/metadata", response_model=LoftMetadataResponse)
-async def get_loft_metadata(file_id: str) -> LoftMetadataResponse:
+async def get_loft_metadata(
+    file_id: str,
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
+) -> LoftMetadataResponse:
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
     db = SessionLocal()
     try:
+        _require_active_file_in_drive(db, file_id, scoped)
         row = db.execute(
             text("SELECT * FROM loft_metadata WHERE file_id = :file_id"),
             {"file_id": file_id},
@@ -195,11 +222,15 @@ async def get_loft_metadata(file_id: str) -> LoftMetadataResponse:
 
 
 @router.post("/link/{file_id}/refresh")
-async def refresh_loft(file_id: str) -> dict:
-    from app.models import File
-
+async def refresh_loft(
+    file_id: str,
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
+) -> dict:
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
     db = SessionLocal()
     try:
+        _require_active_file_in_drive(db, file_id, scoped)
         row = db.execute(
             text("SELECT url FROM loft_metadata WHERE file_id = :file_id"),
             {"file_id": file_id},
@@ -207,15 +238,10 @@ async def refresh_loft(file_id: str) -> dict:
         if not row:
             raise HTTPException(status_code=404, detail="Metadata not found")
         url = row["url"]
-
-        file_record = db.query(File).filter(File.id == file_id).first()
-        if not file_record:
-            raise HTTPException(status_code=404, detail="File not found")
-        drive = file_record.drive
     finally:
         db.close()
 
-    await loft_manager.enqueue_fetch(file_id, url, drive)
+    await loft_manager.enqueue_fetch(file_id, url, scoped)
     return {"status": "queued"}
 
 

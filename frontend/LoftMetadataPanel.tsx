@@ -30,16 +30,16 @@ export default function LoftMetadataPanel({
   >("idle");
 
   useEffect(() => {
-    getLoftMetadata(fileId).then(setMetadata);
-  }, [fileId]);
+    getLoftMetadata(fileId, drive).then(setMetadata);
+  }, [fileId, drive]);
 
   async function handleRefresh() {
     setRefreshing(true);
     try {
-      await refreshLoft(fileId);
+      await refreshLoft(fileId, drive);
       // TODO: replace polling with a WS event listener for the loft fetch.
       setTimeout(() => {
-        getLoftMetadata(fileId).then(setMetadata);
+        getLoftMetadata(fileId, drive).then(setMetadata);
         setRefreshing(false);
       }, 3000);
     } catch {

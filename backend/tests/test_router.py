@@ -222,6 +222,192 @@ class TestRefreshEndpoint:
         assert captured == [("frefresh01", "https://x", "drv")]
 
 
+def _seed_loft(
+    media_import_db,
+    file_id: str,
+    drive: str,
+    *,
+    deleted: bool = False,
+    missing: bool = False,
+) -> None:
+    from datetime import UTC, datetime
+
+    from app.models import File
+
+    now = datetime.now(UTC)
+    db = media_import_db()
+    try:
+        db.add(
+            File(
+                id=file_id,
+                filename=f"{file_id}.loft",
+                title=file_id,
+                drive=drive,
+                folder_path="",
+                file_path=f"{file_id}.loft",
+                file_size=1,
+                file_type="other",
+                mime_type="application/vnd.litloft.loft+json",
+                created_at=now,
+                updated_at=now,
+                deleted_at=now if deleted else None,
+                missing_since=now if missing else None,
+            )
+        )
+        db.commit()
+        db.execute(
+            text(
+                "INSERT INTO loft_metadata (file_id, provider, url) "
+                "VALUES (:id, 'youtube', 'https://x')"
+            ),
+            {"id": file_id},
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+class TestLinkDriveAccess:
+    """GET /metadata and POST /refresh must hold the drive boundary: a
+    file on a drive the caller cannot see, or on a drive other than the
+    scoped one, is indistinguishable from one that does not exist.
+    """
+
+    ENDPOINTS = [
+        ("GET", "/api/addons/media_import/link/{id}/metadata"),
+        ("POST", "/api/addons/media_import/link/{id}/refresh"),
+    ]
+
+    @pytest.fixture()
+    def enqueued(self):
+        from addons.media_import.router import loft_manager
+
+        captured: list[tuple] = []
+
+        async def _capture(*args, **_kw) -> None:
+            captured.append(args)
+
+        with patch.object(loft_manager, "enqueue_fetch", _capture):
+            yield captured
+
+    def _lock_drive(self, monkeypatch, locked_drive: str, group: str) -> None:
+        import app.config as config
+
+        monkeypatch.setattr(
+            config,
+            "get_drive_access_group",
+            lambda name: group if name == locked_drive else None,
+        )
+
+    @pytest.mark.parametrize("method,path", ENDPOINTS)
+    def test_locked_drive_returns_404(
+        self, client, media_import_db, monkeypatch, enqueued, method, path
+    ) -> None:
+        _seed_loft(media_import_db, "flocked001", "secret")
+        self._lock_drive(monkeypatch, "secret", "vip")
+
+        res = client.request(
+            method,
+            path.format(id="flocked001"),
+            headers={"X-Lit-Drive": "secret"},
+        )
+
+        assert res.status_code == 404
+        assert "youtube" not in res.text
+        assert enqueued == []
+
+    @pytest.mark.parametrize("method,path", ENDPOINTS)
+    def test_file_on_other_drive_returns_404(
+        self, client, media_import_db, enqueued, method, path
+    ) -> None:
+        _seed_loft(media_import_db, "fother0001", "other")
+
+        res = client.request(method, path.format(id="fother0001"))
+
+        assert res.status_code == 404
+        assert enqueued == []
+
+    @pytest.mark.parametrize("method,path", ENDPOINTS)
+    def test_missing_drive_header_returns_400(
+        self, client, media_import_db, enqueued, method, path
+    ) -> None:
+        _seed_loft(media_import_db, "fnohdr0001", "drv")
+
+        res = client.request(
+            method,
+            path.format(id="fnohdr0001"),
+            headers={"X-Lit-Drive": ""},
+        )
+
+        assert res.status_code == 400
+        assert enqueued == []
+
+    @pytest.mark.parametrize("method,path", ENDPOINTS)
+    def test_absent_drive_header_returns_400(
+        self, client, media_import_db, enqueued, method, path
+    ) -> None:
+        _seed_loft(media_import_db, "fabsent001", "drv")
+        del client.headers["X-Lit-Drive"]
+
+        res = client.request(method, path.format(id="fabsent001"))
+
+        assert res.status_code == 400
+        assert enqueued == []
+
+    def test_percent_encoded_non_ascii_drive_is_decoded(
+        self, client, media_import_db, enqueued
+    ) -> None:
+        from urllib.parse import quote
+
+        _seed_loft(media_import_db, "fnonascii1", "動画")
+        headers = {"X-Lit-Drive": quote("動画")}
+
+        meta = client.get(
+            "/api/addons/media_import/link/fnonascii1/metadata",
+            headers=headers,
+        )
+        refresh = client.post(
+            "/api/addons/media_import/link/fnonascii1/refresh",
+            headers=headers,
+        )
+
+        assert meta.status_code == 200
+        assert refresh.status_code == 200
+        assert enqueued == [("fnonascii1", "https://x", "動画")]
+
+    @pytest.mark.parametrize("state", ["deleted", "missing"])
+    @pytest.mark.parametrize("method,path", ENDPOINTS)
+    def test_inactive_file_returns_404(
+        self, client, media_import_db, enqueued, method, path, state
+    ) -> None:
+        _seed_loft(media_import_db, "finact0001", "drv", **{state: True})
+
+        res = client.request(method, path.format(id="finact0001"))
+
+        assert res.status_code == 404
+        assert enqueued == []
+
+    def test_metadata_on_unlocked_drive_returns_200(
+        self, client, media_import_db, monkeypatch
+    ) -> None:
+        from app.auth import get_unlocked_groups
+
+        _seed_loft(media_import_db, "fopen00001", "secret")
+        self._lock_drive(monkeypatch, "secret", "vip")
+        app = client.app
+        app.dependency_overrides[get_unlocked_groups] = lambda: ["vip"]
+        try:
+            res = client.get(
+                "/api/addons/media_import/link/fopen00001/metadata",
+                headers={"X-Lit-Drive": "secret"},
+            )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert res.status_code == 200
+        assert res.json()["provider"] == "youtube"
+
+
 class TestManualSttEndpoint:
     def test_queues_manual_stt(self, client) -> None:
         from addons.media_import.router import loft_manager
