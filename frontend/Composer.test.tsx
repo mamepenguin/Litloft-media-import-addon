@@ -189,6 +189,13 @@ describe("Composer submit dispatch", () => {
     });
 
     fireEvent.click(screen.getByTestId("composer-stt-mode-missing_captions"));
+    expect(screen.getByTestId("composer-stt-mode-missing_captions")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("group", { name: "Speech-to-text" })).toContainElement(
+      screen.getByTestId("composer-stt-mode-missing_captions"),
+    );
+    expect(
+      screen.getAllByRole("button", { pressed: true }).filter((b) => b.dataset.testid?.startsWith("composer-stt-mode-")),
+    ).toHaveLength(1);
     fireEvent.click(screen.getByTestId("composer-submit"));
 
     await waitFor(() => {
