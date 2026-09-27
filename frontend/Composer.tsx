@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 
 import { FolderPicker } from "@/components/FolderPicker";
+import { SegmentedControl } from "@/components/SegmentedControl";
 
 import {
   createLoft,
@@ -328,31 +329,20 @@ export default function Composer({
 
         {!showSubscriptionFields && (
           <div>
-            <label className="mb-1.5 block text-xs text-text-muted">
+            <span className="mb-1.5 block text-xs text-text-muted">
               {t("composer.sttMode.label")}
-            </label>
-            <div
-              className="grid grid-cols-3 rounded-xl border border-bg-border bg-bg-primary p-1"
-              data-testid="composer-stt-mode"
-            >
-              {STT_MODES.map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  onClick={() => {
-                    setSttMode(mode);
-                    window.localStorage.setItem(STT_MODE_STORAGE_KEY, mode);
-                  }}
-                  className={
-                    mode === sttMode
-                      ? "rounded-lg bg-bg-card px-2 py-1.5 text-xs font-medium text-text-primary shadow-sm"
-                      : "rounded-lg px-2 py-1.5 text-xs text-text-muted hover:text-text-primary"
-                  }
-                  data-testid={`composer-stt-mode-${mode}`}
-                >
-                  {sttModeLabels[mode]}
-                </button>
-              ))}
+            </span>
+            <div data-testid="composer-stt-mode">
+              <SegmentedControl
+                label={t("composer.sttMode.label")}
+                options={STT_MODES.map((mode) => ({ value: mode, label: sttModeLabels[mode] }))}
+                value={sttMode}
+                onChange={(mode) => {
+                  setSttMode(mode);
+                  window.localStorage.setItem(STT_MODE_STORAGE_KEY, mode);
+                }}
+                testIdPrefix="composer-stt-mode-"
+              />
             </div>
           </div>
         )}
