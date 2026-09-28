@@ -40,3 +40,11 @@ describe("loft link calls carry the drive scope", () => {
     expect(sentHeaders()).toEqual({ "X-Lit-Drive": "%E5%8B%95%E7%94%BB" });
   });
 });
+
+describe("refreshLoft", () => {
+  it("rejects when the refresh is refused", async () => {
+    fetchSpy.mockResolvedValueOnce(new Response("{}", { status: 404 }));
+
+    await expect(refreshLoft("f1", "d")).rejects.toThrow();
+  });
+});

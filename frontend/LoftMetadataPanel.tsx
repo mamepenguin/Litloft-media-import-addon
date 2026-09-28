@@ -1,8 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Captions, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Captions } from "lucide-react";
 import { useTranslations } from "next-intl";
+
+import { useToast } from "@/components/ToastProvider";
+import { useOfferFileAiAction } from "@/lib/fileAiActions";
+
 import {
   generateLoftStt,
   getLoftMetadata,
@@ -10,6 +14,13 @@ import {
   type LoftMetadata,
 } from "./api";
 import CaptionStatusBadge from "./CaptionStatusBadge";
+import { useLoftRefreshed } from "./loftRefresh";
+
+/** After intelligence's generators in the "AI" menu. */
+const TRANSCRIBE_ORDER = 100;
+
+/** How long a refresh is given before the panel reads the result. */
+const REFRESH_REREAD_MS = 3000;
 
 /**
  * LoftMetadataPanel — channel/description/captions-status panel rendered
@@ -23,95 +34,75 @@ export default function LoftMetadataPanel({
   drive: string;
 }) {
   const t = useTranslations("mediaImport.loftMetadata");
+  const toast = useToast();
   const [metadata, setMetadata] = useState<LoftMetadata | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [sttStatus, setSttStatus] = useState<
-    "idle" | "queued" | "already_queued" | "error"
-  >("idle");
+  const [queueingStt, setQueueingStt] = useState(false);
 
   useEffect(() => {
     getLoftMetadata(fileId, drive).then(setMetadata);
   }, [fileId, drive]);
 
+  const rereadLater = useCallback(() => {
+    // TODO: replace polling with a WS event listener for the loft fetch.
+    setTimeout(() => {
+      getLoftMetadata(fileId, drive).then(setMetadata);
+      setRefreshing(false);
+    }, REFRESH_REREAD_MS);
+  }, [fileId, drive]);
+
+  useLoftRefreshed(fileId, rereadLater);
+
   async function handleRefresh() {
     setRefreshing(true);
     try {
       await refreshLoft(fileId, drive);
-      // TODO: replace polling with a WS event listener for the loft fetch.
-      setTimeout(() => {
-        getLoftMetadata(fileId, drive).then(setMetadata);
-        setRefreshing(false);
-      }, 3000);
+      rereadLater();
     } catch {
       setRefreshing(false);
     }
   }
 
   async function handleGenerateStt() {
-    if (!drive) return;
-    setSttStatus("queued");
+    setQueueingStt(true);
     try {
       const result = await generateLoftStt(fileId, drive);
-      setSttStatus(result.status);
+      toast.success(t(`sttStatus.${result.status}`));
     } catch {
-      setSttStatus("error");
+      toast.error(t("sttStatus.error"));
+    } finally {
+      setQueueingStt(false);
     }
   }
 
-  if (!metadata) return null;
+  useOfferFileAiAction({
+    fileId,
+    id: "media_import.transcribe",
+    label: t("generateStt"),
+    icon: Captions,
+    order: TRANSCRIBE_ORDER,
+    active: Boolean(drive),
+    busy: queueingStt,
+    run: handleGenerateStt,
+  });
 
-  const sttStatusLabels = {
-    queued: t("sttStatus.queued"),
-    already_queued: t("sttStatus.already_queued"),
-    error: t("sttStatus.error"),
-  };
+  if (!metadata) return null;
 
   return (
     <>
-      <div className="mt-3 flex items-start gap-2">
-        <div className="min-w-0 flex-1 text-xs text-text-muted">
-          {metadata.channel && (
-            <span className="font-medium text-text-primary">
-              {metadata.channel}
-            </span>
-          )}
-          {metadata.published_at && <span> · {metadata.published_at}</span>}
-          {metadata.description && (
-            <p className="mt-1 line-clamp-3 whitespace-pre-wrap">
-              {metadata.description}
-            </p>
-          )}
-        </div>
-        <button
-          onClick={handleRefresh}
-          disabled={refreshing}
-          className="shrink-0 rounded-lg p-1.5 text-text-muted hover:bg-bg-card hover:text-text-primary disabled:opacity-50"
-          title={t("refresh")}
-        >
-          <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
-        </button>
-        <button
-          onClick={handleGenerateStt}
-          disabled={sttStatus === "queued" || sttStatus === "already_queued"}
-          className="shrink-0 rounded-lg p-1.5 text-text-muted hover:bg-bg-card hover:text-text-primary disabled:opacity-50"
-          title={t("generateStt")}
-          data-testid="loft-generate-stt"
-        >
-          <Captions size={14} />
-        </button>
+      <div className="mt-3 min-w-0 text-xs text-text-muted">
+        {metadata.channel && (
+          <span className="font-medium text-text-primary">
+            {metadata.channel}
+          </span>
+        )}
+        {metadata.published_at && <span> · {metadata.published_at}</span>}
+        {metadata.description && (
+          <p className="mt-1 line-clamp-3 whitespace-pre-wrap">
+            {metadata.description}
+          </p>
+        )}
       </div>
-      {sttStatus !== "idle" && (
-        <div
-          className={
-            sttStatus === "error"
-              ? "mt-2 text-xs text-danger"
-              : "mt-2 text-xs text-text-muted"
-          }
-          data-testid="loft-stt-status"
-        >
-          {sttStatusLabels[sttStatus]}
-        </div>
-      )}
       <CaptionStatusBadge
         metadata={metadata}
         onRetry={handleRefresh}
