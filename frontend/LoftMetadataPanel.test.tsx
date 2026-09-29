@@ -206,6 +206,8 @@ describe("LoftMetadataPanel", () => {
     );
     expect(refreshLoft).toHaveBeenCalledTimes(1);
     expect(refreshLoft).toHaveBeenCalledWith("f1", "d");
+    await act(async () => {});
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("reports a refused retry from the caption badge", async () => {
