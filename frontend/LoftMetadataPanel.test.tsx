@@ -68,15 +68,19 @@ function OfferReader() {
   return null;
 }
 
-function renderPanel() {
-  return render(
+function panel(fileId: string) {
+  return (
     <NextIntlClientProvider locale="en" messages={messages}>
       <ToastProvider>
         <OfferReader />
-        <LoftMetadataPanel fileId="f1" drive="d" />
+        <LoftMetadataPanel fileId={fileId} drive="d" />
       </ToastProvider>
-    </NextIntlClientProvider>,
+    </NextIntlClientProvider>
   );
+}
+
+function renderPanel(fileId = "f1") {
+  return render(panel(fileId));
 }
 
 function deferred<T>() {
@@ -228,42 +232,58 @@ describe("LoftMetadataPanel", () => {
   });
 
   describe("description", () => {
-    const TEXT = "Line one\nLine two\nLine three\nLine four";
-    let restore: (() => void) | null = null;
+    const LONG = "Line one\nLine two\nLine three\nLine four";
+    const LINE_PX = 15;
+    const observers = new Set<() => void>();
 
-    function layOut(scrollHeight: number, clientHeight: number) {
-      const proto = HTMLElement.prototype;
-      const saved = [
-        Object.getOwnPropertyDescriptor(proto, "scrollHeight"),
-        Object.getOwnPropertyDescriptor(proto, "clientHeight"),
-      ] as const;
-      Object.defineProperty(proto, "scrollHeight", {
-        configurable: true,
-        get: () => scrollHeight,
-      });
-      Object.defineProperty(proto, "clientHeight", {
-        configurable: true,
-        get: () => clientHeight,
-      });
-      restore = () => {
-        for (const [key, d] of [
-          ["scrollHeight", saved[0]],
-          ["clientHeight", saved[1]],
-        ] as const) {
-          if (d) Object.defineProperty(proto, key, d);
-          else delete (proto as unknown as Record<string, unknown>)[key];
-        }
-      };
+    // jsdom lays nothing out: a box is one line per newline, and the
+    // clamped box shows three of them.
+    function contentHeight(el: HTMLElement) {
+      return (el.textContent ?? "").split("\n").length * LINE_PX;
     }
 
-    afterEach(() => {
-      restore?.();
-      restore = null;
+    beforeEach(() => {
+      vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(
+        function (this: HTMLElement) {
+          return contentHeight(this);
+        },
+      );
+      vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
+        function (this: HTMLElement) {
+          const full = contentHeight(this);
+          return this.classList.contains("line-clamp-3")
+            ? Math.min(full, 3 * LINE_PX)
+            : full;
+        },
+      );
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          constructor(private readonly callback: () => void) {}
+          observe() {
+            observers.add(this.callback);
+          }
+          disconnect() {
+            observers.delete(this.callback);
+          }
+        },
+      );
     });
 
+    afterEach(() => {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+      observers.clear();
+    });
+
+    function resize() {
+      act(() => observers.forEach((measure) => measure()));
+    }
+
     it("leaves a description that fits as plain selectable text", async () => {
-      layOut(45, 45);
-      getLoftMetadata.mockResolvedValue(makeMetadata({ description: TEXT }));
+      getLoftMetadata.mockResolvedValue(
+        makeMetadata({ description: "Line one\nLine two\nLine three" }),
+      );
       renderPanel();
 
       const text = await screen.findByText(/Line one/);
@@ -273,8 +293,7 @@ describe("LoftMetadataPanel", () => {
     });
 
     it("keeps clipped lines unselectable until the viewer expands them", async () => {
-      layOut(120, 45);
-      getLoftMetadata.mockResolvedValue(makeMetadata({ description: TEXT }));
+      getLoftMetadata.mockResolvedValue(makeMetadata({ description: LONG }));
       renderPanel();
 
       const text = await screen.findByText(/Line one/);
@@ -291,8 +310,7 @@ describe("LoftMetadataPanel", () => {
     });
 
     it("expands from a tap on the clipped text, and collapses only from its button", async () => {
-      layOut(120, 45);
-      getLoftMetadata.mockResolvedValue(makeMetadata({ description: TEXT }));
+      getLoftMetadata.mockResolvedValue(makeMetadata({ description: LONG }));
       renderPanel();
 
       const text = await screen.findByText(/Line one/);
@@ -300,6 +318,7 @@ describe("LoftMetadataPanel", () => {
       expect(text).not.toHaveClass("line-clamp-3");
 
       fireEvent.click(text);
+      resize();
       expect(text).not.toHaveClass("line-clamp-3");
 
       fireEvent.click(screen.getByRole("button", { name: "Show less" }));
@@ -307,6 +326,51 @@ describe("LoftMetadataPanel", () => {
       expect(
         screen.getByRole("button", { name: "Show more" }),
       ).toHaveAttribute("aria-expanded", "false");
+    });
+
+    it("drops the toggle when a resize lets the text fit", async () => {
+      getLoftMetadata.mockResolvedValue(makeMetadata({ description: LONG }));
+      renderPanel();
+      const text = await screen.findByText(/Line one/);
+      await screen.findByRole("button", { name: "Show more" });
+
+      vi.spyOn(text, "scrollHeight", "get").mockReturnValue(3 * LINE_PX);
+      resize();
+
+      expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
+      expect(text).not.toHaveClass("select-none");
+    });
+
+    it("drops the toggle when a refresh brings a description that fits", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      getLoftMetadata.mockResolvedValue(makeMetadata({ description: LONG }));
+      renderPanel();
+      await screen.findByRole("button", { name: "Show more" });
+
+      getLoftMetadata.mockResolvedValue(makeMetadata({ description: "Short" }));
+      act(() => notifyLoftRefreshed("f1"));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+
+      const text = await screen.findByText("Short");
+      expect(text).not.toHaveClass("select-none");
+      expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
+    });
+
+    it("starts collapsed on another file", async () => {
+      getLoftMetadata.mockResolvedValue(makeMetadata({ description: LONG }));
+      const { rerender } = renderPanel("f1");
+      fireEvent.click(await screen.findByRole("button", { name: "Show more" }));
+      expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument();
+
+      rerender(panel("f2"));
+
+      await waitFor(() => expect(getLoftMetadata).toHaveBeenCalledWith("f2", "d"));
+      expect(
+        await screen.findByRole("button", { name: "Show more" }),
+      ).toHaveAttribute("aria-expanded", "false");
+      expect(screen.getByText(/Line one/)).toHaveClass("line-clamp-3", "select-none");
     });
   });
 });
