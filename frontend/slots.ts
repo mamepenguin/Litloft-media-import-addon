@@ -10,4 +10,5 @@ import "./players/registerMediaImportPlayers";
 export const slotComponents: Record<string, React.LazyExoticComponent<React.ComponentType<any>>> = {
   "loft-metadata": lazy(() => import("./LoftMetadataPanel")),
   "media-import-url": lazy(() => import("./ImportFromUrlMenuItem")),
+  "loft-refresh": lazy(() => import("./LoftRefreshMenuItem")),
 };

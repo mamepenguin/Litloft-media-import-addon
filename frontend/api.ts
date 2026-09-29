@@ -77,11 +77,12 @@ export async function refreshLoft(
   fileId: string,
   drive: string,
 ): Promise<void> {
-  await fetch(`${BASE}/link/${fileId}/refresh`, {
+  const res = await fetch(`${BASE}/link/${fileId}/refresh`, {
     method: "POST",
     credentials: "include",
     headers: driveHeaders(drive),
   });
+  if (!res.ok) throw new Error(`Error: ${res.status}`);
 }
 
 // ---- Subscriptions (Phase 2 Commit 5) ----

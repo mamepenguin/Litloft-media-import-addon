@@ -88,6 +88,8 @@
     },
     "loftMetadata": {
       "refresh": "Refresh metadata",
+      "refreshStarted": "Refreshing metadata",
+      "refreshFailed": "Failed to refresh metadata",
       "generateStt": "Generate captions with speech-to-text",
       "sttStatus": {
         "queued": "Speech-to-text queued",

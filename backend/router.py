@@ -90,6 +90,9 @@ ADDON_META = {
         "folder-actions-menu": [
             {"id": "media-import-url", "label": "Import from URL", "priority": 20},
         ],
+        "file-actions-menu": [
+            {"id": "loft-refresh", "label": "Refresh metadata", "priority": 20},
+        ],
     },
 }
 
