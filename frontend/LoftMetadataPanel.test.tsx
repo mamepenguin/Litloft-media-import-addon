@@ -133,7 +133,8 @@ describe("LoftMetadataPanel", () => {
 
       await act(async () => request.resolve({ status }));
       expect(offers[0].busy).toBe(false);
-      expect(await screen.findByText(toast)).toBeInTheDocument();
+      expect(await screen.findByRole("status")).toHaveTextContent(toast);
+      expect(screen.queryByRole("alert")).toBeNull();
     },
   );
 
@@ -150,9 +151,10 @@ describe("LoftMetadataPanel", () => {
     await act(async () => request.reject(new Error("500")));
 
     expect(offers[0].busy).toBe(false);
-    expect(
-      await screen.findByText("Failed to queue speech-to-text"),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Failed to queue speech-to-text",
+    );
+    expect(screen.queryByRole("status")).toBeNull();
   });
 
   it("re-reads its metadata after a refresh of this file only", async () => {
@@ -175,6 +177,20 @@ describe("LoftMetadataPanel", () => {
     });
     expect(getLoftMetadata).toHaveBeenCalledTimes(2);
     expect(await screen.findByText("Renamed")).toBeInTheDocument();
+  });
+
+  it("stops listening for refreshes once unmounted", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    getLoftMetadata.mockResolvedValue(makeMetadata());
+    const { unmount } = renderPanel();
+    await screen.findByText("Channel");
+    unmount();
+
+    act(() => notifyLoftRefreshed("f1"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(getLoftMetadata).toHaveBeenCalledTimes(1);
   });
 
   it("refreshes from the caption badge's retry", async () => {

@@ -75,8 +75,11 @@ describe("LoftRefreshMenuItem", () => {
     expect(onRequestClose).toHaveBeenCalledTimes(1);
     expect(refreshLoft).toHaveBeenCalledTimes(1);
     expect(refreshLoft).toHaveBeenCalledWith("f1", "d");
-    expect(await screen.findByText("Refreshing metadata")).toBeInTheDocument();
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Refreshing metadata",
+    );
     await waitFor(() => expect(onRefreshed).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("reports a failed refresh and does not tell the panel", async () => {
@@ -86,9 +89,12 @@ describe("LoftRefreshMenuItem", () => {
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Refresh metadata" }));
 
-    expect(
-      await screen.findByText("Failed to refresh metadata"),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Failed to refresh metadata",
+    );
+    expect(screen.getByRole("status")).not.toHaveTextContent(
+      "Failed to refresh metadata",
+    );
     expect(onRefreshed).not.toHaveBeenCalled();
   });
 });
