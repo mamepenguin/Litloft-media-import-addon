@@ -60,6 +60,7 @@ export default function LoftMetadataPanel({
       rereadLater();
     } catch {
       setRefreshing(false);
+      toast.error(t("refreshFailed"));
     }
   }
 

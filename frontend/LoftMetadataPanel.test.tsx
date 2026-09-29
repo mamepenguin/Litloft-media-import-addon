@@ -24,6 +24,7 @@ const messages = {
   mediaImport: {
     loftMetadata: {
       generateStt: "Generate captions with speech-to-text",
+      refreshFailed: "Failed to refresh metadata",
       sttStatus: {
         queued: "Speech-to-text queued",
         already_queued: "Speech-to-text is already queued",
@@ -205,5 +206,20 @@ describe("LoftMetadataPanel", () => {
     );
     expect(refreshLoft).toHaveBeenCalledTimes(1);
     expect(refreshLoft).toHaveBeenCalledWith("f1", "d");
+  });
+
+  it("reports a refused retry from the caption badge", async () => {
+    getLoftMetadata.mockResolvedValue(
+      makeMetadata({ captions_downloaded: false }),
+    );
+    refreshLoft.mockRejectedValue(new Error("404"));
+    renderPanel();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Failed to download captions/ }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Failed to refresh metadata",
+    );
   });
 });
