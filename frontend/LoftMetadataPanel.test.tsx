@@ -25,6 +25,8 @@ const messages = {
     loftMetadata: {
       generateStt: "Generate captions with speech-to-text",
       refreshFailed: "Failed to refresh metadata",
+      showMore: "Show more",
+      showLess: "Show less",
       sttStatus: {
         queued: "Speech-to-text queued",
         already_queued: "Speech-to-text is already queued",
@@ -223,5 +225,88 @@ describe("LoftMetadataPanel", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Failed to refresh metadata",
     );
+  });
+
+  describe("description", () => {
+    const TEXT = "Line one\nLine two\nLine three\nLine four";
+    let restore: (() => void) | null = null;
+
+    function layOut(scrollHeight: number, clientHeight: number) {
+      const proto = HTMLElement.prototype;
+      const saved = [
+        Object.getOwnPropertyDescriptor(proto, "scrollHeight"),
+        Object.getOwnPropertyDescriptor(proto, "clientHeight"),
+      ] as const;
+      Object.defineProperty(proto, "scrollHeight", {
+        configurable: true,
+        get: () => scrollHeight,
+      });
+      Object.defineProperty(proto, "clientHeight", {
+        configurable: true,
+        get: () => clientHeight,
+      });
+      restore = () => {
+        for (const [key, d] of [
+          ["scrollHeight", saved[0]],
+          ["clientHeight", saved[1]],
+        ] as const) {
+          if (d) Object.defineProperty(proto, key, d);
+          else delete (proto as unknown as Record<string, unknown>)[key];
+        }
+      };
+    }
+
+    afterEach(() => {
+      restore?.();
+      restore = null;
+    });
+
+    it("leaves a description that fits as plain selectable text", async () => {
+      layOut(45, 45);
+      getLoftMetadata.mockResolvedValue(makeMetadata({ description: TEXT }));
+      renderPanel();
+
+      const text = await screen.findByText(/Line one/);
+      expect(text).toHaveClass("line-clamp-3");
+      expect(text).not.toHaveClass("select-none");
+      expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
+    });
+
+    it("keeps clipped lines unselectable until the viewer expands them", async () => {
+      layOut(120, 45);
+      getLoftMetadata.mockResolvedValue(makeMetadata({ description: TEXT }));
+      renderPanel();
+
+      const text = await screen.findByText(/Line one/);
+      const more = await screen.findByRole("button", { name: "Show more" });
+      expect(more).toHaveAttribute("aria-expanded", "false");
+      expect(text).toHaveClass("line-clamp-3", "select-none");
+
+      fireEvent.click(more);
+
+      const less = screen.getByRole("button", { name: "Show less" });
+      expect(less).toHaveAttribute("aria-expanded", "true");
+      expect(text).not.toHaveClass("line-clamp-3");
+      expect(text).not.toHaveClass("select-none");
+    });
+
+    it("expands from a tap on the clipped text, and collapses only from its button", async () => {
+      layOut(120, 45);
+      getLoftMetadata.mockResolvedValue(makeMetadata({ description: TEXT }));
+      renderPanel();
+
+      const text = await screen.findByText(/Line one/);
+      fireEvent.click(text);
+      expect(text).not.toHaveClass("line-clamp-3");
+
+      fireEvent.click(text);
+      expect(text).not.toHaveClass("line-clamp-3");
+
+      fireEvent.click(screen.getByRole("button", { name: "Show less" }));
+      expect(text).toHaveClass("line-clamp-3", "select-none");
+      expect(
+        screen.getByRole("button", { name: "Show more" }),
+      ).toHaveAttribute("aria-expanded", "false");
+    });
   });
 });
