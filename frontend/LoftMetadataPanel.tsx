@@ -14,6 +14,7 @@ import {
   type LoftMetadata,
 } from "./api";
 import CaptionStatusBadge from "./CaptionStatusBadge";
+import LoftDescription from "./LoftDescription";
 import { useLoftRefreshed } from "./loftRefresh";
 
 /** After intelligence's generators in the "AI" menu. */
@@ -99,9 +100,7 @@ export default function LoftMetadataPanel({
         )}
         {metadata.published_at && <span> · {metadata.published_at}</span>}
         {metadata.description && (
-          <p className="mt-1 line-clamp-3 whitespace-pre-wrap">
-            {metadata.description}
-          </p>
+          <LoftDescription key={fileId} text={metadata.description} />
         )}
       </div>
       <CaptionStatusBadge

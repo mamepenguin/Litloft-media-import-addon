@@ -90,6 +90,8 @@
       "refresh": "メタデータを更新",
       "refreshStarted": "メタデータを更新しています",
       "refreshFailed": "メタデータの更新に失敗しました",
+      "showMore": "もっと見る",
+      "showLess": "一部を表示",
       "generateStt": "音声認識で字幕を生成",
       "sttStatus": {
         "queued": "文字起こしをキューに入れました",
