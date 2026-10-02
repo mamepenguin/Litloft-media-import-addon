@@ -184,7 +184,6 @@ export default function YouTubeEmbed({
     frameRef: wrapperRef,
     autoRotateEnabled: playing,
     suppressSwipe: boosting,
-    // Known only once the video has loaded; until then it asks for nothing.
     isLandscape: () => {
       const size = embedSize();
       return size !== null && size.width > size.height;
