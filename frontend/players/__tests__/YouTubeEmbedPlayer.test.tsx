@@ -524,6 +524,44 @@ describe("YouTubeEmbed fullscreen", () => {
   });
 });
 
+describe("YouTubeEmbed fullscreen in the iOS shell", () => {
+  let posted: unknown[];
+
+  beforeEach(() => {
+    posted = [];
+    const target = window as unknown as Record<string, unknown>;
+    target.__litloftShell = { version: 4 };
+    target.webkit = { messageHandlers: { litloft: { postMessage: (body: unknown) => posted.push(body) } } };
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query.includes("pointer: coarse"),
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }));
+  });
+
+  afterEach(() => {
+    const target = window as unknown as Record<string, unknown>;
+    delete target.webkit;
+    delete target.__litloftShell;
+    delete target.__litloft;
+  });
+
+  it.each([
+    ["a watch URL asks for landscape", URL_UNDER_TEST, true],
+    ["a Short does not", "https://www.youtube.com/shorts/dQw4w9WgXcQ", false],
+  ])("%s", async (_, url, landscape) => {
+    await mountPlayer(600, undefined, url);
+    await act(async () => {
+      pressShortcut("f");
+    });
+
+    expect(posted).toStrictEqual([
+      landscape ? { type: "page.immersive", active: true, landscape: true } : { type: "page.immersive", active: true },
+    ]);
+  });
+});
+
 describe("YouTubeEmbed watch progress", () => {
   it("does not stamp the ad's clock onto the resume point", async () => {
     vi.useFakeTimers();

@@ -91,6 +91,14 @@ export function extractYouTubeId(url: string): string | null {
   return match?.[1] ?? null;
 }
 
+function isShortsUrl(url: string): boolean {
+  try {
+    return new URL(url).pathname.startsWith("/shorts/");
+  } catch {
+    return false;
+  }
+}
+
 export default function YouTubeEmbed({
   fileId,
   url,
@@ -182,6 +190,7 @@ export default function YouTubeEmbed({
     frameRef: wrapperRef,
     autoRotateEnabled: playing,
     suppressSwipe: boosting,
+    isLandscape: () => !isShortsUrl(url),
   });
 
   const isInterrupted = useCallback(() => {
