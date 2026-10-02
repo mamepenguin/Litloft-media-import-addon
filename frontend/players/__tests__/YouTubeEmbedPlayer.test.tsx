@@ -524,6 +524,71 @@ describe("YouTubeEmbed fullscreen", () => {
   });
 });
 
+describe("YouTubeEmbed fullscreen in the iOS shell", () => {
+  let posted: unknown[];
+  const VIDEO_ID = "dQw4w9WgXcQ";
+
+  beforeEach(() => {
+    posted = [];
+    const target = window as unknown as Record<string, unknown>;
+    target.__litloftShell = { version: 4 };
+    target.webkit = { messageHandlers: { litloft: { postMessage: (body: unknown) => posted.push(body) } } };
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query.includes("pointer: coarse"),
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }));
+  });
+
+  afterEach(() => {
+    const target = window as unknown as Record<string, unknown>;
+    delete target.webkit;
+    delete target.__litloftShell;
+    delete target.__litloft;
+  });
+
+  function reportSize(videoId: string, width: number, height: number) {
+    act(() => {
+      (window as unknown as { __litloft: { receive(m: unknown): void } }).__litloft.receive({
+        type: "embed.size",
+        videoId,
+        width,
+        height,
+      });
+    });
+  }
+
+  async function pressFullscreen() {
+    await act(async () => {
+      pressShortcut("f");
+    });
+  }
+
+  it("asks for landscape once the shell has said the picture is landscape", async () => {
+    await mountPlayer();
+    reportSize(VIDEO_ID, 1280, 720);
+
+    await pressFullscreen();
+
+    expect(posted).toStrictEqual([{ type: "page.immersive", active: true, landscape: true }]);
+  });
+
+  it.each([
+    ["a portrait picture", () => reportSize(VIDEO_ID, 360, 640)],
+    ["a square picture", () => reportSize(VIDEO_ID, 480, 480)],
+    ["a picture that has not been measured yet", () => {}],
+    ["a size reported for another video", () => reportSize("M7lc1UVf-VE", 1280, 720)],
+  ])("does not ask for landscape for %s", async (_, report) => {
+    await mountPlayer();
+    report();
+
+    await pressFullscreen();
+
+    expect(posted).toStrictEqual([{ type: "page.immersive", active: true }]);
+  });
+});
+
 describe("YouTubeEmbed watch progress", () => {
   it("does not stamp the ad's clock onto the resume point", async () => {
     vi.useFakeTimers();

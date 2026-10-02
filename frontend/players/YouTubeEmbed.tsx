@@ -15,6 +15,7 @@ import { useShortcuts } from "@/hooks/useShortcuts";
 import type { LoftEmbedProps } from "@/components/loft/types";
 import MediaControls from "@/components/player/MediaControls";
 import { useFullscreen } from "@/components/player/hooks/useFullscreen";
+import { useEmbedVideoSize } from "@/lib/embedVideoSize";
 import { SystemFullscreenButton } from "@/components/player/NativeSettingsRows";
 import {
   requestEmbedFullscreen,
@@ -178,10 +179,16 @@ export default function YouTubeEmbed({
   // the bar's button, the `f` shortcut, double-click — goes through it,
   // so they cannot disagree about whether we are fullscreen and, on
   // iPhone, whether we are faking it.
+  const embedSize = useEmbedVideoSize(videoId);
   const fullscreen = useFullscreen({
     frameRef: wrapperRef,
     autoRotateEnabled: playing,
     suppressSwipe: boosting,
+    // Known only once the video has loaded; until then it asks for nothing.
+    isLandscape: () => {
+      const size = embedSize();
+      return size !== null && size.width > size.height;
+    },
   });
 
   const isInterrupted = useCallback(() => {
