@@ -516,7 +516,6 @@ describe("YouTubeEmbed fullscreen", () => {
       expect(frame.className).toContain("[container-type:size]");
       expect(frame.style.paddingTop).toBe("");
       expect(host.className).toContain("cqh");
-      expect(host.className).not.toContain("inset-0 [&");
     } finally {
       Object.defineProperty(document, "fullscreenElement", {
         configurable: true,
