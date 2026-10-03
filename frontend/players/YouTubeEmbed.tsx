@@ -29,6 +29,11 @@ const YT_STATE_ENDED = 0;
 const YT_STATE_PLAYING = 1;
 const YT_STATE_BUFFERING = 3;
 
+// YouTube sizes its cued picture and its zoom from the iframe's own box, so
+// a screen that is not 16:9 must not become that box.
+const FULLSCREEN_BOX =
+  "inset-0 m-auto [width:min(100cqw,calc(100cqh*16/9))] [height:min(100cqh,calc(100cqw*9/16))]";
+
 // The video owner disallows embedded playback. Both codes mean the same
 // thing (150 is a legacy duplicate of 101) and neither is affected by
 // playerVars.controls — the iframe is refused regardless of which skin
@@ -494,11 +499,10 @@ export default function YouTubeEmbed({
             // because re-parenting one reloads it.
             "fixed inset-0 z-50 rounded-none"
           : "relative w-full md:rounded-xl",
+        fullscreen.isFullscreen && "[container-type:size]",
       ].join(" ")}
-      // The aspect-ratio shim only applies in the page. Filling the
-      // viewport is the point of fullscreen, and the YouTube player
-      // letterboxes the video itself.
-      style={fullscreen.isPseudo ? undefined : { paddingTop: "56.25%" }}
+      // The aspect-ratio shim only applies in the page.
+      style={fullscreen.isFullscreen ? undefined : { paddingTop: "56.25%" }}
     >
       {/* React owns this host and nothing inside it. The API replaces
           the node it is given with an iframe, so anything React thought
@@ -507,7 +511,10 @@ export default function YouTubeEmbed({
           which is exactly what broke switching player UI. */}
       <div
         ref={hostRef}
-        className="absolute inset-0 [&>iframe]:h-full [&>iframe]:w-full [&>iframe]:border-0"
+        className={[
+          "absolute [&>iframe]:h-full [&>iframe]:w-full [&>iframe]:border-0",
+          fullscreen.isFullscreen ? FULLSCREEN_BOX : "inset-0",
+        ].join(" ")}
       />
 
       {/* Faded rather than removed: the iframe paints black for a frame
@@ -521,7 +528,8 @@ export default function YouTubeEmbed({
           aria-hidden="true"
           data-testid="player-poster"
           className={[
-            "pointer-events-none absolute inset-0 h-full w-full object-cover",
+            "pointer-events-none absolute object-cover",
+            fullscreen.isFullscreen ? FULLSCREEN_BOX : "inset-0 h-full w-full",
             playerReady ? "opacity-0 transition-opacity duration-200" : "opacity-100",
           ].join(" ")}
         />

@@ -483,6 +483,23 @@ describe("YouTubeEmbed fullscreen", () => {
     expect(frame.style.paddingTop).toBe("");
   });
 
+  it("sizes the iframe host to a 16:9 box only while fullscreen", async () => {
+    makeCoarseTouchDevice();
+    const { container } = await mountPlayer();
+    const frame = frameOf(container);
+    const host = frame.firstElementChild as HTMLElement;
+    expect(host.className).toContain("inset-0");
+    expect(host.className).not.toContain("cqh");
+    expect(frame.className).not.toContain("container-type");
+    await act(async () => {
+      pressShortcut("f");
+    });
+    expect(host.className).toContain("min(100cqw,calc(100cqh*16/9))");
+    expect(host.className).toContain("min(100cqh,calc(100cqw*9/16))");
+    expect(frame.className).toContain("[container-type:size]");
+    expect(frame.style.paddingTop).toBe("");
+  });
+
   it("shares one fullscreen state across the keyboard and the bar", async () => {
     makeCoarseTouchDevice();
     const { container } = await mountPlayer();
