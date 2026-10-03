@@ -485,6 +485,9 @@ export default function YouTubeEmbed({
   // Stand down in both states.
   const gesturesInteractive = !adActive && !ended;
 
+  // The pinned frame outlives isFullscreen while it animates out.
+  const boxed = fullscreen.isFullscreen || fullscreen.isPseudo;
+
   return (
     <div className="w-full">
     <div
@@ -499,10 +502,10 @@ export default function YouTubeEmbed({
             // because re-parenting one reloads it.
             "fixed inset-0 z-50 rounded-none"
           : "relative w-full md:rounded-xl",
-        fullscreen.isFullscreen && "[container-type:size]",
+        boxed && "[container-type:size]",
       ].join(" ")}
       // The aspect-ratio shim only applies in the page.
-      style={fullscreen.isFullscreen ? undefined : { paddingTop: "56.25%" }}
+      style={boxed ? undefined : { paddingTop: "56.25%" }}
     >
       {/* React owns this host and nothing inside it. The API replaces
           the node it is given with an iframe, so anything React thought
@@ -513,7 +516,7 @@ export default function YouTubeEmbed({
         ref={hostRef}
         className={[
           "absolute [&>iframe]:h-full [&>iframe]:w-full [&>iframe]:border-0",
-          fullscreen.isFullscreen ? FULLSCREEN_BOX : "inset-0",
+          boxed ? FULLSCREEN_BOX : "inset-0",
         ].join(" ")}
       />
 
@@ -529,7 +532,7 @@ export default function YouTubeEmbed({
           data-testid="player-poster"
           className={[
             "pointer-events-none absolute object-cover",
-            fullscreen.isFullscreen ? FULLSCREEN_BOX : "inset-0 h-full w-full",
+            boxed ? FULLSCREEN_BOX : "inset-0 h-full w-full",
             playerReady ? "opacity-0 transition-opacity duration-200" : "opacity-100",
           ].join(" ")}
         />

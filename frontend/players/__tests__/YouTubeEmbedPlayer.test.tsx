@@ -500,6 +500,62 @@ describe("YouTubeEmbed fullscreen", () => {
     expect(frame.style.paddingTop).toBe("");
   });
 
+  it("sizes the host and the poster to the same box in native fullscreen", async () => {
+    const { container } = await mountPlayer();
+    const frame = frameOf(container);
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      get: () => frame,
+    });
+    try {
+      await act(async () => {
+        document.dispatchEvent(new Event("fullscreenchange"));
+      });
+      const host = frame.firstElementChild as HTMLElement;
+      expect(frame.className).not.toContain("fixed");
+      expect(frame.className).toContain("[container-type:size]");
+      expect(frame.style.paddingTop).toBe("");
+      expect(host.className).toContain("cqh");
+      expect(host.className).not.toContain("inset-0 [&");
+    } finally {
+      Object.defineProperty(document, "fullscreenElement", {
+        configurable: true,
+        get: () => null,
+      });
+    }
+  });
+
+  it("draws the poster in the same box as the host in fullscreen", async () => {
+    const { container } = render(
+      <YouTubeEmbed
+        fileId="abc123456789"
+        url={URL_UNDER_TEST}
+        durationHint={600}
+        posterUrl="/fixtures/poster-under-test.png"
+      />,
+    );
+    await waitFor(() => expect(lastOptions).not.toBeNull());
+    const frame = frameOf(container);
+    const poster = screen.getByTestId("player-poster");
+    expect(poster.className).toContain("inset-0 h-full w-full");
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      get: () => frame,
+    });
+    try {
+      await act(async () => {
+        document.dispatchEvent(new Event("fullscreenchange"));
+      });
+      expect(poster.className).toContain("min(100cqw,calc(100cqh*16/9))");
+      expect(poster.className).not.toContain("h-full");
+    } finally {
+      Object.defineProperty(document, "fullscreenElement", {
+        configurable: true,
+        get: () => null,
+      });
+    }
+  });
+
   it("shares one fullscreen state across the keyboard and the bar", async () => {
     makeCoarseTouchDevice();
     const { container } = await mountPlayer();
