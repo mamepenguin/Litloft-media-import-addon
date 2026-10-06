@@ -40,14 +40,16 @@ def _sanitize_filename(title: str) -> str:
     """Remove characters that are invalid in filenames.
 
     Titles may arrive in NFD while the core stores NFC paths, so the name is
-    normalized before the cut, and a mark NFC could not compose is not left
-    without its base at the end.
+    normalized before the cut, and a cut never leaves a mark NFC could not
+    compose without its base at the end.
     """
     title = unicodedata.normalize("NFC", title)
     title = re.sub(r'[<>:"/\\|?*]', "_", title)
-    title = title.strip(". ")[:200]
-    while title and unicodedata.combining(title[-1]):
-        title = title[:-1]
+    title = title.strip(". ")
+    if len(title) > 200:
+        title = title[:200]
+        while title and unicodedata.combining(title[-1]):
+            title = title[:-1]
     return title if title else "untitled"
 
 

@@ -100,9 +100,11 @@ def _sanitize_filename(title: str) -> str:
 
     title = unicodedata.normalize("NFC", title)
     title = re.sub(r'[<>:"/\\|?*]', "_", title)
-    title = title.strip(". ")[:200]
-    while title and unicodedata.combining(title[-1]):
-        title = title[:-1]
+    title = title.strip(". ")
+    if len(title) > 200:
+        title = title[:200]
+        while title and unicodedata.combining(title[-1]):
+            title = title[:-1]
     return title if title else "untitled"
 
 

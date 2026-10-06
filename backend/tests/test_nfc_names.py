@@ -44,6 +44,8 @@ SANITIZE = [
     pytest.param(nfd("ガ" * 150), "ガ" * 150, id="nfd-longer-than-cut-nfc-shorter"),
     pytest.param(nfd("é" * 250), "é" * 200, id="nfd-truncated-after-nfc"),
     pytest.param(UNCOMPOSABLE_CUT, "a" * 198 + "q", id="no-orphan-combining-mark"),
+    pytest.param("a" * 197 + "q́́" + "tail", "a" * 197 + "q", id="every-orphaned-mark-dropped"),
+    pytest.param("ไม่", "ไม่", id="uncut-title-keeps-its-final-mark"),
 ]
 
 
@@ -59,7 +61,8 @@ def test_spec_addon_002_both_sanitizers_return_the_same_nfc_name(title, expected
     assert link == expected
     assert subscription == expected
     assert len(link) <= 200
-    assert unicodedata.combining(link[-1]) == 0
+    if len(nfc(title)) > 200:
+        assert unicodedata.combining(link[-1]) == 0
 
 
 @pytest.fixture()
@@ -149,6 +152,7 @@ def test_spec_addon_002_caption_download_leaves_stem_vtt(tmp_path, stem, lang_fi
     from addons.media_import.service import _download_captions_sync
 
     (tmp_path / lang_file).write_text(VTT, encoding="utf-8")
+    (tmp_path / (stem + ".loft")).write_text("{}", encoding="utf-8")
 
     with patch("yt_dlp.YoutubeDL", _FakeYDL):
         result = _download_captions_sync(
@@ -158,6 +162,59 @@ def test_spec_addon_002_caption_download_leaves_stem_vtt(tmp_path, stem, lang_fi
     assert result == (True, None)
     assert stem + ".vtt" in os.listdir(tmp_path)
     assert "hello" in (tmp_path / (stem + ".vtt")).read_text(encoding="utf-8")
+    assert (tmp_path / (stem + ".loft")).read_text(encoding="utf-8") == "{}"
+
+
+def test_spec_addon_002_caption_download_replaces_an_older_stem_vtt(tmp_path):
+    from addons.media_import.service import _download_captions_sync
+
+    (tmp_path / "Clip.vtt").write_text("WEBVTT\n\nold\n", encoding="utf-8")
+    (tmp_path / "Clip.zh.vtt").write_text(VTT, encoding="utf-8")
+
+    with patch("yt_dlp.YoutubeDL", _FakeYDL):
+        result = _download_captions_sync("https://example.com/v", tmp_path / "Clip", language="zh")
+
+    assert result == (True, None)
+    assert sorted(os.listdir(tmp_path)) == ["Clip.vtt"]
+    assert "hello" in (tmp_path / "Clip.vtt").read_text(encoding="utf-8")
+
+
+def test_spec_addon_002_sidecar_lookups_in_a_missing_folder_find_nothing(tmp_path):
+    from addons.media_import.service import _cleanup_stt_temp, _download_captions_sync
+
+    stem = tmp_path / "absent" / "Clip"
+    _cleanup_stt_temp(stem)
+    with patch("yt_dlp.YoutubeDL", _FakeYDL):
+        assert _download_captions_sync("https://example.com/v", stem) == (False, None)
+
+
+class _WritingYDL(_FakeYDL):
+    """Writes one file, as yt-dlp's audio download would, under the given name."""
+
+    produced: Path
+
+    def download(self, _urls):
+        self.produced.write_bytes(b"audio")
+        return 0
+
+
+@pytest.mark.parametrize("stem, produced", [
+    pytest.param(nfc(CAFE), nfd(CAFE) + ".stt_temp.webm.part", id="part-nfd"),
+    pytest.param("Live [2026] *best?", "Live [2026] *best?.stt_temp.webm", id="no-part-metacharacters"),
+])
+def test_spec_addon_002_stt_audio_download_moves_the_produced_file_into_place(
+    tmp_path, stem, produced
+):
+    from addons.media_import.service import _download_stt_audio_sync
+
+    _WritingYDL.produced = tmp_path / produced
+    (tmp_path / (stem + ".loft")).write_text("{}", encoding="utf-8")
+
+    with patch("yt_dlp.YoutubeDL", _WritingYDL):
+        final = _download_stt_audio_sync("https://example.com/v", tmp_path / stem)
+
+    assert Path(final).name == stem + ".stt_temp.m4a"
+    assert sorted(os.listdir(tmp_path)) == sorted([stem + ".loft", stem + ".stt_temp.m4a"])
 
 
 @pytest.mark.parametrize("stem, on_disk_stem", [
@@ -183,13 +240,17 @@ def test_spec_addon_002_stale_cleanup_matches_nfd_temp_and_keeps_young_ones(
     from app.models import File
     from addons.media_import.service import _cleanup_stale_stt_temp_files
 
-    (drive_path / (nfc(CAFE) + ".loft")).write_text("{}", encoding="utf-8")
+    loft = drive_path / (nfc(CAFE) + ".loft")
+    loft.write_text("{}", encoding="utf-8")
+    vtt = drive_path / (nfc(CAFE) + ".vtt")
+    vtt.write_text(VTT, encoding="utf-8")
     old = drive_path / (nfd(CAFE) + ".stt_temp.m4a")
     young = drive_path / (nfd(CAFE) + ".stt_temp.webm.part")
     old.write_bytes(b"audio")
     young.write_bytes(b"audio")
     long_ago = 946684800
-    os.utime(old, (long_ago, long_ago))
+    for aged in (old, loft, vtt):
+        os.utime(aged, (long_ago, long_ago))
     an_hour_ago = time.time() - 3600
     os.utime(young, (an_hour_ago, an_hour_ago))
 
@@ -213,4 +274,4 @@ def test_spec_addon_002_stale_cleanup_matches_nfd_temp_and_keeps_young_ones(
         db.close()
 
     assert _cleanup_stale_stt_temp_files() == 1
-    assert sorted(os.listdir(drive_path)) == sorted([nfc(CAFE) + ".loft", young.name])
+    assert sorted(os.listdir(drive_path)) == sorted([loft.name, vtt.name, young.name])
