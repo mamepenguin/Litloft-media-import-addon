@@ -22,6 +22,7 @@ from app.services.chapters import normalise_chapters, replace_chapters
 from app.services.hash import compute_file_hash
 from app.services.provider_registry import detect_provider
 from app.services.scanner import register_single_file
+from app.services.sidecar_match import match_siblings
 from sqlalchemy import text
 
 from app.services import event_hooks
@@ -36,10 +37,32 @@ _STT_TEMP_MAX_AGE = timedelta(hours=24)
 
 
 def _sanitize_filename(title: str) -> str:
-    """Remove characters that are invalid in filenames."""
+    """Remove characters that are invalid in filenames.
+
+    Titles may arrive in NFD while the core stores NFC paths, so the name is
+    normalized before the cut, and a cut never leaves a mark NFC could not
+    compose without its base at the end.
+    """
+    title = unicodedata.normalize("NFC", title)
     title = re.sub(r'[<>:"/\\|?*]', "_", title)
     title = title.strip(". ")
-    return title[:200] if title else "untitled"
+    if len(title) > 200:
+        title = title[:200]
+        while title and unicodedata.combining(title[-1]):
+            title = title[:-1]
+    return title if title else "untitled"
+
+
+def _siblings(parent: Path, stem_name: str, rest_pattern: str) -> list[Path]:
+    """Files beside ``stem_name``; a folder that cannot be listed holds none."""
+    try:
+        return match_siblings(parent, stem_name, rest_pattern)
+    except OSError:
+        return []
+
+
+def _same_name(a: str, b: str) -> bool:
+    return unicodedata.normalize("NFC", a) == unicodedata.normalize("NFC", b)
 
 
 def _extract_title_sync(url: str) -> str:
@@ -232,15 +255,15 @@ def _download_captions_sync(
     except Exception as exc:
         return False, _classify_caption_error(str(exc))
 
-    candidates = sorted(parent.glob(f"{stem_name}.*.vtt"))
+    candidates = _siblings(parent, stem_name, ".*.vtt")
     if not candidates:
         return False, None
 
     best = candidates[0]
-    if best.name != vtt_path.name:
+    if not _same_name(best.name, vtt_path.name):
         best.rename(vtt_path)
         for c in candidates[1:]:
-            if c.exists() and c != vtt_path:
+            if c.exists() and not _same_name(c.name, vtt_path.name):
                 c.unlink()
 
     if vtt_path.exists():
@@ -256,7 +279,7 @@ def _stt_temp_path(output_stem: Path) -> Path:
 def _cleanup_stt_temp(output_stem: Path) -> None:
     parent = output_stem.parent
     stem_name = output_stem.name
-    for path in parent.glob(f"{stem_name}.stt_temp.*"):
+    for path in _siblings(parent, stem_name, ".stt_temp.*"):
         try:
             if path.is_file():
                 path.unlink()
@@ -310,12 +333,12 @@ def _download_stt_audio_sync(url: str, output_stem: Path) -> Path:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
-        candidates = sorted(parent.glob(f"{stem_name}.stt_temp.*.part"))
+        candidates = _siblings(parent, stem_name, ".stt_temp.*.part")
         if not candidates:
-            candidates = sorted(parent.glob(f"{stem_name}.stt_temp.*"))
+            candidates = _siblings(parent, stem_name, ".stt_temp.*")
         candidates = [
             p for p in candidates
-            if p.is_file() and p.name != final_path.name
+            if p.is_file() and not _same_name(p.name, final_path.name)
         ]
         if not candidates:
             raise RuntimeError("yt-dlp did not produce STT audio")
@@ -372,7 +395,7 @@ def _cleanup_stale_stt_temp_files() -> int:
         try:
             loft_path = _resolve_drive_file_path(row["drive"], row["file_path"])
             output_stem = loft_path.with_suffix("")
-            candidates = list(output_stem.parent.glob(f"{output_stem.name}.stt_temp.*"))
+            candidates = _siblings(output_stem.parent, output_stem.name, ".stt_temp.*")
         except Exception:
             continue
         for path in candidates:

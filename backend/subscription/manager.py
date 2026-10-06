@@ -96,10 +96,16 @@ def _resolve_channel_id_via_yt_dlp(url: str) -> str | None:
 def _sanitize_filename(title: str) -> str:
     """Mirror service.py — kept local to avoid a cross-module import cycle."""
     import re
+    import unicodedata
 
+    title = unicodedata.normalize("NFC", title)
     title = re.sub(r'[<>:"/\\|?*]', "_", title)
     title = title.strip(". ")
-    return title[:200] if title else "untitled"
+    if len(title) > 200:
+        title = title[:200]
+        while title and unicodedata.combining(title[-1]):
+            title = title[:-1]
+    return title if title else "untitled"
 
 
 def _allocate_loft_path(
