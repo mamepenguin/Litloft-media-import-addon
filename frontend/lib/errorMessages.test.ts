@@ -38,10 +38,6 @@ describe("normalizeErrorKind", () => {
 });
 
 describe("isRetryable", () => {
-  it("returns false for permanent failures", () => {
-    expect(isRetryable("permanent")).toBe(false);
-  });
-
   it("returns false for user-issued dismissals", () => {
     expect(isRetryable("dismissed")).toBe(false);
   });
@@ -50,6 +46,7 @@ describe("isRetryable", () => {
     expect(isRetryable("rate_limited")).toBe(true);
     expect(isRetryable("no_transcript")).toBe(true);
     expect(isRetryable("path_conflict")).toBe(true);
+    expect(isRetryable("permanent")).toBe(true);
   });
 
   it("returns true when error_kind is null (legacy rows without classification)", () => {

@@ -16,6 +16,7 @@ import {
 } from "./api";
 import SubscriptionCard from "./SubscriptionCard";
 import SubscriptionDetailPanel from "./SubscriptionDetailPanel";
+import { needsAttention } from "./lib/errorMessages";
 
 type Filter = "all" | "channel" | "playlist" | "attention" | "paused";
 
@@ -239,7 +240,7 @@ function summariseVideos(videos: SubscriptionVideo[]): {
   let failed = 0;
   for (const v of videos) {
     if (v.status === "imported") imported++;
-    else if (v.status === "failed" && v.error_kind !== "dismissed") failed++;
+    else if (needsAttention(v)) failed++;
   }
   return { imported, failed };
 }

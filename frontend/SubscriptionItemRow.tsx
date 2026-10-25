@@ -19,10 +19,9 @@ interface Props {
 /**
  * One row in the items list inside the subscription detail panel.
  *
- * Shows the imported video's title (sourced from loft_metadata via the
- * server-side JOIN) instead of the raw provider item id. Falls back to
- * a localized "untitled video" placeholder for items that never produced
- * a .loft (e.g. permanent failures before allocation). The provider id
+ * Shows the item's title (the imported file's name, else the title the
+ * listing gave) instead of the raw provider item id, falling back to a
+ * localized "untitled video" placeholder. The provider id
  * itself stays out of the visible UI; if a developer needs it it lives
  * on the row's data-testid for inspection.
  */
@@ -50,9 +49,13 @@ export default function SubscriptionItemRow({
   const statusBg =
     video.status === "imported"
       ? "bg-accent-teal/15 text-accent-teal"
-      : video.status === "failed"
-        ? "bg-danger/10 text-danger"
-        : "bg-accent-amber/15 text-accent-amber";
+      : video.status !== "failed" ||
+          errorKind === "retry_pending" ||
+          errorKind === "upcoming"
+        ? "bg-accent-amber/15 text-accent-amber"
+        : errorKind === "permanent"
+          ? "bg-bg-elevated text-text-muted"
+          : "bg-danger/10 text-danger";
 
   const statusLabel =
     video.status === "imported"
@@ -88,6 +91,17 @@ export default function SubscriptionItemRow({
           </p>
         )}
       </div>
+      {video.status === "failed" && video.source_url && (
+        <a
+          href={video.source_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="shrink-0 rounded-full p-1.5 text-text-muted hover:bg-bg-elevated hover:text-text-primary"
+          aria-label={tItem("openSource")}
+        >
+          <ExternalLink size={14} />
+        </a>
+      )}
       {video.status === "imported" && video.file_id && (
         <button
           type="button"

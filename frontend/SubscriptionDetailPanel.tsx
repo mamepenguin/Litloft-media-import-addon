@@ -22,6 +22,7 @@ import {
 import ConflictResolveDialog from "./ConflictResolveDialog";
 import DisplayModeField from "./DisplayModeField";
 import SubscriptionItemRow from "./SubscriptionItemRow";
+import { needsAttention } from "./lib/errorMessages";
 import SubscriptionStatusPill, {
   deriveStatus,
 } from "./SubscriptionStatusPill";
@@ -70,6 +71,7 @@ export default function SubscriptionDetailPanel({
   const [backfillCount, setBackfillCount] = useState(15);
   const [backfilling, setBackfilling] = useState(false);
   const [backfillMessage, setBackfillMessage] = useState<string | null>(null);
+  const [rateLimited, setRateLimited] = useState(false);
 
   const completedEvent = useWebSocket(
     "media_import.subscription.sync_completed",
@@ -115,6 +117,7 @@ export default function SubscriptionDetailPanel({
   useEffect(() => {
     if (!completedEvent) return;
     if (completedEvent.data?.subscription_id !== subscription.id) return;
+    setRateLimited(completedEvent.data?.rate_limited === true);
     loadVideos();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [completedEvent, subscription.id]);
@@ -229,8 +232,14 @@ export default function SubscriptionDetailPanel({
     }
   }
 
-  const failed = videos.filter(
-    (v) => v.status === "failed" && v.error_kind !== "dismissed",
+  const failed = videos.filter(needsAttention);
+  const retryingVideos = videos.filter(
+    (v) =>
+      v.status === "failed" &&
+      (v.error_kind === "retry_pending" || v.error_kind === "upcoming"),
+  );
+  const unavailable = videos.filter(
+    (v) => v.status === "failed" && v.error_kind === "permanent",
   );
   const imported = videos.filter((v) => v.status === "imported");
   const dismissed = videos.filter(
@@ -238,6 +247,20 @@ export default function SubscriptionDetailPanel({
   );
 
   const status = deriveStatus(subscription, failed.length);
+
+  function renderActionableRow(v: SubscriptionVideo) {
+    return (
+      <SubscriptionItemRow
+        key={v.item_id}
+        video={v}
+        retrying={retrying.has(v.item_id)}
+        dismissing={dismissing.has(v.item_id)}
+        onRetry={() => handleRetry(v.item_id)}
+        onResolveConflict={() => setConflictItem(v.item_id)}
+        onDismiss={() => handleDismiss(v.item_id)}
+      />
+    );
+  }
   const importedCount = imported.length;
   const displayTitle =
     subscription.display_title || subscription.source_ref;
@@ -470,6 +493,14 @@ export default function SubscriptionDetailPanel({
           <h3 className="mb-2 text-[11px] font-semibold uppercase text-text-muted">
             {t("items.heading")}
           </h3>
+          {rateLimited && (
+            <div
+              className="mb-2 rounded-2xl bg-danger/10 px-3 py-2 text-xs text-danger"
+              data-testid="rate-limit-notice"
+            >
+              {t("items.rateLimited")}
+            </div>
+          )}
           {loadingVideos ? (
             <div className="flex items-center gap-2 text-xs text-text-muted">
               <Loader2 size={12} className="animate-spin" />
@@ -485,17 +516,27 @@ export default function SubscriptionDetailPanel({
                     {t("items.groupAttention", { count: failed.length })}
                   </div>
                   <ul className="divide-y divide-bg-border">
-                    {failed.map((v) => (
-                      <SubscriptionItemRow
-                        key={v.item_id}
-                        video={v}
-                        retrying={retrying.has(v.item_id)}
-                        dismissing={dismissing.has(v.item_id)}
-                        onRetry={() => handleRetry(v.item_id)}
-                        onResolveConflict={() => setConflictItem(v.item_id)}
-                        onDismiss={() => handleDismiss(v.item_id)}
-                      />
-                    ))}
+                    {failed.map(renderActionableRow)}
+                  </ul>
+                </div>
+              )}
+              {retryingVideos.length > 0 && (
+                <div data-testid="items-retrying-group">
+                  <div className="mt-3 px-5 pb-1 text-[11px] font-semibold uppercase text-text-muted">
+                    {t("items.groupRetrying", { count: retryingVideos.length })}
+                  </div>
+                  <ul className="divide-y divide-bg-border">
+                    {retryingVideos.map(renderActionableRow)}
+                  </ul>
+                </div>
+              )}
+              {unavailable.length > 0 && (
+                <div data-testid="items-unavailable-group">
+                  <div className="mt-3 px-5 pb-1 text-[11px] font-semibold uppercase text-text-muted">
+                    {t("items.groupUnavailable", { count: unavailable.length })}
+                  </div>
+                  <ul className="divide-y divide-bg-border">
+                    {unavailable.map(renderActionableRow)}
                   </ul>
                 </div>
               )}

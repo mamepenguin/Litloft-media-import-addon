@@ -172,12 +172,15 @@
         "loading": "Loading...",
         "empty": "No items yet. Run a sync.",
         "groupAttention": "Needs attention ({count})",
+        "groupRetrying": "Retrying ({count})",
+        "groupUnavailable": "Unavailable ({count})",
         "groupImported": "Imported ({count})",
         "groupSkipped": "Skipped ({count})",
         "backfill": "Fetch more",
         "backfilling": "Queuing...",
         "backfillQueued": "Queued",
-        "backfillFailed": "Failed to queue"
+        "backfillFailed": "Failed to queue",
+        "rateLimited": "YouTube is limiting requests for now. Try again later."
       },
       "danger": {
         "heading": "Danger zone",
@@ -202,7 +205,8 @@
       "openFile": "Open file",
       "retry": "Retry",
       "dismiss": "Ignore",
-      "resolveConflict": "Resolve…"
+      "resolveConflict": "Resolve…",
+      "openSource": "Open the source page"
     },
     "errorKind": {
       "rate_limited": {
@@ -211,7 +215,7 @@
       },
       "permanent": {
         "label": "Unavailable",
-        "hint": "Likely private, removed, or region-locked."
+        "hint": "Members-only, age-restricted, private or removed; cannot be fetched."
       },
       "path_conflict": {
         "label": "Path conflict",
@@ -232,6 +236,14 @@
       "unknown": {
         "label": "Failed",
         "hint": "Unknown error. You can retry."
+      },
+      "retry_pending": {
+        "label": "Retrying",
+        "hint": "Will be tried again on the next sync."
+      },
+      "upcoming": {
+        "label": "Not started",
+        "hint": "Will be imported once the live stream or premiere starts."
       }
     },
     "conflict": {
