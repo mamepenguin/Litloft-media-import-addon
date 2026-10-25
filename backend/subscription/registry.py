@@ -37,6 +37,32 @@ ERROR_PATH_CONFLICT = "path_conflict"
 # permanent decision (no retry button surfaces) without polluting the
 # real ``permanent`` semantic.
 ERROR_DISMISSED = "dismissed"
+# Failed rows the next sync attempts again. ``fetch_failed`` is the
+# needs-attention kind an other failure reaches on its third time in a row.
+ERROR_RETRY_PENDING = "retry_pending"
+ERROR_UPCOMING = "upcoming"
+ERROR_FETCH_FAILED = "fetch_failed"
+
+# ``error_kind`` values of a failed row that do not need the user.
+NOT_NEEDING_ATTENTION: tuple[str, ...] = (
+    ERROR_RETRY_PENDING, ERROR_UPCOMING, ERROR_PERMANENT, ERROR_DISMISSED,
+)
+
+
+# ---- Classified fetch failures -------------------------------------
+
+
+class ItemUnavailable(Exception):
+    """The item cannot be fetched without an account (members-only,
+    age-restricted, private, removed)."""
+
+
+class ItemNotStarted(Exception):
+    """The live event or premiere has not started yet."""
+
+
+class ItemRateLimited(Exception):
+    """The provider is throttling this session; nothing is wrong with the item."""
 
 
 @dataclass(frozen=True)
@@ -151,7 +177,26 @@ class SubscriptionProvider(Protocol):
     def fetch_item(
         self, ref: SubscriptionRef, item_id: str
     ) -> ItemMetadata:
-        """Return full metadata for one item. Raises on permanent failure."""
+        """Return full metadata for one item.
+
+        Raises ``ItemUnavailable``, ``ItemNotStarted`` or
+        ``ItemRateLimited`` for a failure the provider recognises; any
+        other exception is an unclassified failure.
+        """
+        ...
+
+    def fetch_item_title(
+        self, ref: SubscriptionRef, item_id: str
+    ) -> str | None:
+        """Return the item's title alone, or None when it cannot be had.
+
+        Asked after a failed fetch, so it must not depend on the item
+        being fetchable.
+        """
+        ...
+
+    def item_url(self, item_id: str) -> str | None:
+        """Return the item's page on the provider, or None."""
         ...
 
     def fetch_transcript(

@@ -54,7 +54,11 @@ from .schemas import (
     WatchPlayback,
 )
 from .subscription import db as subdb
-from .subscription.registry import find_subscription_provider_by_url
+from .subscription.registry import (
+    ERROR_DISMISSED,
+    find_subscription_provider_by_url,
+    get_subscription_provider,
+)
 from .service import (
     loft_manager,
     subscription_avatar_path,
@@ -712,7 +716,8 @@ async def list_subscription_videos(
             text(
                 "SELECT sv.subscription_id, sv.item_id, sv.status, "
                 " sv.error_kind, sv.file_id, sv.first_seen_at, "
-                " sv.last_attempted_at, "
+                " sv.last_attempted_at, sv.title AS stored_title, "
+                " s.provider AS provider, "
                 " f.filename AS filename, "
                 " f.thumbnail_path AS thumbnail_path, "
                 " m.channel AS channel, "
@@ -733,6 +738,9 @@ async def list_subscription_videos(
         ).mappings().all()
     finally:
         db.close()
+    provider = (
+        get_subscription_provider(rows[0]["provider"]) if rows else None
+    )
     return [
         SubscriptionVideoResponse(
             subscription_id=r["subscription_id"],
@@ -742,7 +750,12 @@ async def list_subscription_videos(
             file_id=r["file_id"],
             first_seen_at=r["first_seen_at"],
             last_attempted_at=r["last_attempted_at"],
-            title=_title_from_filename(r.get("filename")),
+            title=(
+                _title_from_filename(r.get("filename")) or r["stored_title"]
+            ),
+            source_url=(
+                provider.item_url(r["item_id"]) if provider else None
+            ),
             thumbnail_path=r.get("thumbnail_path"),
             channel=r.get("channel"),
             published_at=r.get("published_at"),
@@ -783,17 +796,19 @@ async def retry_subscription_video(
     # signal. Cheap query that preserves the synchronous 404 contract.
     db = SessionLocal()
     try:
-        exists = db.execute(
+        row = db.execute(
             text(
-                "SELECT 1 FROM subscription_videos "
+                "SELECT status, error_kind FROM subscription_videos "
                 "WHERE subscription_id = :sid AND item_id = :iid"
             ),
             {"sid": subscription_id, "iid": item_id},
         ).first()
     finally:
         db.close()
-    if not exists:
+    if not row:
         raise HTTPException(status_code=404, detail="video not found")
+    if row[0] == "imported" or row[1] == ERROR_DISMISSED:
+        raise HTTPException(status_code=409, detail="video is not retryable")
     queued = await subscription_worker.enqueue_sync(
         subscription_id, kind="retry", item_id=item_id
     )

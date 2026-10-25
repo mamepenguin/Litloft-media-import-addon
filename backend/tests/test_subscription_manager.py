@@ -94,6 +94,12 @@ class _FakeProvider:
         self.source_metadata_calls.append(ref)
         return self.source_metadata
 
+    def fetch_item_title(self, ref, item_id):
+        return None
+
+    def item_url(self, item_id):
+        return f"https://fake/watch/{item_id}"
+
 
 @pytest.fixture()
 def fake_provider() -> _FakeProvider:
@@ -711,7 +717,10 @@ class TestSyncSingleItemRetry:
             db.close()
 
         result = mgr._sync_blocking(sub_id, item_id="vid")
-        assert result == {"added": 1, "reused": 0, "failed": 0, "total_new": 1}
+        assert result == {
+            "added": 1, "reused": 0, "failed": 0, "total_new": 1,
+            "retried": 1, "rate_limited": False,
+        }
         assert (drive_path / "Vid.loft").exists()
 
         # Retry on a non-existent row must raise SubscriptionNotFound.
