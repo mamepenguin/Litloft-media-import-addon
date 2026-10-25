@@ -60,3 +60,18 @@ describe("isRetryable", () => {
     expect(isRetryable("future_failure_mode")).toBe(true);
   });
 });
+
+// SPEC-ADDON-027 (Q1), SPEC-ADDON-028: the new item states.
+describe("SPEC-ADDON-027/028 item states", () => {
+  it.each(["retry_pending", "upcoming"])(
+    "SPEC-ADDON-028: preserves the new kind %s",
+    (kind) => {
+      expect(normalizeErrorKind(kind)).toBe(kind);
+    },
+  );
+
+  it("SPEC-ADDON-027: an unavailable (permanent) failed row keeps a manual Retry", () => {
+    expect(isRetryable("permanent")).toBe(true);
+  });
+
+});
