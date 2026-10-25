@@ -1,4 +1,9 @@
-"""SPEC-ADDON-002: Media Import names files in NFC and finds its sidecars by NFC-literal name."""
+"""SPEC-ADDON-002: Media Import names files in NFC and finds its sidecars by NFC-literal name.
+
+UNSPEC: a sanitized title is at most 200 UTF-8 bytes, so a name built from it, with
+a collision suffix and the longest sidecar suffix (`.stt_temp.<ext>.part`), stays
+within the 255-byte name limit of Linux file systems.
+"""
 from __future__ import annotations
 
 import os
@@ -41,8 +46,12 @@ UNCOMPOSABLE_CUT = "a" * 198 + "q́́" + "tail"
 SANITIZE = [
     pytest.param(nfd(CAFE), nfc(CAFE), id="nfd"),
     pytest.param(CAFE_MIXED, nfc(CAFE), id="mixed"),
-    pytest.param(nfd("ガ" * 150), "ガ" * 150, id="nfd-longer-than-cut-nfc-shorter"),
-    pytest.param(nfd("é" * 250), "é" * 200, id="nfd-truncated-after-nfc"),
+    # U+1FA2 decomposes into four code points but is three bytes in NFC.
+    pytest.param(nfd("ᾢ" * 60), "ᾢ" * 60, id="nfd-longer-than-cut-nfc-shorter"),
+    pytest.param(nfd("é" * 250), "é" * 100, id="nfd-truncated-after-nfc"),
+    pytest.param("あ" * 100, "あ" * 66, id="cut-by-bytes"),
+    pytest.param("🎐" * 60, "🎐" * 50, id="four-byte-chars-cut-by-bytes"),
+    pytest.param("a" * 199 + "あ", "a" * 199, id="multibyte-char-not-split"),
     pytest.param(UNCOMPOSABLE_CUT, "a" * 198 + "q", id="no-orphan-combining-mark"),
     pytest.param("a" * 197 + "q́́" + "tail", "a" * 197 + "q", id="every-orphaned-mark-dropped"),
     pytest.param("ไม่", "ไม่", id="uncut-title-keeps-its-final-mark"),
@@ -61,7 +70,8 @@ def test_spec_addon_002_both_sanitizers_return_the_same_nfc_name(title, expected
     assert link == expected
     assert subscription == expected
     assert len(link) <= 200
-    if len(nfc(title)) > 200:
+    assert len(link.encode()) <= 200
+    if len(nfc(title)) > 200 or len(nfc(title).encode()) > 200:
         assert unicodedata.combining(link[-1]) == 0
 
 
