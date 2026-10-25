@@ -1291,15 +1291,75 @@ def _ensure_subscription_tables() -> None:
                     file_id TEXT REFERENCES files(id) ON DELETE SET NULL,
                     first_seen_at TEXT NOT NULL,
                     last_attempted_at TEXT,
+                    fail_count INTEGER NOT NULL DEFAULT 0,
+                    title TEXT,
+                    published_at TEXT,
                     PRIMARY KEY(subscription_id, item_id)
                 )
                 """
             )
         )
         db.commit()
+        _upgrade_subscription_videos(db.get_bind())
         logger.info("subscription tables ensured")
     finally:
         db.close()
+
+
+def _upgrade_subscription_videos(engine) -> None:
+    """Add the retry and title columns to a table created before them.
+
+    The install that gains ``fail_count`` also moves its legacy
+    ``fetch_failed`` / NULL failures to ``retry_pending`` once, so they
+    are retried rather than left needing attention. Column and move
+    share one transaction on the raw connection: the sqlite3 driver
+    opens its implicit transaction only before DML, so an ``ALTER TABLE``
+    through the session would commit on its own and survive a failed
+    move.
+    """
+    raw = engine.raw_connection()
+    try:
+        cur = raw.cursor()
+        columns = {
+            r[1] for r in cur.execute(
+                "PRAGMA table_info(subscription_videos)"
+            ).fetchall()
+        }
+        missing = [
+            (name, ddl) for name, ddl in (
+                ("fail_count", "fail_count INTEGER NOT NULL DEFAULT 0"),
+                ("title", "title TEXT"),
+                ("published_at", "published_at TEXT"),
+            )
+            if name not in columns
+        ]
+        if not missing:
+            return
+        try:
+            cur.execute("BEGIN")
+            for _, ddl in missing:
+                cur.execute(f"ALTER TABLE subscription_videos ADD COLUMN {ddl}")
+            moved = 0
+            if "fail_count" not in columns:
+                cur.execute(
+                    "UPDATE subscription_videos "
+                    "SET error_kind = 'retry_pending', fail_count = 0 "
+                    "WHERE status = 'failed' "
+                    " AND (error_kind = 'fetch_failed' OR error_kind IS NULL)"
+                )
+                moved = cur.rowcount
+            raw.commit()
+        except Exception:
+            raw.rollback()
+            logger.exception("subscription_videos upgrade rolled back")
+            raise
+        logger.info(
+            "subscription_videos upgraded: added %s, moved %d failed "
+            "row(s) to retry_pending",
+            ", ".join(name for name, _ in missing), moved,
+        )
+    finally:
+        raw.close()
 
 
 loft_manager = LoftManager()

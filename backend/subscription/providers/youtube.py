@@ -30,13 +30,14 @@ inserting the row, so the DB always stores ``UC...`` form.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 from xml.etree import ElementTree as ET
 
 from ..registry import (
@@ -46,6 +47,9 @@ from ..registry import (
     REF_KIND_VIDEO,
     ItemHeader,
     ItemMetadata,
+    ItemNotStarted,
+    ItemRateLimited,
+    ItemUnavailable,
     SourceMetadata,
     SubscriptionRef,
     TranscriptResult,
@@ -53,6 +57,54 @@ from ..registry import (
 
 
 logger = logging.getLogger(__name__)
+
+
+# yt-dlp's English ``ExtractorError`` text, matched case-insensitively as
+# substrings, groups in this order (first match wins). Measured against
+# yt-dlp 2026.10.21 on 2026-10-25; the rate-limit texts were read from its
+# ``extractor/youtube/_video.py``. Rate limits come first because the
+# session limit reads "Video unavailable. This content isn't available,
+# try again later. The current session has been rate-limited ...". Each
+# marker contains a space or a character a video id cannot hold, so none
+# can match inside the id yt-dlp prefixes to the message. A reworded
+# message falls through to an unclassified failure, which is retried.
+_RATE_LIMIT_MARKERS = (
+    "try again later",
+    "rate-limited",
+    "captcha",
+    "confirm you're not a bot",
+    "http error 429",
+    "too many requests",
+)
+_UNAVAILABLE_MARKERS = (
+    "members-only content",
+    "available to this channel's members",
+    "confirm your age",
+    "this video is not available",
+    "video unavailable",
+    "private video",
+    "this video has been removed",
+    "not available in your country",
+)
+_NOT_STARTED_MARKERS = (
+    "this live event will begin",
+    "premieres in",
+)
+
+
+def _classify_fetch_error(exc: Exception) -> Exception:
+    """Return the typed exception for ``exc``'s message, or ``exc`` itself."""
+    # YouTube's playability reasons, passed through by yt-dlp, may use the
+    # typographic apostrophe.
+    message = str(exc).replace("\u2018", "'").replace("\u2019", "'").lower()
+    for markers, kind in (
+        (_RATE_LIMIT_MARKERS, ItemRateLimited),
+        (_UNAVAILABLE_MARKERS, ItemUnavailable),
+        (_NOT_STARTED_MARKERS, ItemNotStarted),
+    ):
+        if any(m in message for m in markers):
+            return kind(str(exc))
+    return exc
 
 
 # RSS feed cap: YouTube's Atom feed always returns up to 15 entries and
@@ -470,7 +522,13 @@ class YouTubeProvider:
         if not _VIDEO_ID_RE.match(item_id):
             raise ValueError(f"invalid YouTube item_id: {item_id!r}")
         canonical_url = f"https://www.youtube.com/watch?v={item_id}"
-        meta = _fetch_metadata_sync_for_provider(canonical_url)
+        try:
+            meta = _fetch_metadata_sync_for_provider(canonical_url)
+        except Exception as exc:
+            classified = _classify_fetch_error(exc)
+            if classified is exc:
+                raise
+            raise classified from exc
         return ItemMetadata(
             item_id=item_id,
             canonical_url=canonical_url,
@@ -487,6 +545,26 @@ class YouTubeProvider:
             has_captions=bool(meta.get("has_captions")),
             chapters=meta.get("chapters"),
         )
+
+    def fetch_item_title(
+        self, ref: SubscriptionRef, item_id: str
+    ) -> str | None:
+        # oEmbed answers with a title for members-only, age-restricted and
+        # removed videos, where yt-dlp gives nothing.
+        if not _VIDEO_ID_RE.match(item_id):
+            return None
+        query = urlencode({
+            "format": "json",
+            "url": f"https://www.youtube.com/watch?v={item_id}",
+        })
+        body = _http_get_bytes(
+            f"https://www.youtube.com/oembed?{query}", timeout=10
+        )
+        title = json.loads(body).get("title")
+        return title if isinstance(title, str) else None
+
+    def item_url(self, item_id: str) -> str | None:
+        return f"https://www.youtube.com/watch?v={item_id}"
 
     def fetch_transcript(
         self,

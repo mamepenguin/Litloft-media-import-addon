@@ -197,6 +197,8 @@ export interface SubscriptionVideo {
   // loft_metadata; nullable for items where the .loft was never
   // produced (e.g. permanent failures before allocation).
   title: string | null;
+  // The item's page on the provider.
+  source_url: string | null;
   thumbnail_path: string | null;
   channel: string | null;
   published_at: string | null;

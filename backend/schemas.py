@@ -147,6 +147,8 @@ class SubscriptionVideoResponse(BaseModel):
     # then later soft-deleted). All optional — failed items that never
     # produced a .loft fall back to a generic UI placeholder.
     title: str | None = None
+    # The item's page on the provider, for every row.
+    source_url: str | None = None
     thumbnail_path: str | None = None
     channel: str | None = None
     published_at: str | None = None

@@ -23,11 +23,19 @@ from app.database import SessionLocal
 from app.services.chapters import normalise_chapters, replace_chapters
 from app.services.scanner import register_single_file
 
+from .registry import ERROR_RETRY_PENDING, NOT_NEEDING_ATTENTION
+
 
 logger = logging.getLogger(__name__)
 
 
 _ALLOWED_LOFT_URL_SCHEMES: tuple[str, ...] = ("http://", "https://")
+
+_NEEDS_ATTENTION = (
+    "status = 'failed' AND COALESCE(error_kind, '') NOT IN ("
+    + ", ".join(f"'{k}'" for k in NOT_NEEDING_ATTENTION)
+    + ")"
+)
 
 
 # ---- ISO parsing & cron predicate ----------------------------------
@@ -214,7 +222,7 @@ def summary_for_drive(drive: str) -> dict:
             text(
                 "SELECT "
                 " SUM(CASE WHEN status = 'imported' THEN 1 ELSE 0 END) AS imp, "
-                " SUM(CASE WHEN status = 'failed' AND COALESCE(error_kind, '') NOT IN ('dismissed') THEN 1 ELSE 0 END) AS fail "
+                f" SUM(CASE WHEN {_NEEDS_ATTENTION} THEN 1 ELSE 0 END) AS fail "
                 f"FROM subscription_videos WHERE subscription_id IN ({placeholders})"
             ),
             bind_params,
@@ -224,8 +232,7 @@ def summary_for_drive(drive: str) -> dict:
             text(
                 "SELECT DISTINCT subscription_id FROM subscription_videos "
                 f"WHERE subscription_id IN ({placeholders}) "
-                " AND status = 'failed' "
-                " AND COALESCE(error_kind, '') NOT IN ('dismissed')"
+                f" AND {_NEEDS_ATTENTION}"
             ),
             bind_params,
         ).fetchall()
@@ -733,7 +740,8 @@ def load_video_row(
     try:
         row = db.execute(
             text(
-                "SELECT first_seen_at, status, error_kind, file_id "
+                "SELECT first_seen_at, status, error_kind, file_id, "
+                " fail_count, title "
                 "FROM subscription_videos "
                 "WHERE subscription_id = :sid AND item_id = :iid"
             ),
@@ -752,7 +760,15 @@ def upsert_video_row(
     file_id: str | None,
     first_seen: str,
     error_kind: str | None = None,
+    fail_count: int = 0,
+    title: str | None = None,
+    published_at: str | None = None,
 ) -> None:
+    """Record an attempt's outcome.
+
+    ``title`` / ``published_at`` only fill a NULL column; a stored value
+    is never replaced.
+    """
     now = datetime.now(UTC).isoformat()
     db = SessionLocal()
     try:
@@ -760,13 +776,19 @@ def upsert_video_row(
             text(
                 "INSERT INTO subscription_videos "
                 "(subscription_id, item_id, status, error_kind, "
-                " file_id, first_seen_at, last_attempted_at) "
-                "VALUES (:sid, :iid, :status, :err, :fid, :first, :last) "
+                " file_id, first_seen_at, last_attempted_at, fail_count, "
+                " title, published_at) "
+                "VALUES (:sid, :iid, :status, :err, :fid, :first, :last, "
+                " :fc, :title, :pub) "
                 "ON CONFLICT(subscription_id, item_id) DO UPDATE SET "
                 " status = excluded.status, "
                 " error_kind = excluded.error_kind, "
                 " file_id = excluded.file_id, "
-                " last_attempted_at = excluded.last_attempted_at"
+                " last_attempted_at = excluded.last_attempted_at, "
+                " fail_count = excluded.fail_count, "
+                " title = COALESCE(subscription_videos.title, excluded.title), "
+                " published_at = COALESCE("
+                "   subscription_videos.published_at, excluded.published_at)"
             ),
             {
                 "sid": subscription_id,
@@ -776,11 +798,123 @@ def upsert_video_row(
                 "fid": file_id,
                 "first": first_seen,
                 "last": now,
+                "fc": fail_count,
+                "title": title,
+                "pub": published_at,
             },
         )
         db.commit()
     finally:
         db.close()
+
+
+def insert_unattempted_rows(
+    subscription_id: int,
+    rows: list[tuple[str, str | None, str | None]],
+    *,
+    first_seen: str,
+) -> None:
+    """Insert ``(item_id, title, published_at)`` rows left for the next sync.
+
+    An item that already has a row is left as it is.
+    """
+    if not rows:
+        return
+    db = SessionLocal()
+    try:
+        for item_id, title, published_at in rows:
+            db.execute(
+                text(
+                    "INSERT OR IGNORE INTO subscription_videos "
+                    "(subscription_id, item_id, status, error_kind, "
+                    " first_seen_at, last_attempted_at, fail_count, "
+                    " title, published_at) "
+                    "VALUES (:sid, :iid, 'failed', :err, :first, NULL, 0, "
+                    " :title, :pub)"
+                ),
+                {
+                    "sid": subscription_id,
+                    "iid": item_id,
+                    "err": ERROR_RETRY_PENDING,
+                    "first": first_seen,
+                    "title": title,
+                    "pub": published_at,
+                },
+            )
+        db.commit()
+    finally:
+        db.close()
+
+
+def fill_listing_columns(
+    subscription_id: int,
+    rows: list[tuple[str, str | None, str | None]],
+) -> None:
+    """Fill NULL ``title`` / ``published_at`` of existing rows from
+    ``(item_id, title, published_at)``; stored values are kept."""
+    if not rows:
+        return
+    db = SessionLocal()
+    try:
+        for item_id, title, published_at in rows:
+            if title is None and published_at is None:
+                continue
+            db.execute(
+                text(
+                    "UPDATE subscription_videos SET "
+                    " title = COALESCE(title, :title), "
+                    " published_at = COALESCE(published_at, :pub) "
+                    "WHERE subscription_id = :sid AND item_id = :iid"
+                ),
+                {
+                    "sid": subscription_id,
+                    "iid": item_id,
+                    "title": title,
+                    "pub": published_at,
+                },
+            )
+        db.commit()
+    finally:
+        db.close()
+
+
+def set_title_if_null(subscription_id: int, item_id: str, title: str) -> None:
+    db = SessionLocal()
+    try:
+        db.execute(
+            text(
+                "UPDATE subscription_videos SET title = :title "
+                "WHERE subscription_id = :sid AND item_id = :iid "
+                " AND title IS NULL"
+            ),
+            {"sid": subscription_id, "iid": item_id, "title": title},
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+def load_retry_set(subscription_id: int) -> list[dict]:
+    """Rows the next sync attempts again, oldest first.
+
+    Rows written by one sync share ``first_seen_at``; ``rowid`` is their
+    insertion order.
+    """
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            text(
+                "SELECT item_id, first_seen_at, fail_count, title "
+                "FROM subscription_videos "
+                "WHERE subscription_id = :sid AND status = 'failed' "
+                " AND error_kind IN ('retry_pending', 'upcoming') "
+                "ORDER BY first_seen_at ASC, rowid ASC"
+            ),
+            {"sid": subscription_id},
+        ).mappings().all()
+    finally:
+        db.close()
+    return [dict(r) for r in rows]
 
 
 # ---- loft_metadata + dedup ---------------------------------------

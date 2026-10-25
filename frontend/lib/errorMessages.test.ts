@@ -38,10 +38,6 @@ describe("normalizeErrorKind", () => {
 });
 
 describe("isRetryable", () => {
-  it("returns false for permanent failures", () => {
-    expect(isRetryable("permanent")).toBe(false);
-  });
-
   it("returns false for user-issued dismissals", () => {
     expect(isRetryable("dismissed")).toBe(false);
   });
@@ -50,6 +46,7 @@ describe("isRetryable", () => {
     expect(isRetryable("rate_limited")).toBe(true);
     expect(isRetryable("no_transcript")).toBe(true);
     expect(isRetryable("path_conflict")).toBe(true);
+    expect(isRetryable("permanent")).toBe(true);
   });
 
   it("returns true when error_kind is null (legacy rows without classification)", () => {
@@ -59,4 +56,19 @@ describe("isRetryable", () => {
   it("treats unrecognised kinds as retryable (the 'unknown' bucket)", () => {
     expect(isRetryable("future_failure_mode")).toBe(true);
   });
+});
+
+// SPEC-ADDON-027 (Q1), SPEC-ADDON-028: the new item states.
+describe("SPEC-ADDON-027/028 item states", () => {
+  it.each(["retry_pending", "upcoming"])(
+    "SPEC-ADDON-028: preserves the new kind %s",
+    (kind) => {
+      expect(normalizeErrorKind(kind)).toBe(kind);
+    },
+  );
+
+  it("SPEC-ADDON-027: an unavailable (permanent) failed row keeps a manual Retry", () => {
+    expect(isRetryable("permanent")).toBe(true);
+  });
+
 });

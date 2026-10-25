@@ -72,6 +72,12 @@ class _FakeProvider:
     def build_loft_content(self, item):
         return {"provider": self.name, "url": item.canonical_url}
 
+    def fetch_item_title(self, ref, item_id):
+        return None
+
+    def item_url(self, item_id):
+        return f"https://fake/watch/{item_id}"
+
 
 @pytest.fixture()
 def fake_provider():
