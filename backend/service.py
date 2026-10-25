@@ -46,8 +46,10 @@ def _sanitize_filename(title: str) -> str:
     title = unicodedata.normalize("NFC", title)
     title = re.sub(r'[<>:"/\\|?*]', "_", title)
     title = title.strip(". ")
-    if len(title) > 200:
-        title = title[:200]
+    # Linux file systems cap a name at 255 bytes, not characters; 200 leaves
+    # room for " (n)" and the longest sidecar suffix, ".stt_temp.<ext>.part".
+    if len(title) > 200 or len(title.encode()) > 200:
+        title = title[:200].encode()[:200].decode("utf-8", "ignore")
         while title and unicodedata.combining(title[-1]):
             title = title[:-1]
     return title if title else "untitled"
