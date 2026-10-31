@@ -12,7 +12,6 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-import app.config as config
 import pytest
 from sqlalchemy import text
 
@@ -65,7 +64,8 @@ class TestSaveLoftThumbnailSuccess:
     """SPEC-ADDON-040: the picture lands at ``.by-id/<file id>.jpg``."""
 
     def test_writes_thumbnail_path_with_folder(
-        self, media_import_db, drive_path, monkeypatch
+        self, media_import_db, drive_path, monkeypatch,
+        thumbnails_dir,
     ) -> None:
         from addons.media_import import service
 
@@ -96,7 +96,7 @@ class TestSaveLoftThumbnailSuccess:
 
         assert rel == ".by-id/f1.jpg"
         assert _read_thumbnail_path(media_import_db, "f1") == ".by-id/f1.jpg"
-        assert captured["dest"] == config.THUMBNAILS_DIR / ".by-id/f1.jpg"
+        assert captured["dest"] == thumbnails_dir / ".by-id/f1.jpg"
         assert captured["url"] == "https://i.ytimg.com/vi/abc/hqdefault.jpg"
 
     def test_writes_thumbnail_path_without_folder(
@@ -223,7 +223,8 @@ class TestSaveLoftThumbnailFailures:
 
 class TestSaveLoftThumbnailReplacesPathForm:
     def test_path_form_pointer_is_replaced_and_old_file_removed(
-        self, media_import_db, drive_path, monkeypatch
+        self, media_import_db, drive_path, monkeypatch,
+        thumbnails_dir,
     ) -> None:
         """SPEC-ADDON-040: a row still pointing at a stem-form slot moves
         to its own slot, and the old picture goes once the pointer commits."""
@@ -234,7 +235,7 @@ class TestSaveLoftThumbnailReplacesPathForm:
             folder_path="yt", filename="Old.loft",
         )
         old_rel = "d/yt/Old.jpg"
-        old_full = config.THUMBNAILS_DIR / old_rel
+        old_full = thumbnails_dir / old_rel
         old_full.parent.mkdir(parents=True, exist_ok=True)
         old_full.write_bytes(b"old")
         db = media_import_db()
@@ -261,11 +262,12 @@ class TestSaveLoftThumbnailReplacesPathForm:
 
         assert rel == ".by-id/f7.jpg"
         assert _read_thumbnail_path(media_import_db, "f7") == ".by-id/f7.jpg"
-        assert (config.THUMBNAILS_DIR / ".by-id/f7.jpg").read_bytes() == b"new"
+        assert (thumbnails_dir / ".by-id/f7.jpg").read_bytes() == b"new"
         assert not old_full.exists()
 
     def test_by_id_pointer_is_rewritten_in_place_and_kept(
-        self, media_import_db, drive_path, monkeypatch
+        self, media_import_db, drive_path, monkeypatch,
+        thumbnails_dir,
     ) -> None:
         """SPEC-ADDON-040: re-fetching must not delete the slot it just wrote."""
         from addons.media_import import service
@@ -298,12 +300,13 @@ class TestSaveLoftThumbnailReplacesPathForm:
             filename="Again.loft", thumbnail_url="https://example/a.jpg",
         )
 
-        assert (config.THUMBNAILS_DIR / ".by-id/f8.jpg").read_bytes() == b"again"
+        assert (thumbnails_dir / ".by-id/f8.jpg").read_bytes() == b"again"
 
 
 class TestSaveLoftThumbnailNFDFilename:
     def test_nfd_filename_still_yields_the_by_id_slot(
-        self, media_import_db, drive_path, monkeypatch
+        self, media_import_db, drive_path, monkeypatch,
+        thumbnails_dir,
     ) -> None:
         """SPEC-ADDON-040: a decomposed (macOS) filename has no bearing on
         the slot; the picture lands at ``.by-id/<file id>.jpg``.
@@ -333,5 +336,164 @@ class TestSaveLoftThumbnailNFDFilename:
 
         assert rel == ".by-id/f6.jpg"
         assert _read_thumbnail_path(media_import_db, "f6") == ".by-id/f6.jpg"
-        assert captured["dest"] == config.THUMBNAILS_DIR / ".by-id/f6.jpg"
+        assert captured["dest"] == thumbnails_dir / ".by-id/f6.jpg"
         assert "meta" not in str(captured["dest"])
+
+
+def _set_pointer(db_session, file_id: str, pointer: str) -> None:
+    db = db_session()
+    try:
+        db.execute(
+            text("UPDATE files SET thumbnail_path = :p WHERE id = :id"),
+            {"p": pointer, "id": file_id},
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+class TestSaveLoftThumbnailKeepsWhatItHas:
+    def test_failed_download_keeps_pointer_and_path_form_file(
+        self, media_import_db, drive_path, monkeypatch, thumbnails_dir
+    ) -> None:
+        """SPEC-ADDON-040: nothing is removed before a download succeeds."""
+        from addons.media_import import service
+
+        _seed_file(
+            media_import_db, file_id="k1", drive="d",
+            folder_path="yt", filename="Keep.loft",
+        )
+        _set_pointer(media_import_db, "k1", "d/yt/Keep.jpg")
+        old_full = thumbnails_dir / "d/yt/Keep.jpg"
+        old_full.parent.mkdir(parents=True)
+        old_full.write_bytes(b"old")
+        monkeypatch.setattr(
+            service, "_download_thumbnail_sync", lambda url, dest: False
+        )
+
+        rel = service._save_loft_thumbnail(
+            file_id="k1", drive="d", folder_path="yt",
+            filename="Keep.loft", thumbnail_url="https://example/k.jpg",
+        )
+
+        assert rel is None
+        assert _read_thumbnail_path(media_import_db, "k1") == "d/yt/Keep.jpg"
+        assert old_full.read_bytes() == b"old"
+
+    def test_removal_failure_leaves_new_pointer_committed(
+        self, media_import_db, drive_path, monkeypatch, thumbnails_dir
+    ) -> None:
+        """SPEC-ADDON-040: an OSError removing the old picture is not an error."""
+        from addons.media_import import service
+
+        _seed_file(
+            media_import_db, file_id="k2", drive="d",
+            folder_path="yt", filename="Stuck.loft",
+        )
+        _set_pointer(media_import_db, "k2", "d/yt/Stuck.jpg")
+        old_full = thumbnails_dir / "d/yt/Stuck.jpg"
+        old_full.parent.mkdir(parents=True)
+        old_full.write_bytes(b"old")
+
+        def _download(url: str, dest: Path) -> bool:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"new")
+            return True
+
+        real_unlink = Path.unlink
+
+        def _unlink(self, *a, **kw):
+            if self == old_full:
+                raise PermissionError("denied")
+            return real_unlink(self, *a, **kw)
+
+        monkeypatch.setattr(service, "_download_thumbnail_sync", _download)
+        monkeypatch.setattr(Path, "unlink", _unlink)
+
+        rel = service._save_loft_thumbnail(
+            file_id="k2", drive="d", folder_path="yt",
+            filename="Stuck.loft", thumbnail_url="https://example/s.jpg",
+        )
+
+        assert rel == ".by-id/k2.jpg"
+        assert _read_thumbnail_path(media_import_db, "k2") == ".by-id/k2.jpg"
+
+    def test_removal_prunes_the_emptied_old_directory(
+        self, media_import_db, drive_path, monkeypatch, thumbnails_dir
+    ) -> None:
+        """SPEC-ADDON-040: the old picture's emptied folders go with it."""
+        from addons.media_import import service
+
+        _seed_file(
+            media_import_db, file_id="k3", drive="d",
+            folder_path="yt/deep", filename="Gone.loft",
+        )
+        _set_pointer(media_import_db, "k3", "d/yt/deep/Gone.jpg")
+        old_full = thumbnails_dir / "d/yt/deep/Gone.jpg"
+        old_full.parent.mkdir(parents=True)
+        old_full.write_bytes(b"old")
+
+        def _download(url: str, dest: Path) -> bool:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"new")
+            return True
+
+        monkeypatch.setattr(service, "_download_thumbnail_sync", _download)
+
+        service._save_loft_thumbnail(
+            file_id="k3", drive="d", folder_path="yt/deep",
+            filename="Gone.loft", thumbnail_url="https://example/g.jpg",
+        )
+
+        assert not (thumbnails_dir / "d").exists()
+        assert (thumbnails_dir / ".by-id/k3.jpg").exists()
+
+
+class _DroppingResponse:
+    """A response that yields some bytes, then loses the connection."""
+
+    def __init__(self) -> None:
+        self._sent = False
+
+    def read(self, size: int = -1) -> bytes:
+        if not self._sent:
+            self._sent = True
+            return b"partial"
+        raise ConnectionResetError("dropped")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> None:
+        return None
+
+
+class TestDownloadThumbnailAtomic:
+    def test_dropped_connection_leaves_existing_slot_and_no_partial(
+        self, media_import_db, drive_path, monkeypatch, thumbnails_dir
+    ) -> None:
+        """SPEC-ADDON-040: a slot is replaced whole or not at all."""
+        from addons.media_import import service
+
+        _seed_file(
+            media_import_db, file_id="a1", drive="d",
+            folder_path="", filename="Atomic.loft",
+        )
+        _set_pointer(media_import_db, "a1", ".by-id/a1.jpg")
+        slot = thumbnails_dir / ".by-id/a1.jpg"
+        slot.parent.mkdir(parents=True)
+        slot.write_bytes(b"good")
+        monkeypatch.setattr(
+            service.urllib.request, "urlopen",
+            lambda *a, **kw: _DroppingResponse(),
+        )
+
+        rel = service._save_loft_thumbnail(
+            file_id="a1", drive="d", folder_path="",
+            filename="Atomic.loft", thumbnail_url="https://example/a.jpg",
+        )
+
+        assert rel is None
+        assert slot.read_bytes() == b"good"
+        assert [p.name for p in slot.parent.iterdir()] == ["a1.jpg"]
+        assert _read_thumbnail_path(media_import_db, "a1") == ".by-id/a1.jpg"
