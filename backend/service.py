@@ -11,7 +11,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import tempfile
 import unicodedata
 import urllib.request
@@ -543,10 +542,8 @@ def _download_thumbnail_sync(thumbnail_url: str, dest: Path) -> bool:
         return False
 
     try:
-        with urllib.request.urlopen(thumbnail_url) as response:
-            with generating_file(dest) as temporary:
-                with open(temporary, "wb") as out:
-                    shutil.copyfileobj(response, out)
+        with generating_file(dest) as temporary:
+            urllib.request.urlretrieve(thumbnail_url, str(temporary))
         return True
     except Exception:
         logger.warning("Failed to download thumbnail: %s", thumbnail_url)
