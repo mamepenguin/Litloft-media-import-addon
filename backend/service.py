@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import tempfile
 import unicodedata
 import urllib.request
@@ -20,12 +21,13 @@ from pathlib import Path
 import app.config as config
 from app.database import SessionLocal
 from app.models import File
+from app.services.atomic_write import generating_file
 from app.services.chapters import normalise_chapters, replace_chapters
 from app.services.hash import compute_file_hash
 from app.services.provider_registry import detect_provider
 from app.services.scanner import register_single_file
 from app.services.sidecar_match import match_siblings
-from app.services.thumbnail import thumbnail_slot_rel
+from app.services.thumbnail import remove_thumbnail_quietly, thumbnail_slot_rel
 from sqlalchemy import text
 
 from app.services import event_hooks
@@ -541,8 +543,10 @@ def _download_thumbnail_sync(thumbnail_url: str, dest: Path) -> bool:
         return False
 
     try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        urllib.request.urlretrieve(thumbnail_url, str(dest))
+        with urllib.request.urlopen(thumbnail_url) as response:
+            with generating_file(dest) as temporary:
+                with open(temporary, "wb") as out:
+                    shutil.copyfileobj(response, out)
         return True
     except Exception:
         logger.warning("Failed to download thumbnail: %s", thumbnail_url)
@@ -621,8 +625,8 @@ def _save_loft_thumbnail(
         db.commit()
     finally:
         db.close()
-    if old_rel and old_rel != thumb_rel:
-        (config.THUMBNAILS_DIR / old_rel).unlink(missing_ok=True)
+    if old_rel != thumb_rel:
+        remove_thumbnail_quietly(old_rel)
     return thumb_rel
 
 

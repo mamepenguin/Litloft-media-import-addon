@@ -699,12 +699,6 @@ class SubscriptionManager:
                 loft_path.unlink()
             raise
 
-        # Mirror the /link pipeline so subscription-imported .loft files
-        # get the same thumbnail UX as single-link imports. Pass
-        # ``loft_path.name`` rather than ``meta.title`` because
-        # _allocate_loft_path may have appended a "(1)" suffix or run
-        # _sanitize_filename — the thumb_rel must match the on-disk
-        # filename for the core thumbnail endpoint to find it.
         # YouTube's localized-captions thumbnail (``/vi_lc/.../*_en-US.jpg``)
         # 404s for most videos, so wire up the canonical
         # ``i.ytimg.com/vi/<id>/...`` chain as a fallback.
