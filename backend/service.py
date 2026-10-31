@@ -10,6 +10,8 @@ import asyncio
 import json
 import logging
 import re
+import shutil
+import tempfile
 import unicodedata
 import urllib.request
 from datetime import UTC, datetime, timedelta
@@ -233,45 +235,36 @@ def _download_captions_sync(
     import yt_dlp
 
     lang = language or "ja"
-    # Titles may contain dots (e.g. "Ver.3.0.2"); pathlib's suffix/stem
-    # would split on the wrong boundary, so operate on the raw name.
-    parent = output_stem.parent
-    stem_name = output_stem.name
-    vtt_path = parent / f"{stem_name}.vtt"
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "writeautomaticsub": True,
-        "writesubtitles": True,
-        "subtitlesformat": "vtt",
-        "subtitleslangs": [lang],
-        # %(ext)s avoids splitext on the template, which would mistake
-        # an embedded dot for the extension.
-        "outtmpl": str(parent / f"{stem_name}.%(ext)s"),
-    }
+    vtt_path = output_stem.parent / f"{output_stem.name}.vtt"
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-    except Exception as exc:
-        return False, _classify_caption_error(str(exc))
+    # yt-dlp writes into a directory of its own so that whatever it leaves
+    # there is this run's file by construction. Looking for `<title>.*.vtt`
+    # beside the loft would also match another video's `<title>.<x>.vtt`.
+    with tempfile.TemporaryDirectory(prefix="mi_captions_") as scratch:
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "writeautomaticsub": True,
+            "writesubtitles": True,
+            "subtitlesformat": "vtt",
+            "subtitleslangs": [lang],
+            "outtmpl": str(Path(scratch) / "captions.%(ext)s"),
+        }
 
-    candidates = _siblings(parent, stem_name, ".*.vtt")
-    if not candidates:
-        return False, None
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+        except Exception as exc:
+            return False, _classify_caption_error(str(exc))
 
-    best = candidates[0]
-    if not _same_name(best.name, vtt_path.name):
-        best.rename(vtt_path)
-        for c in candidates[1:]:
-            if c.exists() and not _same_name(c.name, vtt_path.name):
-                c.unlink()
+        produced = sorted(Path(scratch).glob("*.vtt"))
+        if not produced:
+            return False, None
+        shutil.move(str(produced[0]), vtt_path)
 
-    if vtt_path.exists():
-        _dedup_rolling_vtt(vtt_path)
-        return True, None
-    return False, None
+    _dedup_rolling_vtt(vtt_path)
+    return True, None
 
 
 def _stt_temp_path(output_stem: Path) -> Path:
