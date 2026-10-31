@@ -206,6 +206,50 @@ def test_spec_addon_002_caption_download_replaces_an_older_stem_vtt(tmp_path):
     assert "hello" in (tmp_path / "Clip.vtt").read_text(encoding="utf-8")
 
 
+class _RecordingYDL(_CaptionYDL):
+    """Remembers where yt-dlp was told to write; `behaviour` picks the outcome."""
+
+    scratch_dirs: list[Path] = []
+    behaviour = "captions"
+
+    def __init__(self, opts, *_a, **_kw):
+        super().__init__(opts)
+        type(self).scratch_dirs.append(Path(self.outtmpl).parent)
+
+    def download(self, _urls):
+        if self.behaviour == "captions":
+            return super().download(_urls)
+        if self.behaviour == "raises":
+            Path(self.outtmpl.replace("%(ext)s", "partial")).write_text("x", encoding="utf-8")
+            raise RuntimeError("boom")
+        return 0
+
+
+@pytest.mark.parametrize("behaviour, expected", [
+    pytest.param("captions", (True, None), id="success"),
+    pytest.param("none", (False, None), id="no-captions"),
+    pytest.param("raises", (False, None), id="ytdlp-raises"),
+])
+def test_spec_addon_002_caption_download_works_beside_the_loft_and_leaves_nothing(
+    tmp_path, behaviour, expected
+):
+    from addons.media_import.service import _download_captions_sync
+
+    (tmp_path / "Clip.loft").write_text("{}", encoding="utf-8")
+    ydl = type("YDL", (_RecordingYDL,), {"scratch_dirs": [], "behaviour": behaviour})
+
+    with patch("yt_dlp.YoutubeDL", ydl), \
+            patch("shutil.copy2", side_effect=OSError("no cross-device copy")), \
+            patch("shutil.copystat", side_effect=OSError("no cross-device copy")):
+        result = _download_captions_sync("https://example.com/v", tmp_path / "Clip", language="en")
+
+    assert result == expected
+    assert [d.parent for d in ydl.scratch_dirs] == [tmp_path]
+    assert sorted(os.listdir(tmp_path)) == sorted(
+        ["Clip.loft", "Clip.vtt"] if expected[0] else ["Clip.loft"]
+    )
+
+
 def test_spec_addon_002_sidecar_lookups_in_a_missing_folder_find_nothing(tmp_path):
     from addons.media_import.service import _cleanup_stt_temp, _download_captions_sync
 
