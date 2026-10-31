@@ -9,8 +9,8 @@ the addon adds its own subscription / import_jobs tables).
 import asyncio
 import json
 import logging
+import os
 import re
-import shutil
 import tempfile
 import unicodedata
 import urllib.request
@@ -240,7 +240,15 @@ def _download_captions_sync(
     # yt-dlp writes into a directory of its own so that whatever it leaves
     # there is this run's file by construction. Looking for `<title>.*.vtt`
     # beside the loft would also match another video's `<title>.<x>.vtt`.
-    with tempfile.TemporaryDirectory(prefix="mi_captions_") as scratch:
+    if not output_stem.parent.is_dir():
+        return False, None
+
+    # Beside the loft, not in /tmp: the move must be a rename on one
+    # filesystem, since a cross-device copy can truncate the target or fail
+    # after a complete copy. The leading dot keeps the scanner out of it.
+    with tempfile.TemporaryDirectory(
+        dir=output_stem.parent, prefix=".mi_captions_"
+    ) as scratch:
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,
@@ -261,7 +269,7 @@ def _download_captions_sync(
         produced = sorted(Path(scratch).glob("*.vtt"))
         if not produced:
             return False, None
-        shutil.move(str(produced[0]), vtt_path)
+        os.replace(produced[0], vtt_path)
 
     _dedup_rolling_vtt(vtt_path)
     return True, None
