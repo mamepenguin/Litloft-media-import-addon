@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import app.config as config
 import pytest
 from sqlalchemy import text
 
@@ -61,6 +62,8 @@ def _read_thumbnail_path(db_session, file_id: str) -> str | None:
 
 
 class TestSaveLoftThumbnailSuccess:
+    """SPEC-ADDON-040: the picture lands at ``.by-id/<file id>.jpg``."""
+
     def test_writes_thumbnail_path_with_folder(
         self, media_import_db, drive_path, monkeypatch
     ) -> None:
@@ -91,8 +94,9 @@ class TestSaveLoftThumbnailSuccess:
             thumbnail_url="https://i.ytimg.com/vi/abc/hqdefault.jpg",
         )
 
-        assert rel == "d/yt/Sample.jpg"
-        assert _read_thumbnail_path(media_import_db, "f1") == "d/yt/Sample.jpg"
+        assert rel == ".by-id/f1.jpg"
+        assert _read_thumbnail_path(media_import_db, "f1") == ".by-id/f1.jpg"
+        assert captured["dest"] == config.THUMBNAILS_DIR / ".by-id/f1.jpg"
         assert captured["url"] == "https://i.ytimg.com/vi/abc/hqdefault.jpg"
 
     def test_writes_thumbnail_path_without_folder(
@@ -119,8 +123,8 @@ class TestSaveLoftThumbnailSuccess:
             thumbnail_url="https://example/x.jpg",
         )
 
-        assert rel == "d/Top.jpg"
-        assert _read_thumbnail_path(media_import_db, "f2") == "d/Top.jpg"
+        assert rel == ".by-id/f2.jpg"
+        assert _read_thumbnail_path(media_import_db, "f2") == ".by-id/f2.jpg"
 
 
 class TestSaveLoftThumbnailNoOp:
@@ -176,6 +180,7 @@ class TestSaveLoftThumbnailFailures:
     def test_download_failure_leaves_thumbnail_path_unchanged(
         self, media_import_db, drive_path, monkeypatch
     ) -> None:
+        """SPEC-ADDON-040: a failed download keeps the old behaviour."""
         from addons.media_import import service
 
         _seed_file(
@@ -216,31 +221,81 @@ class TestSaveLoftThumbnailFailures:
         assert rel is None  # file_record lookup returns None
 
 
-class TestSaveLoftThumbnailNFCNormalization:
-    def test_nfd_filename_is_normalized_to_nfc_in_thumb_rel(
+class TestSaveLoftThumbnailReplacesPathForm:
+    def test_path_form_pointer_is_replaced_and_old_file_removed(
         self, media_import_db, drive_path, monkeypatch
     ) -> None:
-        """macOS / NFD-input filenames must produce NFC thumb_rel so the
-        path matches what scanner / file detail endpoints expect.
-        """
+        """SPEC-ADDON-040: a row still pointing at a stem-form slot moves
+        to its own slot, and the old picture goes once the pointer commits."""
         from addons.media_import import service
 
-        # NFD form: "が" = "か" + dakuten combining mark
-        nfd_filename = "がmeta.loft"  # "がmeta.loft" NFD
         _seed_file(
-            media_import_db, file_id="f6", drive="d",
-            folder_path="", filename=nfd_filename,
+            media_import_db, file_id="f7", drive="d",
+            folder_path="yt", filename="Old.loft",
         )
+        old_rel = "d/yt/Old.jpg"
+        old_full = config.THUMBNAILS_DIR / old_rel
+        old_full.parent.mkdir(parents=True, exist_ok=True)
+        old_full.write_bytes(b"old")
+        db = media_import_db()
+        try:
+            db.execute(
+                text("UPDATE files SET thumbnail_path = :p WHERE id = 'f7'"),
+                {"p": old_rel},
+            )
+            db.commit()
+        finally:
+            db.close()
 
-        monkeypatch.setattr(
-            service, "_download_thumbnail_sync",
-            lambda url, dest: True,
-        )
+        def _fake_download(url: str, dest: Path) -> bool:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"new")
+            return True
+
+        monkeypatch.setattr(service, "_download_thumbnail_sync", _fake_download)
 
         rel = service._save_loft_thumbnail(
-            file_id="f6", drive="d", folder_path="",
-            filename=nfd_filename, thumbnail_url="https://example/g.jpg",
+            file_id="f7", drive="d", folder_path="yt",
+            filename="Old.loft", thumbnail_url="https://example/o.jpg",
         )
 
-        # Expected stem in NFC form: "が" = single codepoint U+304C
-        assert rel == "d/がmeta.jpg"
+        assert rel == ".by-id/f7.jpg"
+        assert _read_thumbnail_path(media_import_db, "f7") == ".by-id/f7.jpg"
+        assert (config.THUMBNAILS_DIR / ".by-id/f7.jpg").read_bytes() == b"new"
+        assert not old_full.exists()
+
+    def test_by_id_pointer_is_rewritten_in_place_and_kept(
+        self, media_import_db, drive_path, monkeypatch
+    ) -> None:
+        """SPEC-ADDON-040: re-fetching must not delete the slot it just wrote."""
+        from addons.media_import import service
+
+        _seed_file(
+            media_import_db, file_id="f8", drive="d",
+            folder_path="", filename="Again.loft",
+        )
+        db = media_import_db()
+        try:
+            db.execute(
+                text(
+                    "UPDATE files SET thumbnail_path = '.by-id/f8.jpg' "
+                    "WHERE id = 'f8'"
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        def _fake_download(url: str, dest: Path) -> bool:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"again")
+            return True
+
+        monkeypatch.setattr(service, "_download_thumbnail_sync", _fake_download)
+
+        service._save_loft_thumbnail(
+            file_id="f8", drive="d", folder_path="",
+            filename="Again.loft", thumbnail_url="https://example/a.jpg",
+        )
+
+        assert (config.THUMBNAILS_DIR / ".by-id/f8.jpg").read_bytes() == b"again"

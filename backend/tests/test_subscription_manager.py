@@ -368,6 +368,7 @@ class TestSyncThumbnail:
         self, media_import_db, drive_path, fake_provider: _FakeProvider,
         monkeypatch,
     ) -> None:
+        """SPEC-ADDON-040: the pointer is the file's own slot."""
         from addons.media_import import service
         from addons.media_import.subscription.manager import (
             SubscriptionManager,
@@ -401,14 +402,14 @@ class TestSyncThumbnail:
         try:
             row = db.execute(
                 text(
-                    "SELECT thumbnail_path FROM files "
+                    "SELECT thumbnail_path, id FROM files "
                     "WHERE filename = 'WithThumb.loft'"
                 )
             ).first()
         finally:
             db.close()
         assert row is not None
-        assert row[0] == "d/yt/WithThumb.jpg"
+        assert row[0] == f".by-id/{row[1]}.jpg"
 
     def test_no_thumbnail_url_leaves_thumbnail_path_null(
         self, media_import_db, drive_path, fake_provider: _FakeProvider,
@@ -453,32 +454,30 @@ class TestSyncThumbnail:
         assert row is not None
         assert row[0] is None
 
-    def test_filename_uniquifier_used_for_thumb_path(
+    def test_duplicate_titles_get_different_thumbnail_pointers(
         self, media_import_db, drive_path, fake_provider: _FakeProvider,
         monkeypatch,
     ) -> None:
-        """When _allocate_loft_path appends '(1)' for a name collision,
-        the thumbnail path must use the same uniquified stem so the core
-        thumbnail endpoint can resolve filename → thumbnail.
+        """SPEC-ADDON-040: when _allocate_loft_path appends '(1)' for a name
+        collision, the two imports still own different thumbnail slots.
         """
         from addons.media_import import service
         from addons.media_import.subscription.manager import (
             SubscriptionManager,
         )
 
-        # Pre-seed an unrelated .loft at the target name to force
-        # _allocate_loft_path into the "(1)" branch.
-        (drive_path / "yt").mkdir(parents=True, exist_ok=True)
-        (drive_path / "yt" / "Dup.loft").write_text("{}", encoding="utf-8")
-
-        fake_provider.headers = [ItemHeader(item_id="d2", title="Dup")]
+        fake_provider.headers = [
+            ItemHeader(item_id="d1", title="Dup"),
+            ItemHeader(item_id="d2", title="Dup"),
+        ]
         fake_provider.items = {
-            "d2": ItemMetadata(
-                item_id="d2",
-                canonical_url="https://fake/v/d2",
+            iid: ItemMetadata(
+                item_id=iid,
+                canonical_url=f"https://fake/v/{iid}",
                 title="Dup",
-                thumbnail_url="https://fake.cdn/d2.jpg",
-            ),
+                thumbnail_url=f"https://fake.cdn/{iid}.jpg",
+            )
+            for iid in ("d1", "d2")
         }
         monkeypatch.setattr(
             service, "_download_thumbnail_sync",
@@ -491,20 +490,17 @@ class TestSyncThumbnail:
 
         db = media_import_db()
         try:
-            row = db.execute(
+            rows = db.execute(
                 text(
-                    "SELECT filename, thumbnail_path FROM files "
-                    "WHERE folder_path = 'yt' "
-                    "  AND filename LIKE 'Dup%' "
-                    "  AND filename != 'Dup.loft'"
+                    "SELECT id, filename, thumbnail_path FROM files "
+                    "WHERE folder_path = 'yt' AND filename LIKE 'Dup%'"
                 )
-            ).first()
+            ).all()
         finally:
             db.close()
-        assert row is not None
-        assert row[0] == "Dup (1).loft"
-        # Thumb stem must match the uniquified filename.
-        assert row[1] == "d/yt/Dup (1).jpg"
+        assert sorted(r[1] for r in rows) == ["Dup (1).loft", "Dup.loft"]
+        assert len({r[2] for r in rows}) == 2
+        assert all(r[2] == f".by-id/{r[0]}.jpg" for r in rows)
 
 
 class TestSyncDedup:
