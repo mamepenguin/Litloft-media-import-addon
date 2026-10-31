@@ -505,3 +505,146 @@ class TestDownloadThumbnailAtomic:
         assert slot.read_bytes() == b"good"
         assert [p.name for p in slot.parent.iterdir()] == ["a1.jpg"]
         assert _read_thumbnail_path(media_import_db, "a1") == ".by-id/a1.jpg"
+
+
+@pytest.fixture()
+def picture_server():
+    """A local HTTP server: /good serves a body, /short promises more than it sends."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    good = b"\xff\xd8good-jpeg-bytes\xff\xd9"
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            body = good if self.path == "/good" else b"cut"
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header(
+                "Content-Length",
+                str(len(good) if self.path == "/good" else 1000),
+            )
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args) -> None:
+            return None
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        yield base, good
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+class TestDownloadThumbnailOverHttp:
+    def test_good_download_publishes_the_bytes_and_leaves_no_temp_file(
+        self, media_import_db, drive_path, thumbnails_dir, picture_server
+    ) -> None:
+        """SPEC-ADDON-040: the real download body fills the slot."""
+        from addons.media_import import service
+
+        base, good = picture_server
+        _seed_file(
+            media_import_db, file_id="h1", drive="d",
+            folder_path="", filename="Http.loft",
+        )
+
+        rel = service._save_loft_thumbnail(
+            file_id="h1", drive="d", folder_path="",
+            filename="Http.loft", thumbnail_url=f"{base}/good",
+        )
+
+        slot = thumbnails_dir / ".by-id/h1.jpg"
+        assert rel == ".by-id/h1.jpg"
+        assert slot.read_bytes() == good
+        assert [p.name for p in slot.parent.iterdir()] == ["h1.jpg"]
+
+    def test_truncated_body_is_a_failure_that_keeps_the_slot(
+        self, media_import_db, drive_path, thumbnails_dir, picture_server
+    ) -> None:
+        """SPEC-ADDON-040: a body shorter than its Content-Length is not
+        published; the existing slot and pointer stay."""
+        from addons.media_import import service
+
+        base, _ = picture_server
+        _seed_file(
+            media_import_db, file_id="h2", drive="d",
+            folder_path="", filename="Cut.loft",
+        )
+        _set_pointer(media_import_db, "h2", ".by-id/h2.jpg")
+        slot = thumbnails_dir / ".by-id/h2.jpg"
+        slot.parent.mkdir(parents=True)
+        slot.write_bytes(b"good")
+
+        rel = service._save_loft_thumbnail(
+            file_id="h2", drive="d", folder_path="",
+            filename="Cut.loft", thumbnail_url=f"{base}/short",
+        )
+
+        assert rel is None
+        assert slot.read_bytes() == b"good"
+        assert [p.name for p in slot.parent.iterdir()] == ["h2.jpg"]
+        assert _read_thumbnail_path(media_import_db, "h2") == ".by-id/h2.jpg"
+
+    def test_truncated_candidate_moves_on_to_the_next_url(
+        self, media_import_db, drive_path, thumbnails_dir, picture_server
+    ) -> None:
+        """SPEC-ADDON-040: a truncated first candidate falls through."""
+        from addons.media_import import service
+
+        base, good = picture_server
+        _seed_file(
+            media_import_db, file_id="h3", drive="d",
+            folder_path="", filename="Next.loft",
+        )
+
+        rel = service._save_loft_thumbnail(
+            file_id="h3", drive="d", folder_path="",
+            filename="Next.loft", thumbnail_url=f"{base}/short",
+            fallback_urls=[f"{base}/good"],
+        )
+
+        assert rel == ".by-id/h3.jpg"
+        assert (thumbnails_dir / ".by-id/h3.jpg").read_bytes() == good
+
+
+class TestSaveLoftThumbnailCommitOrder:
+    def test_failed_commit_leaves_the_old_picture_on_disk(
+        self, media_import_db, drive_path, monkeypatch, thumbnails_dir
+    ) -> None:
+        """SPEC-ADDON-040: the old picture goes only after the commit."""
+        from addons.media_import import service
+        from sqlalchemy.orm import Session
+
+        _seed_file(
+            media_import_db, file_id="c1", drive="d",
+            folder_path="yt", filename="Order.loft",
+        )
+        _set_pointer(media_import_db, "c1", "d/yt/Order.jpg")
+        old_full = thumbnails_dir / "d/yt/Order.jpg"
+        old_full.parent.mkdir(parents=True)
+        old_full.write_bytes(b"old")
+
+        def _download(url: str, dest: Path) -> bool:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"new")
+            return True
+
+        def _boom(self) -> None:
+            raise RuntimeError("commit failed")
+
+        monkeypatch.setattr(service, "_download_thumbnail_sync", _download)
+        monkeypatch.setattr(Session, "commit", _boom)
+
+        with pytest.raises(RuntimeError):
+            service._save_loft_thumbnail(
+                file_id="c1", drive="d", folder_path="yt",
+                filename="Order.loft", thumbnail_url="https://example/o.jpg",
+            )
+
+        assert old_full.read_bytes() == b"old"
