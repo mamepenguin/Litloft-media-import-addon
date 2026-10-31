@@ -461,6 +461,14 @@ class _DroppingResponse:
             return b"partial"
         raise ConnectionResetError("dropped")
 
+    def info(self):
+        from email.message import Message
+
+        return Message()
+
+    def close(self) -> None:
+        return None
+
     def __enter__(self):
         return self
 
