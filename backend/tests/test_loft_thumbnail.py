@@ -299,3 +299,39 @@ class TestSaveLoftThumbnailReplacesPathForm:
         )
 
         assert (config.THUMBNAILS_DIR / ".by-id/f8.jpg").read_bytes() == b"again"
+
+
+class TestSaveLoftThumbnailNFDFilename:
+    def test_nfd_filename_still_yields_the_by_id_slot(
+        self, media_import_db, drive_path, monkeypatch
+    ) -> None:
+        """SPEC-ADDON-040: a decomposed (macOS) filename has no bearing on
+        the slot; the picture lands at ``.by-id/<file id>.jpg``.
+        """
+        from addons.media_import import service
+
+        nfd_filename = "がmeta.loft"  # "か" + combining dakuten
+        _seed_file(
+            media_import_db, file_id="f6", drive="d",
+            folder_path="", filename=nfd_filename,
+        )
+
+        captured: dict = {}
+
+        def _fake_download(url: str, dest: Path) -> bool:
+            captured["dest"] = dest
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"fake jpg")
+            return True
+
+        monkeypatch.setattr(service, "_download_thumbnail_sync", _fake_download)
+
+        rel = service._save_loft_thumbnail(
+            file_id="f6", drive="d", folder_path="",
+            filename=nfd_filename, thumbnail_url="https://example/g.jpg",
+        )
+
+        assert rel == ".by-id/f6.jpg"
+        assert _read_thumbnail_path(media_import_db, "f6") == ".by-id/f6.jpg"
+        assert captured["dest"] == config.THUMBNAILS_DIR / ".by-id/f6.jpg"
+        assert "meta" not in str(captured["dest"])
