@@ -153,40 +153,101 @@ class _FakeYDL:
     def download(self, _urls): return 0
 
 
-@pytest.mark.parametrize("stem, lang_file", [
-    pytest.param(nfc(CAFE), nfd(CAFE) + ".en.vtt", id="nfd-lang-file"),
-    pytest.param("Live [2026] *best?", "Live [2026] *best?.en.vtt", id="glob-metacharacters"),
-    pytest.param(nfc("Été [ライブ]"), nfd("Été [ライブ]") + ".ja.vtt", id="metacharacters-and-nfd"),
+class _CaptionYDL(_FakeYDL):
+    """Writes captions where the output template says, as yt-dlp does."""
+
+    def __init__(self, opts, *_a, **_kw):
+        self.outtmpl = opts["outtmpl"]
+        self.lang = opts["subtitleslangs"][0]
+
+    def download(self, _urls):
+        base = self.outtmpl.replace("%(ext)s", f"{self.lang}.vtt")
+        Path(base).write_text(VTT, encoding="utf-8")
+        return 0
+
+
+@pytest.mark.parametrize("stem", [
+    pytest.param(nfc(CAFE), id="nfc"),
+    pytest.param("Live [2026] *best?", id="glob-metacharacters"),
+    pytest.param(nfc("Été [ライブ]"), id="metacharacters-and-nfd"),
+    pytest.param("Ver", id="neighbour-title-extends-with-dot"),
 ])
-def test_spec_addon_002_caption_download_leaves_stem_vtt(tmp_path, stem, lang_file):
+def test_spec_addon_002_caption_download_leaves_stem_vtt(tmp_path, stem):
     from addons.media_import.service import _download_captions_sync
 
-    (tmp_path / lang_file).write_text(VTT, encoding="utf-8")
     (tmp_path / (stem + ".loft")).write_text("{}", encoding="utf-8")
+    other = tmp_path / f"{stem}.3.0.2.ja.vtt"
+    other.write_text("WEBVTT\n\nneighbour\n", encoding="utf-8")
+    other_loft = tmp_path / f"{stem}.3.0.2.loft"
+    other_loft.write_text("{}", encoding="utf-8")
 
-    with patch("yt_dlp.YoutubeDL", _FakeYDL):
+    with patch("yt_dlp.YoutubeDL", _CaptionYDL):
         result = _download_captions_sync(
             "https://example.com/v", tmp_path / stem, language="en"
         )
 
     assert result == (True, None)
-    assert stem + ".vtt" in os.listdir(tmp_path)
     assert "hello" in (tmp_path / (stem + ".vtt")).read_text(encoding="utf-8")
     assert (tmp_path / (stem + ".loft")).read_text(encoding="utf-8") == "{}"
+    assert "neighbour" in other.read_text(encoding="utf-8")
+    assert other_loft.exists()
 
 
 def test_spec_addon_002_caption_download_replaces_an_older_stem_vtt(tmp_path):
     from addons.media_import.service import _download_captions_sync
 
     (tmp_path / "Clip.vtt").write_text("WEBVTT\n\nold\n", encoding="utf-8")
-    (tmp_path / "Clip.zh.vtt").write_text(VTT, encoding="utf-8")
 
-    with patch("yt_dlp.YoutubeDL", _FakeYDL):
+    with patch("yt_dlp.YoutubeDL", _CaptionYDL):
         result = _download_captions_sync("https://example.com/v", tmp_path / "Clip", language="zh")
 
     assert result == (True, None)
     assert sorted(os.listdir(tmp_path)) == ["Clip.vtt"]
     assert "hello" in (tmp_path / "Clip.vtt").read_text(encoding="utf-8")
+
+
+class _RecordingYDL(_CaptionYDL):
+    """Remembers where yt-dlp was told to write; `behaviour` picks the outcome."""
+
+    scratch_dirs: list[Path] = []
+    behaviour = "captions"
+
+    def __init__(self, opts, *_a, **_kw):
+        super().__init__(opts)
+        type(self).scratch_dirs.append(Path(self.outtmpl).parent)
+
+    def download(self, _urls):
+        if self.behaviour == "captions":
+            return super().download(_urls)
+        if self.behaviour == "raises":
+            Path(self.outtmpl.replace("%(ext)s", "partial")).write_text("x", encoding="utf-8")
+            raise RuntimeError("boom")
+        return 0
+
+
+@pytest.mark.parametrize("behaviour, expected", [
+    pytest.param("captions", (True, None), id="success"),
+    pytest.param("none", (False, None), id="no-captions"),
+    pytest.param("raises", (False, None), id="ytdlp-raises"),
+])
+def test_spec_addon_002_caption_download_works_beside_the_loft_and_leaves_nothing(
+    tmp_path, behaviour, expected
+):
+    from addons.media_import.service import _download_captions_sync
+
+    (tmp_path / "Clip.loft").write_text("{}", encoding="utf-8")
+    ydl = type("YDL", (_RecordingYDL,), {"scratch_dirs": [], "behaviour": behaviour})
+
+    with patch("yt_dlp.YoutubeDL", ydl), \
+            patch("shutil.copy2", side_effect=OSError("no cross-device copy")), \
+            patch("shutil.copystat", side_effect=OSError("no cross-device copy")):
+        result = _download_captions_sync("https://example.com/v", tmp_path / "Clip", language="en")
+
+    assert result == expected
+    assert [d.parent for d in ydl.scratch_dirs] == [tmp_path]
+    assert sorted(os.listdir(tmp_path)) == sorted(
+        ["Clip.loft", "Clip.vtt"] if expected[0] else ["Clip.loft"]
+    )
 
 
 def test_spec_addon_002_sidecar_lookups_in_a_missing_folder_find_nothing(tmp_path):

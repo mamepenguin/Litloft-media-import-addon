@@ -6,7 +6,7 @@
  * error rendering, and folder memory write-back.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import Composer from "@/addons/media_import/Composer";
 import { COMPOSITION_GRACE_MS } from "@/lib/ime";
@@ -292,6 +292,100 @@ describe("Composer submit dispatch", () => {
     await waitFor(() => {
       expect(screen.getByTestId("composer-error")).toHaveTextContent("Boom");
     });
+  });
+});
+
+describe("Composer submit before classification finishes", () => {
+  const CHANNEL = "https://www.youtube.com/channel/UCabc";
+  const VIDEO = "https://youtu.be/abc";
+  const CHANNEL_RES = { kind: "channel", provider: "youtube", ref: "UCabc" };
+  const VIDEO_RES = { kind: "video", provider: "youtube", ref: "abc" };
+
+  const urlBox = () => screen.getByPlaceholderText("https://...");
+  const type = (value: string) => fireEvent.change(urlBox(), { target: { value } });
+  const settle = () => act(async () => {
+    await vi.advanceTimersByTimeAsync(400);
+  });
+  const enter = () => fireEvent.keyDown(urlBox(), { key: "Enter" });
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    mockCreateLoft.mockResolvedValue({ file_id: "f1", filename: "x.loft" });
+    mockCreateSubscription.mockResolvedValue({ id: 7 });
+    mockSyncSubscription.mockResolvedValue({ status: "queued" });
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it.each([
+    { id: "debounce pending", prior: false, wait: "none", resolves: CHANNEL_RES, subscribes: true },
+    { id: "request in flight", prior: false, wait: "debounce", resolves: CHANNEL_RES, subscribes: true },
+    { id: "finished for this URL", prior: false, wait: "settle", resolves: CHANNEL_RES, subscribes: true },
+    { id: "finished for a previous URL", prior: true, wait: "none", resolves: CHANNEL_RES, subscribes: true },
+    { id: "failed before submit", prior: false, wait: "settle", resolves: null, subscribes: false },
+    { id: "failed at submit", prior: false, wait: "none", resolves: null, subscribes: false },
+  ] as const)("$id", async ({ prior, wait, resolves, subscribes }) => {
+    const answer = (u: string) => {
+      if (resolves === null) return Promise.reject(new Error("down"));
+      return Promise.resolve(u === VIDEO ? VIDEO_RES : resolves);
+    };
+    let release: () => void = () => {};
+    mockResolveUrl.mockImplementation((u: string) => {
+      if (wait === "debounce" && mockResolveUrl.mock.calls.length === 1) {
+        return new Promise<void>((r) => { release = r; }).then(() => answer(u));
+      }
+      return answer(u);
+    });
+    render(<Composer drive="d" initialExpanded={true} onCreated={() => {}} />);
+
+    if (prior) {
+      type(VIDEO);
+      await settle();
+      expect(mockResolveUrl).toHaveBeenCalledTimes(1);
+    }
+    type(CHANNEL);
+    if (wait !== "none") await settle();
+    enter();
+    release();
+
+    await waitFor(() => {
+      expect(mockCreateSubscription).toHaveBeenCalledTimes(subscribes ? 1 : 0);
+      expect(mockCreateLoft).toHaveBeenCalledTimes(subscribes ? 0 : 1);
+    });
+  });
+
+  it("does not import twice on a second Enter during the wait", async () => {
+    mockResolveUrl.mockResolvedValue(CHANNEL_RES);
+    render(<Composer drive="d" initialExpanded={true} onCreated={() => {}} />);
+    type(CHANNEL);
+
+    enter();
+    enter();
+
+    await waitFor(() => expect(mockCreateSubscription).toHaveBeenCalledTimes(1));
+    expect(mockSyncSubscription).toHaveBeenCalledTimes(1);
+  });
+
+  it("does nothing on Enter with an empty input", () => {
+    render(<Composer drive="d" initialExpanded={true} onCreated={() => {}} />);
+    enter();
+    expect(mockResolveUrl).not.toHaveBeenCalled();
+    expect(mockCreateLoft).not.toHaveBeenCalled();
+    expect(mockCreateSubscription).not.toHaveBeenCalled();
+  });
+
+  it("uses the remembered folder when the preview has not finished", async () => {
+    rememberFolder("d", "youtube", "channel", "videos/yt");
+    mockResolveUrl.mockResolvedValue(CHANNEL_RES);
+    render(<Composer drive="d" initialExpanded={true} onCreated={() => {}} />);
+    type(CHANNEL);
+
+    enter();
+
+    await waitFor(() =>
+      expect(mockCreateSubscription).toHaveBeenCalledWith(
+        expect.objectContaining({ folder_path: "videos/yt" }),
+      ),
+    );
   });
 });
 

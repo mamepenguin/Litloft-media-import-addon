@@ -69,6 +69,18 @@ interface PendingItem {
 }
 
 
+interface Classification {
+  kind: SubscriptionKind;
+  provider: string | null;
+}
+
+function rememberedFolder(drive: string, c: Classification): string | null {
+  if (c.provider && (c.kind === "channel" || c.kind === "playlist" || c.kind === "video")) {
+    return getLastFolder(drive, c.provider, c.kind) || null;
+  }
+  return null;
+}
+
 function extractUrl(e: React.DragEvent): string | null {
   const uri = e.dataTransfer.getData("text/uri-list");
   if (uri) {
@@ -92,7 +104,6 @@ export default function Composer({
   const [expanded, setExpanded] = useState(initialExpanded);
   const [url, setUrl] = useState("");
   const [kind, setKind] = useState<SubscriptionKind>("unknown");
-  const [provider, setProvider] = useState<string | null>(null);
   const [resolving, setResolving] = useState(false);
 
   const [selectedFolder, setSelectedFolder] = useState("");
@@ -111,6 +122,7 @@ export default function Composer({
   const [dragOver, setDragOver] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
+  const classified = useRef<(Classification & { url: string }) | null>(null);
   const ime = useImeKeyGuard();
 
   useEffect(() => {
@@ -121,7 +133,6 @@ export default function Composer({
     const trimmed = url.trim();
     if (!trimmed) {
       setKind("unknown");
-      setProvider(null);
       return;
     }
     if (!drive) return;
@@ -129,22 +140,18 @@ export default function Composer({
     const handle = setTimeout(() => {
       resolveSubscriptionUrl(trimmed, drive)
         .then((res) => {
+          classified.current = { url: trimmed, kind: res.kind, provider: res.provider };
           setKind(res.kind);
-          setProvider(res.provider);
-          if (
-            res.provider
-            && (res.kind === "channel" || res.kind === "playlist" || res.kind === "video")
-            && selectedFolder === ""
-          ) {
-            const last = getLastFolder(drive, res.provider, res.kind);
+          if (selectedFolder === "") {
+            const last = rememberedFolder(drive, res);
             if (last) {
               setSelectedFolder(last);
             }
           }
         })
         .catch(() => {
+          classified.current = { url: trimmed, kind: "unknown", provider: null };
           setKind("unknown");
-          setProvider(null);
         })
         .finally(() => setResolving(false));
     }, 400);
@@ -160,18 +167,32 @@ export default function Composer({
     setSubmitting(true);
     setError(null);
     try {
-      if (isSubscriptionKind(kind)) {
+      // A preview that has not finished for this URL is replaced by a
+      // classification made now, so a channel pasted and submitted at once
+      // cannot reach `createLoft`.
+      const done = classified.current;
+      let folder = selectedFolder;
+      let current: Classification;
+      if (done && done.url === trimmed) {
+        current = done;
+      } else {
+        current = await resolveSubscriptionUrl(trimmed, drive)
+          .then((res) => ({ kind: res.kind, provider: res.provider }))
+          .catch(() => ({ kind: "unknown" as const, provider: null }));
+        if (folder === "") folder = rememberedFolder(drive, current) ?? "";
+      }
+      if (isSubscriptionKind(current.kind)) {
         const sub = await createSubscription({
           url: trimmed,
           drive,
-          folder_path: selectedFolder,
+          folder_path: folder,
           include_no_transcript: includeNoTranscript,
           display_mode: displayMode,
         });
         await syncSubscription(drive, sub.id, backfill);
       } else {
         window.localStorage.setItem(STT_MODE_STORAGE_KEY, sttMode);
-        const result = await createLoft(trimmed, drive, selectedFolder, sttMode);
+        const result = await createLoft(trimmed, drive, folder, sttMode);
         const next: PendingItem = {
           url: trimmed,
           filename: result.filename,
@@ -180,12 +201,12 @@ export default function Composer({
         };
         setRecent((prev) => [next, ...prev].slice(0, 5));
       }
-      if (provider) {
-        rememberFolder(drive, provider, kind, selectedFolder);
+      if (current.provider) {
+        rememberFolder(drive, current.provider, current.kind, folder);
       }
+      classified.current = null;
       setUrl("");
       setKind("unknown");
-      setProvider(null);
       onCreated();
       inputRef.current?.focus();
     } catch (e) {

@@ -105,19 +105,21 @@ class TestDownloadCaptionsSyncReturnShape:
     def test_returns_true_when_vtt_exists(self, tmp_path) -> None:
         """Simulate yt-dlp creating a .lang.vtt file. Return (True, None)."""
         output_stem = tmp_path / "video"
-        vtt = tmp_path / "video.en.vtt"
-        vtt.write_text(
-            "WEBVTT\n\n"
-            "00:00:00.000 --> 00:00:01.000\nhello\n\n"
-            "00:00:01.000 --> 00:00:02.000\nworld\n",
-            encoding="utf-8",
-        )
 
         class _FakeYDL:
-            def __init__(self, *_a, **_kw): ...
+            def __init__(self, opts, *_a, **_kw):
+                self.outtmpl = opts["outtmpl"]
             def __enter__(self): return self
             def __exit__(self, *exc): return False
-            def download(self, _urls): return 0
+            def download(self, _urls):
+                from pathlib import Path
+                Path(self.outtmpl.replace("%(ext)s", "en.vtt")).write_text(
+                    "WEBVTT\n\n"
+                    "00:00:00.000 --> 00:00:01.000\nhello\n\n"
+                    "00:00:01.000 --> 00:00:02.000\nworld\n",
+                    encoding="utf-8",
+                )
+                return 0
 
         with patch("yt_dlp.YoutubeDL", _FakeYDL):
             result = _download_captions_sync(

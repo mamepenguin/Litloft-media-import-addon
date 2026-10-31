@@ -18,7 +18,9 @@ PACKAGE = Path(__file__).resolve().parents[1]
 STORED_NAME = "stored-name"
 LISTING_ONLY = "listing-only"
 
-INVENTORY: dict[tuple[str, str, str], tuple[int, str]] = {}
+INVENTORY: dict[tuple[str, str, str], tuple[int, str]] = {
+    ("service.py", "_download_captions_sync", "glob"): (1, LISTING_ONLY),
+}
 
 _METHODS = {"glob", "rglob", "iterdir"}
 _MODULE_FUNCS = {
