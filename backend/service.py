@@ -20,11 +20,13 @@ from pathlib import Path
 import app.config as config
 from app.database import SessionLocal
 from app.models import File
+from app.services.atomic_write import generating_file
 from app.services.chapters import normalise_chapters, replace_chapters
 from app.services.hash import compute_file_hash
 from app.services.provider_registry import detect_provider
 from app.services.scanner import register_single_file
 from app.services.sidecar_match import match_siblings
+from app.services.thumbnail import remove_thumbnail_quietly, thumbnail_slot_rel
 from sqlalchemy import text
 
 from app.services import event_hooks
@@ -540,8 +542,8 @@ def _download_thumbnail_sync(thumbnail_url: str, dest: Path) -> bool:
         return False
 
     try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        urllib.request.urlretrieve(thumbnail_url, str(dest))
+        with generating_file(dest) as temporary:
+            urllib.request.urlretrieve(thumbnail_url, str(temporary))
         return True
     except Exception:
         logger.warning("Failed to download thumbnail: %s", thumbnail_url)
@@ -602,27 +604,26 @@ def _save_loft_thumbnail(
     candidates = [u for u in [thumbnail_url, *(fallback_urls or [])] if u]
     if not candidates:
         return None
-    nfc_stem = Path(unicodedata.normalize("NFC", filename)).stem
-    thumb_rel = (
-        f"{drive}/{folder_path}/{nfc_stem}.jpg"
-        if folder_path
-        else f"{drive}/{nfc_stem}.jpg"
-    )
+    thumb_rel = thumbnail_slot_rel(file_id)
     thumb_full = config.THUMBNAILS_DIR / thumb_rel
     for url in candidates:
         if _download_thumbnail_sync(url, thumb_full):
             break
     else:
         return None
+    old_rel: str | None = None
     db = SessionLocal()
     try:
         file_record = db.query(File).filter(File.id == file_id).first()
         if file_record is None:
             return None
+        old_rel = file_record.thumbnail_path
         file_record.thumbnail_path = thumb_rel
         db.commit()
     finally:
         db.close()
+    if old_rel != thumb_rel:
+        remove_thumbnail_quietly(old_rel)
     return thumb_rel
 
 

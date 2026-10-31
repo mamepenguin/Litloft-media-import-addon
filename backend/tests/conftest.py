@@ -97,3 +97,13 @@ def drive_path(tmp_path, monkeypatch):
         config, "get_drive_access_group", _fake_get_drive_access_group
     )
     return drive_dir
+
+
+@pytest.fixture(autouse=True)
+def thumbnails_dir(tmp_path_factory, monkeypatch):
+    """Keep thumbnail writes out of the process-wide cache directory."""
+    import app.config as config
+
+    directory = tmp_path_factory.mktemp("thumbnails")
+    monkeypatch.setattr(config, "THUMBNAILS_DIR", directory)
+    return directory
