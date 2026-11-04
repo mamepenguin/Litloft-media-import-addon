@@ -604,7 +604,28 @@ describe("YouTubeEmbed fullscreen in the iOS shell", () => {
     posted = [];
     const target = window as unknown as Record<string, unknown>;
     target.__litloftShell = { version: 4 };
-    target.webkit = { messageHandlers: { litloft: { postMessage: (body: unknown) => posted.push(body) } } };
+    target.webkit = {
+      messageHandlers: {
+        litloft: {
+          postMessage: (body: unknown) => {
+            posted.push(body);
+            const message = body as { type?: string; active?: boolean };
+            // A version-4 shell answers every `page.immersive` it applies.
+            // Without that answer the page's hold waits out its timeout, and
+            // the frame it schedules lands after this file has been torn down.
+            if (message.type !== "page.immersive" || !message.active) return;
+            const receive = (target as { __litloft?: { receive(payload: unknown): void } })
+              .__litloft;
+            receive?.receive({
+              type: "page.immersive.applied",
+              active: true,
+              width: document.documentElement.clientWidth,
+              height: document.documentElement.clientHeight,
+            });
+          },
+        },
+      },
+    };
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
       matches: query.includes("pointer: coarse"),
       media: query,
@@ -634,6 +655,9 @@ describe("YouTubeEmbed fullscreen in the iOS shell", () => {
   async function pressFullscreen() {
     await act(async () => {
       pressShortcut("f");
+      // The hold resolves on the shell's answer above, and the component
+      // pins one frame later. Let that frame run inside the test.
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     });
   }
 
