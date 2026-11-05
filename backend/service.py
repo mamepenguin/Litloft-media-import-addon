@@ -22,6 +22,7 @@ from app.database import SessionLocal
 from app.models import File
 from app.services.atomic_write import generating_file
 from app.services.chapters import normalise_chapters, replace_chapters
+from app.services.diskpath import AmbiguousPath, name_taken, resolve_on_disk
 from app.services.hash import compute_file_hash
 from app.services.provider_registry import detect_provider
 from app.services.scanner import register_single_file
@@ -297,7 +298,7 @@ def _cleanup_stt_temp(output_stem: Path) -> None:
 def _resolve_drive_file_path(drive: str, relative_path: str) -> Path:
     drive_path = config.get_drive_path(drive)
     drive_root = drive_path.resolve()
-    target = (drive_path / relative_path).resolve()
+    target = resolve_on_disk(drive_path, relative_path).resolve()
     if not (target == drive_root or target.is_relative_to(drive_root)):
         raise ValueError("File path escapes drive root")
     return target
@@ -686,7 +687,14 @@ class LoftManager:
         provider = detect_provider(url)
 
         drive_path = config.get_drive_path(drive)
-        output_dir = drive_path / folder_path if folder_path else drive_path
+        try:
+            output_dir = (
+                resolve_on_disk(drive_path, folder_path, strict=True)
+                if folder_path
+                else drive_path
+            )
+        except AmbiguousPath:
+            raise ValueError(f"Ambiguous folder name on disk: {folder_path!r}") from None
         output_dir.mkdir(parents=True, exist_ok=True)
 
         loft_content = json.dumps(
@@ -699,7 +707,7 @@ class LoftManager:
         file_path = output_dir / filename
 
         counter = 1
-        while file_path.exists():
+        while name_taken(file_path):
             filename = f"{safe_title} ({counter}).loft"
             file_path = output_dir / filename
             counter += 1
