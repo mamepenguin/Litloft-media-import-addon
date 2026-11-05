@@ -31,6 +31,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import app.config as config
+from app.services.diskpath import AmbiguousPath, name_taken, resolve_on_disk
 from app.services import event_hooks
 
 from ..service import (
@@ -138,7 +139,14 @@ def _allocate_loft_path(
     escape the drive root irreversibly (see hako PKehLyI3eRqO3Vl6Fv5iy).
     """
     drive_root = drive_path.resolve()
-    target = (drive_path / folder_path).resolve() if folder_path else drive_root
+    try:
+        target = (
+            resolve_on_disk(drive_path, folder_path, strict=True).resolve()
+            if folder_path
+            else drive_root
+        )
+    except AmbiguousPath:
+        raise ValueError(f"folder_path is ambiguous on disk: {folder_path!r}") from None
     if not (target == drive_root or target.is_relative_to(drive_root)):
         raise ValueError(
             f"folder_path escapes drive root: {folder_path!r}"
@@ -147,14 +155,14 @@ def _allocate_loft_path(
     safe = _sanitize_filename(title)
     candidate = target / f"{safe}.loft"
     counter = 1
-    while candidate.exists():
+    while name_taken(candidate):
         candidate = target / f"{safe} ({counter}).loft"
         counter += 1
     return candidate
 
 
 def _save_vtt(loft_path: Path, vtt_text: str) -> None:
-    vtt_path = loft_path.with_suffix(".vtt")
+    vtt_path = resolve_on_disk(loft_path.parent, loft_path.with_suffix(".vtt").name)
     vtt_path.write_text(vtt_text, encoding="utf-8")
 
 

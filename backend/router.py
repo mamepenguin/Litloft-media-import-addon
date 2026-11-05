@@ -28,6 +28,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import text
 
 import app.config as config
+from app.services.diskpath import resolve_on_disk
 from app.auth import check_drive_access, get_unlocked_groups, get_viewer_id
 from app.database import SessionLocal
 
@@ -342,7 +343,7 @@ def _validate_folder_path(folder_path: str, drive: str) -> None:
         return
     drive_path = config.get_drive_path(drive)
     drive_root = drive_path.resolve()
-    target = (drive_path / folder_path).resolve()
+    target = resolve_on_disk(drive_path, folder_path).resolve()
     if not (target == drive_root or target.is_relative_to(drive_root)):
         raise HTTPException(
             status_code=400,
