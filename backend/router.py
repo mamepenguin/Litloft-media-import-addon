@@ -98,6 +98,22 @@ ADDON_META = {
         "file-actions-menu": [
             {"id": "loft-refresh", "label": "Refresh metadata", "priority": 20},
         ],
+        "video-discover-shelves": [
+            {
+                "id": "media-import-regular",
+                "label": "Regular sources",
+                "i18n_key": "mediaImport.slots.videoRegular",
+                "priority": 10,
+                "href": "addons/media_import",
+            },
+            {
+                "id": "media-import-feed",
+                "label": "New from subscriptions",
+                "i18n_key": "mediaImport.slots.videoFeed",
+                "priority": 20,
+                "href": "addons/media_import",
+            },
+        ],
     },
 }
 

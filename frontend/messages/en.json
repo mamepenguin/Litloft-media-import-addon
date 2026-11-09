@@ -12,6 +12,10 @@
     "sidebar": {
       "label": "YouTube & Feeds"
     },
+    "slots": {
+      "videoRegular": "Regular sources",
+      "videoFeed": "New from subscriptions"
+    },
     "loadingDrive": "Loading drive...",
     "nav": {
       "label": "Media Import views",
