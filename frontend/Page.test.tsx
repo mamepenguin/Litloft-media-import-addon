@@ -1,19 +1,21 @@
 /**
- * Watch / Manage navigation.
- *
- * Spec §3.1: Manage stays the useful landing view when nothing has been
- * surfaced, and Watch never implies that importing is unfinished.
+ * SPEC-ADDON-092: the Media Import page is the management view, with no
+ * tabs and no Watch. It reads the subscription list once, only to decide
+ * whether the Composer starts expanded.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { render, screen, waitFor } from "@testing-library/react";
 
 import MediaImportPage from "@/addons/media_import/Page";
 import type { Subscription } from "@/addons/media_import/api";
 
 const mockListSubscriptions = vi.fn();
+const routeParams = vi.hoisted(() => ({ current: { name: "d" } }));
 
 vi.mock("next/navigation", () => ({
-  useParams: () => ({ name: "d" }),
+  useParams: () => routeParams.current,
   useRouter: () => ({ push: vi.fn() }),
 }));
 
@@ -54,6 +56,13 @@ vi.mock("@/hooks/useWebSocket", () => ({
   useWebSocket: () => null,
 }));
 
+const ADDON_ROOT = [
+  resolve(process.cwd(), "../addons/media_import"),
+  resolve(process.cwd(), "addons/media_import"),
+].find((candidate) => existsSync(resolve(candidate, "frontend", "messages", "en.json")))!;
+
+const LOADING = "Loading drive...";
+
 function makeSubscription(mode: Subscription["display_mode"]): Subscription {
   return {
     id: 1,
@@ -76,56 +85,93 @@ function makeSubscription(mode: Subscription["display_mode"]): Subscription {
   };
 }
 
-describe("MediaImportPage navigation", () => {
+function expectNoTabsAndNoWatch() {
+  expect(screen.queryByRole("tablist")).toBeNull();
+  expect(screen.queryByRole("tab")).toBeNull();
+  expect(screen.queryByRole("tabpanel")).toBeNull();
+  expect(screen.queryByTestId("watch-view")).toBeNull();
+  expect(screen.queryByText("Watch")).toBeNull();
+  expect(screen.queryByText("Manage")).toBeNull();
+}
+
+async function expectManagementView(composer: "composer-collapsed" | "composer-expanded") {
+  await waitFor(() => expect(screen.getByTestId(composer)).toBeInTheDocument());
+  expect(
+    (await screen.findAllByTestId(/^(dashboard-|subscription-card-)/)).length,
+  ).toBeGreaterThan(0);
+  expect(await screen.findByTestId("activity-empty")).toBeInTheDocument();
+  expect(screen.queryByText(LOADING)).toBeNull();
+  expectNoTabsAndNoWatch();
+}
+
+describe("SPEC-ADDON-092 MediaImportPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    routeParams.current = { name: "d" };
   });
 
-  it("lands on Manage when nothing is surfaced", async () => {
-    mockListSubscriptions.mockResolvedValue([makeSubscription("library")]);
+  it.each(["library", "feed", "regular"] as const)(
+    "SPEC-ADDON-092 I9 shows the management view with the Composer collapsed for a %s subscription",
+    async (mode) => {
+      mockListSubscriptions.mockResolvedValue([makeSubscription(mode)]);
+      render(<MediaImportPage />);
+
+      await expectManagementView("composer-collapsed");
+    },
+  );
+
+  it("SPEC-ADDON-092 I9 expands the Composer when there is no subscription", async () => {
+    mockListSubscriptions.mockResolvedValue([]);
     render(<MediaImportPage />);
 
+    await expectManagementView("composer-expanded");
+  });
+
+  it("SPEC-ADDON-092 I9 expands the Composer when subscriptions cannot be read", async () => {
+    mockListSubscriptions.mockRejectedValue(new Error("offline"));
+    render(<MediaImportPage />);
+
+    await expectManagementView("composer-expanded");
+  });
+
+  it("SPEC-ADDON-092 §3 moving to another drive starts again from the loading line and reads that drive", async () => {
+    mockListSubscriptions.mockImplementation(async (drive: string) =>
+      drive === "d" ? [] : new Promise(() => {}),
+    );
+    const { rerender } = render(<MediaImportPage />);
+    await waitFor(() =>
+      expect(screen.getByTestId("composer-expanded")).toBeInTheDocument(),
+    );
+
+    let settle: (subs: Subscription[]) => void = () => {};
+    const driveE = new Promise<Subscription[]>((ok) => {
+      settle = ok;
+    });
+    mockListSubscriptions.mockImplementation((drive: string) =>
+      drive === "e" ? driveE : new Promise(() => {}),
+    );
+    routeParams.current = { name: "e" };
+    rerender(<MediaImportPage />);
+
+    // SPEC-ADDON-092 I9: until the read settles, only the loading line.
+    await waitFor(() => expect(screen.getByText(LOADING)).toBeInTheDocument());
+    expect(screen.queryByTestId("composer-expanded")).toBeNull();
+    expect(screen.queryByTestId("composer-collapsed")).toBeNull();
+    expect(screen.queryByTestId("activity-empty")).toBeNull();
+    expect(screen.queryAllByTestId(/^(dashboard-|subscription-card-)/)).toHaveLength(0);
+    expectNoTabsAndNoWatch();
+    expect(mockListSubscriptions.mock.calls.some((c) => c[0] === "e")).toBe(true);
+
+    settle([makeSubscription("feed")]);
+    await expectManagementView("composer-collapsed");
+  });
+
+  it("SPEC-ADDON-092 states the page and the drive in one header", async () => {
+    mockListSubscriptions.mockResolvedValue([makeSubscription("feed")]);
+    render(<MediaImportPage />);
     await waitFor(() =>
       expect(screen.getByTestId("composer-collapsed")).toBeInTheDocument(),
     );
-    expect(screen.queryByTestId("watch-view")).toBeNull();
-  });
-
-  it("lands on Watch once a source is surfaced", async () => {
-    mockListSubscriptions.mockResolvedValue([makeSubscription("feed")]);
-    render(<MediaImportPage />);
-
-    await waitFor(() =>
-      expect(screen.getByTestId("watch-view")).toBeInTheDocument(),
-    );
-  });
-
-  it("lets the user switch between the two views", async () => {
-    mockListSubscriptions.mockResolvedValue([makeSubscription("feed")]);
-    render(<MediaImportPage />);
-
-    await waitFor(() =>
-      expect(screen.getByTestId("watch-view")).toBeInTheDocument(),
-    );
-
-    // `tab`, not `button`: these two views are one page, so core's
-    // `PageTabs` gives them a tablist rather than a set of navigations.
-    fireEvent.click(screen.getByRole("tab", { name: "Manage" }));
-    expect(screen.queryByTestId("watch-view")).toBeNull();
-    expect(screen.getByTestId("composer-collapsed")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("tab", { name: "Watch" }));
-    expect(screen.getByTestId("watch-view")).toBeInTheDocument();
-  });
-
-  it("states the page and the drive in one header", async () => {
-    mockListSubscriptions.mockResolvedValue([makeSubscription("feed")]);
-    render(<MediaImportPage />);
-    await waitFor(() =>
-      expect(screen.getByTestId("watch-view")).toBeInTheDocument(),
-    );
-    // Titled with the sidebar row that opened it, and the drive on the
-    // scope line.
     const heading = screen.getByRole("heading", { level: 1 });
     expect(heading.textContent).toBe("YouTube & Feeds");
     expect(heading.nextElementSibling?.textContent).toBe("d");
@@ -134,7 +180,7 @@ describe("MediaImportPage navigation", () => {
     expect(header.parentElement?.getAttribute("data-page-frame")).toBe("full");
   });
 
-  it("draws the header before it knows which view to land on", () => {
+  it("draws the header before the subscription read settles", () => {
     mockListSubscriptions.mockReturnValue(new Promise(() => {}));
     render(<MediaImportPage />);
     const heading = screen.getByRole("heading", { level: 1 });
@@ -143,51 +189,15 @@ describe("MediaImportPage navigation", () => {
     expect(screen.queryByRole("tab")).toBeNull();
   });
 
-  it("says which view is selected, in the tablist's own vocabulary", async () => {
-    mockListSubscriptions.mockResolvedValue([makeSubscription("feed")]);
-    render(<MediaImportPage />);
-    await waitFor(() =>
-      expect(screen.getByTestId("watch-view")).toBeInTheDocument(),
-    );
-    expect(screen.getByRole("tab", { name: "Watch" })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
-    expect(screen.getByRole("tab", { name: "Manage" })).toHaveAttribute(
-      "aria-selected",
-      "false",
-    );
-    // And not also `aria-current`: that names the current *page* among
-    // navigations, and these two are one page. Carrying both said the same
-    // thing in two vocabularies, which is the pairing `PageTabs` exists to
-    // take apart.
-    for (const tab of screen.getAllByRole("tab")) {
-      expect(tab).not.toHaveAttribute("aria-current");
-    }
-  });
+  it.each(["ja", "en"])(
+    "SPEC-ADDON-092 I9 %s messages hold no mediaImport.nav or mediaImport.watch key",
+    (locale) => {
+      const messages = JSON.parse(
+        readFileSync(resolve(ADDON_ROOT, "frontend", "messages", `${locale}.json`), "utf-8"),
+      ) as { mediaImport: Record<string, unknown> };
 
-  it("gives the tablist a panel to point at", async () => {
-    // A tablist promises that activating a tab swaps a region. Without a
-    // `tabpanel` a screen reader is told that and never told which region.
-    mockListSubscriptions.mockResolvedValue([makeSubscription("feed")]);
-    render(<MediaImportPage />);
-    await waitFor(() =>
-      expect(screen.getByTestId("watch-view")).toBeInTheDocument(),
-    );
-    const panel = screen.getByRole("tabpanel");
-    expect(panel).toHaveAccessibleName("Watch");
-    expect(panel).toContainElement(screen.getByTestId("watch-view"));
-
-    fireEvent.click(screen.getByRole("tab", { name: "Manage" }));
-    expect(screen.getByRole("tabpanel")).toHaveAccessibleName("Manage");
-  });
-
-  it("falls back to Manage when subscriptions cannot be read", async () => {
-    mockListSubscriptions.mockRejectedValue(new Error("offline"));
-    render(<MediaImportPage />);
-
-    await waitFor(() =>
-      expect(screen.getByTestId("composer-expanded")).toBeInTheDocument(),
-    );
-  });
+      expect(messages.mediaImport).not.toHaveProperty("nav");
+      expect(messages.mediaImport).not.toHaveProperty("watch");
+    },
+  );
 });

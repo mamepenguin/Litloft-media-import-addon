@@ -9,6 +9,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 import Composer from "@/addons/media_import/Composer";
 import DisplayModeField from "@/addons/media_import/DisplayModeField";
@@ -100,15 +102,15 @@ describe("DisplayModeField", () => {
     );
     const radios = screen.getAllByRole("radio");
     expect(radios).toHaveLength(3);
-    expect(screen.getByLabelText(/Library only/)).toBeChecked();
-    expect(screen.getByLabelText(/Show in recent videos/)).not.toBeChecked();
-    expect(screen.getByLabelText(/Regular source/)).not.toBeChecked();
+    expect(screen.getByLabelText(/^Library only/)).toBeChecked();
+    expect(screen.getByLabelText(/^Show in New from subscriptions/)).not.toBeChecked();
+    expect(screen.getByLabelText(/^Regular source/)).not.toBeChecked();
   });
 
   it("reports the chosen mode", () => {
     const onChange = vi.fn();
     render(<DisplayModeField name="t" value="library" onChange={onChange} />);
-    fireEvent.click(screen.getByLabelText(/Regular source/));
+    fireEvent.click(screen.getByLabelText(/^Regular source/));
     expect(onChange).toHaveBeenCalledWith("regular");
   });
 });
@@ -134,7 +136,7 @@ describe("Composer display mode", () => {
 
   it("creates subscriptions as library by default", async () => {
     await typeChannelUrl();
-    expect(screen.getByLabelText(/Library only/)).toBeChecked();
+    expect(screen.getByLabelText(/^Library only/)).toBeChecked();
 
     fireEvent.click(screen.getByTestId("composer-submit"));
     await waitFor(() =>
@@ -146,7 +148,7 @@ describe("Composer display mode", () => {
 
   it("sends the mode the user opted into", async () => {
     await typeChannelUrl();
-    fireEvent.click(screen.getByLabelText(/Show in recent videos/));
+    fireEvent.click(screen.getByLabelText(/^Show in New from subscriptions/));
     fireEvent.click(screen.getByTestId("composer-submit"));
 
     await waitFor(() =>
@@ -193,7 +195,7 @@ describe("SubscriptionDetailPanel display mode", () => {
       />,
     );
 
-    fireEvent.click(screen.getByLabelText(/Regular source/));
+    fireEvent.click(screen.getByLabelText(/^Regular source/));
 
     await waitFor(() =>
       expect(mockPatchSubscription).toHaveBeenCalledWith("d", 1, {
@@ -211,6 +213,51 @@ describe("SubscriptionDetailPanel display mode", () => {
         onChanged={() => {}}
       />,
     );
-    expect(screen.getByLabelText(/Show in recent videos/)).toBeChecked();
+    expect(screen.getByLabelText(/^Show in New from subscriptions/)).toBeChecked();
+  });
+});
+
+const ADDON_ROOT = [
+  resolve(process.cwd(), "../addons/media_import"),
+  resolve(process.cwd(), "addons/media_import"),
+].find((candidate) => existsSync(resolve(candidate, "frontend", "messages", "en.json")))!;
+
+const DISPLAY_MODE_TEXT = {
+  ja: {
+    legend: "動画アプリでの表示",
+    library: { label: "ライブラリのみ", hint: "取り込んで検索・Ask の対象にします。動画アプリの発見には並びません。" },
+    feed: { label: "購読の新着に表示", hint: "新しい動画を、動画アプリの発見の「購読の新着」に新しい順で並べます。" },
+    regular: { label: "よく見るソース", hint: "習慣的に見るチャンネルとして、動画アプリの発見の「よく見るソース」に並べます。" },
+  },
+  en: {
+    legend: "Show in the video app",
+    library: { hint: "Imported and searchable, including Ask. Not shown on the video app's Discover." },
+    feed: {
+      label: "Show in New from subscriptions",
+      hint: "New videos appear newest first in \"New from subscriptions\" on the video app's Discover.",
+    },
+    regular: { hint: "A source you watch habitually, shown in \"Regular sources\" on the video app's Discover." },
+  },
+} as const;
+
+describe("SPEC-ADDON-092 I10 display-mode wording", () => {
+  it.each(["ja", "en"] as const)(
+    "SPEC-ADDON-092 I10 %s messages carry the legend, feed label and hints that name the video app",
+    (locale) => {
+      const messages = JSON.parse(
+        readFileSync(resolve(ADDON_ROOT, "frontend", "messages", `${locale}.json`), "utf-8"),
+      ) as { mediaImport: { displayMode: unknown } };
+
+      expect(messages.mediaImport.displayMode).toMatchObject(DISPLAY_MODE_TEXT[locale]);
+    },
+  );
+
+  it("SPEC-ADDON-092 I10 the field shows the legend and the hints", () => {
+    render(<DisplayModeField name="t" value="library" onChange={() => {}} />);
+
+    expect(screen.getByText("Show in the video app")).toBeInTheDocument();
+    for (const mode of ["library", "feed", "regular"] as const) {
+      expect(screen.getByText(DISPLAY_MODE_TEXT.en[mode].hint)).toBeInTheDocument();
+    }
   });
 });
