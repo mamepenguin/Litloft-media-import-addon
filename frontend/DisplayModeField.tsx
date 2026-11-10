@@ -13,15 +13,13 @@ interface Props {
 }
 
 /**
- * Picks how prominently a subscription's new videos appear in Watch.
+ * Picks where a subscription's new videos appear in the video app.
  *
  * A radio group rather than a select: the three options are not
  * interchangeable settings but a statement of intent, and each needs a
  * line of explanation next to it. `library` is listed first and is the
- * default — a subscription reaches Watch only because the user put it
+ * default — a subscription reaches a shelf only because the user put it
  * there.
- *
- * Spec: 2026-08-10-media-import-watch-surface.md §3.2.
  */
 export default function DisplayModeField({
   value,

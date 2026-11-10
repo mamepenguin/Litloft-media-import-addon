@@ -34,29 +34,26 @@ docker compose up -d --build
 | POST | /api/addons/media_import/link | URL → `.loft` 生成（drive, folder_path 指定） |
 | GET | /api/addons/media_import/link/{file_id}/metadata | loft_metadata 取得 |
 | POST | /api/addons/media_import/link/{file_id}/refresh | メタデータ・字幕の再取得をキュー |
-| GET | /api/addons/media_import/watch | Watch 面の 1 レーン（`lane=regular\|feed`） |
+| GET | /api/addons/media_import/watch | 1 レーンを 1 ページずつ（`lane=regular\|feed`、`after` で続きから） |
 
 `/link` 系はすべて `X-Lit-Drive` ヘッダー（percent-encode したドライブ名）が必須。無ければ 400、ロック中のドライブや別ドライブのファイルを指すと 404 を返す。
 
-## Watch 面
+## 動画アプリの発見
 
-ページは **Watch**（見る）と **Manage**（管理）の 2 ビューに分かれる。
+購読の `display_mode` は、動画アプリの発見に並ぶ 2 つの棚を決める。
 
-取り込みは視聴意思を意味しない。動画を取り込む主目的は字幕・メタデータ検索と Ask であり、未再生の動画を未処理 Inbox として積み上げない。そのため購読ごとに表示レベルを持つ:
-
-| モード | 意味 | Watch での扱い |
+| モード | 意味 | 動画アプリでの扱い |
 |---|---|---|
-| `library`（既定） | 取り込んで検索対象にする | レーンに出さない |
-| `feed` | 新しいうちは気になるかもしれない | 新着レーンに時系列で並ぶ |
-| `regular` | 習慣的に見るソース | よく見るソースレーンに優先表示 |
+| `library`（既定） | 取り込んで検索対象にする | 棚に出さない |
+| `feed` | 新しいうちは気になるかもしれない | 「購読の新着」に新しい順で並ぶ |
+| `regular` | 習慣的に見るソース | 「よく見るソース」に並ぶ |
 
-- 既存購読と新規購読はどちらも `library` から始まる。昇格は利用者の明示操作のみ。
+- 既存購読と新規購読はどちらも `library` から始まる。取り込みは視聴意思を意味しない。
+- 棚はページプロバイダ（`frontend/slots.ts` の `slotPageProviders`）として公開する。各ページは `/watch` を keyset カーソル（`after`）で 60 件ずつ読み、`restrict` が許可した行だけを棚の順で返す。1 回の呼び出しは最大 10 回読む。
+- カードの 2 行目はチャンネル名と公開日（`チャンネル名 · 2026年11月1日`）。どちらかが無ければ片方だけ、両方無ければ出さない。
+- 棚の「すべて見る」は動画アプリ内の棚ページを開く。
 - モード変更は表示のみに影響する。再取り込み・再インデックス・ファイル移動は一切起きない。
-- 未読件数やバックログ総数は出さない。`/watch` は総件数を返さない。
-- 再生状態は Core の `WatchHistory` が正典。Media Import は独自の視聴済みフラグを持たない。
-- 「後で見る」は Core Collection に追加する。独自の Watch Later は作らない。
-
-設計: `docs/superpowers/specs/2026-08-10-media-import-watch-surface.md`
+- 総件数は出さない。`/watch` は総件数を返さない。
 
 ## Policy
 

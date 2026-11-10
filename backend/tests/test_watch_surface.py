@@ -632,13 +632,7 @@ class TestRegularSourceCap:
     def test_completed_videos_are_not_treated_differently(
         self, client, media_import_db
     ):
-        """The cap ranks by date, never by playback state (spec §2).
-
-        Dropping watched videos from the lane was considered and
-        rejected: the parent spec §2.2 commits to subduing them without
-        reordering. A cap that quietly skipped them would retract that
-        by the back door.
-        """
+        """The cap ranks by date, never by watch history."""
         ids = self._source(
             media_import_db,
             "chan1",
@@ -656,7 +650,6 @@ class TestRegularSourceCap:
             "c3aaaaaaaaaa",
             "c2aaaaaaaaaa",
         ]
-        assert items[0]["playback"]["state"] == "completed"
 
     def test_feed_is_never_capped(self, client, media_import_db):
         """``feed`` keeps every video: it is the chronological lane."""
@@ -672,126 +665,6 @@ class TestRegularSourceCap:
             _link(media_import_db, sub_id, fid)
 
         assert len(_watch(client, "feed")) == 5
-
-
-class TestPlaybackBadges:
-    def test_a_started_video_carries_its_own_progress(
-        self, client, media_import_db
-    ):
-        sub_id = _seed_subscription(media_import_db, display_mode="feed")
-        fid = _seed_loft(
-            media_import_db,
-            file_id="halfwatched1",
-            filename="Half.loft",
-            published_at="20260801",
-            created_at="2026-08-01 00:00:00",
-        )
-        _link(media_import_db, sub_id, fid)
-        _seed_history(media_import_db, fid, 30.0, 300.0)
-
-        items = _watch(client, "feed")
-        assert [(i["file_id"], i["playback"]) for i in items] == [
-            (fid, {"position": 30.0, "duration": 300.0, "state": "in_progress"})
-        ]
-
-    def test_completed_lane_item_keeps_its_place(self, client, media_import_db):
-        """Completed styling must not reorder the lane (spec §9)."""
-        sub_id = _seed_subscription(media_import_db, display_mode="feed")
-        newer = _seed_loft(
-            media_import_db,
-            file_id="newerdoneaaa",
-            filename="Newer.loft",
-            published_at="20260802",
-            created_at="2026-08-02 00:00:00",
-        )
-        older = _seed_loft(
-            media_import_db,
-            file_id="olderfreshbb",
-            filename="Older.loft",
-            published_at="20260801",
-            created_at="2026-08-01 00:00:00",
-        )
-        _link(media_import_db, sub_id, newer)
-        _link(media_import_db, sub_id, older)
-        _seed_history(media_import_db, newer, 300.0, 300.0)
-
-        items = _watch(client, "feed")
-        assert [i["file_id"] for i in items] == [newer, older]
-        assert items[0]["playback"]["state"] == "completed"
-        assert items[1]["playback"] is None
-
-    def test_progress_failure_does_not_hide_videos(
-        self, client, media_import_db, monkeypatch
-    ):
-        """Spec §7: WatchHistory unavailable costs badges, not videos."""
-        import addons.media_import.router as router_mod
-
-        sub_id = _seed_subscription(media_import_db, display_mode="feed")
-        fid = _seed_loft(
-            media_import_db,
-            file_id="degradedaaaa",
-            filename="Degraded.loft",
-            published_at="20260801",
-            created_at="2026-08-01 00:00:00",
-        )
-        _link(media_import_db, sub_id, fid)
-        _seed_history(media_import_db, fid, 30.0, 300.0)
-
-        def _boom(*_a, **_kw):
-            raise RuntimeError("watch_history unavailable")
-
-        monkeypatch.setattr(router_mod.subdb, "load_playback_markers", _boom)
-
-        items = _watch(client, "feed")
-        assert [i["file_id"] for i in items] == [fid]
-        assert items[0]["playback"] is None
-    def test_another_viewers_progress_is_not_a_badge(
-        self, client, media_import_db
-    ):
-        sub_id = _seed_subscription(media_import_db, display_mode="feed")
-        fid = _seed_loft(
-            media_import_db,
-            file_id="bobstartedaa",
-            filename="Bob.loft",
-            published_at="20260801",
-            created_at="2026-08-01 00:00:00",
-        )
-        _link(media_import_db, sub_id, fid)
-        _seed_history(media_import_db, fid, 30.0, 300.0, nickname="bob")
-
-        items = _watch(client, "feed")
-        assert [i["file_id"] for i in items] == [fid]
-        assert items[0]["playback"] is None
-
-    @pytest.mark.parametrize("lane", ["regular", "feed"])
-    def test_lanes_render_without_a_viewer(
-        self, media_import_db, drive_path, lane
-    ):
-        from addons.media_import.router import router
-
-        app = FastAPI()
-        app.include_router(router)
-        sub_id = _seed_subscription(media_import_db, display_mode=lane)
-        fid = _seed_loft(
-            media_import_db,
-            file_id="anonstarted1",
-            filename="Anon.loft",
-            published_at="20260801",
-            created_at="2026-08-01 00:00:00",
-        )
-        _link(media_import_db, sub_id, fid)
-        _seed_history(media_import_db, fid, 30.0, 300.0)
-
-        with TestClient(app) as anon:
-            anon.headers["X-Lit-Drive"] = DRIVE
-            res = anon.get(
-                "/api/addons/media_import/watch",
-                params={"lane": lane, "drive": DRIVE},
-            )
-        assert res.status_code == 200
-        assert [(i["file_id"], i["playback"]) for i in res.json()] == [
-            (fid, None)
-        ]
 
 
 class TestBoundaries:

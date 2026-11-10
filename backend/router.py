@@ -11,7 +11,7 @@ Endpoints:
 - POST /api/addons/media_import/subscriptions/{id}/backfill
 - GET  /api/addons/media_import/subscriptions/{id}/videos
 - POST /api/addons/media_import/subscriptions/{id}/videos/{item_id}/retry
-- GET  /api/addons/media_import/watch?lane=...&drive=X  — Watch lane projection
+- GET  /api/addons/media_import/watch?lane=...&drive=X&after=...  — one page of a lane
 
 On startup:
 - Ensures the ``loft_metadata`` table exists (idempotent).
@@ -20,6 +20,9 @@ On startup:
 - Starts the metadata fetch worker.
 """
 import asyncio
+import base64
+import binascii
+import json
 import logging
 from urllib.parse import unquote
 
@@ -29,7 +32,7 @@ from sqlalchemy import text
 
 import app.config as config
 from app.services.diskpath import resolve_on_disk
-from app.auth import check_drive_access, get_unlocked_groups, get_viewer_id
+from app.auth import check_drive_access, get_unlocked_groups
 from app.database import SessionLocal
 
 from .schemas import (
@@ -37,7 +40,6 @@ from .schemas import (
     LoftCreateRequest,
     LoftCreateResponse,
     LoftMetadataResponse,
-    PlaybackState,
     ResolveConflictRequest,
     ResolveConflictResponse,
     SubscriptionBackfillRequest,
@@ -52,7 +54,6 @@ from .schemas import (
     SubscriptionVideoResponse,
     WatchItem,
     WatchLane,
-    WatchPlayback,
 )
 from .subscription import db as subdb
 from .subscription.registry import (
@@ -104,14 +105,12 @@ ADDON_META = {
                 "label": "Regular sources",
                 "i18n_key": "mediaImport.slots.videoRegular",
                 "priority": 10,
-                "href": "addons/media_import",
             },
             {
                 "id": "media-import-feed",
                 "label": "New from subscriptions",
                 "i18n_key": "mediaImport.slots.videoFeed",
                 "priority": 20,
-                "href": "addons/media_import",
             },
         ],
     },
@@ -542,10 +541,10 @@ async def patch_subscription(
     intent). is_enabled / include_no_transcript / display_title /
     folder_path / display_mode edits leave cooldown_until alone.
 
-    ``display_mode`` is presentation only: it decides which Watch lane
-    the subscription's videos appear in and nothing else. No re-import,
-    no reindex, no file move — the .loft files and their index records
-    are untouched (spec
+    ``display_mode`` is presentation only: it decides which video app
+    shelf the subscription's videos appear in and nothing else. No
+    re-import, no reindex, no file move — the .loft files and their index
+    records are untouched (spec
     ``2026-08-10-media-import-watch-surface.md`` §3.2).
     """
     scoped = _scoped_drive(x_lit_drive, unlocked_groups)
@@ -887,23 +886,30 @@ async def list_activity(
 # ---- Watch surface -------------------------------------------------
 
 
-def _playback_state(position: float, duration: float) -> PlaybackState:
-    """Map core WatchHistory markers onto the three Watch states.
+def _parse_after(after: str) -> tuple[str, str, str]:
+    """Decode an ``after`` cursor into its three sort keys.
 
-    The 90% threshold is the core's own continue-watching gate; keeping
-    the same number here is what stops this badge and Home's Continue
-    watching row from disagreeing. A ``0 / 0`` row is the view-only record the file detail
-    page writes on open — it means the page was opened, never that the
-    video was watched (spec §4.1).
+    Anything that is not base64url of a JSON array of three strings is a
+    malformed cursor, which is the caller's error (422) rather than an
+    empty page.
     """
-    if duration <= 0 or position <= 0:
-        return "not_started"
-    if position >= duration * 0.9:
-        return "completed"
-    return "in_progress"
+    try:
+        padded = after + "=" * (-len(after) % 4)
+        value = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
+    except (ValueError, binascii.Error, UnicodeDecodeError):
+        raise HTTPException(
+            status_code=422, detail="Invalid after cursor"
+        ) from None
+    if not (
+        isinstance(value, list)
+        and len(value) == 3
+        and all(isinstance(part, str) for part in value)
+    ):
+        raise HTTPException(status_code=422, detail="Invalid after cursor")
+    return value[0], value[1], value[2]
 
 
-def _to_watch_item(row: dict, playback: WatchPlayback | None) -> WatchItem:
+def _to_watch_item(row: dict) -> WatchItem:
     return WatchItem(
         file_id=row["file_id"],
         filename=row["filename"],
@@ -916,7 +922,7 @@ def _to_watch_item(row: dict, playback: WatchPlayback | None) -> WatchItem:
         url=row["url"],
         subscription_id=row.get("subscription_id"),
         subscription_title=row.get("subscription_title"),
-        playback=playback,
+        cursor=row["cursor"],
     )
 
 
@@ -926,20 +932,20 @@ async def list_watch(
     drive: str = Query(..., description="Drive name (required)"),
     limit: int = Query(24, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    after: str | None = Query(None, description="Cursor of the last row read"),
     x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
     unlocked_groups: list[str] = Depends(get_unlocked_groups),
-    viewer_id: str | None = Depends(get_viewer_id),
 ) -> list[WatchItem]:
-    """One bounded, paginated lane of the Watch surface.
+    """One bounded page of one lane.
 
-    A read projection over existing rows — .loft files, the
-    subscription relationships that produced them, and core playback
-    state. Nothing here writes, and no total is returned: Watch is a
-    lens over the library, not an inbox with a backlog figure
-    (spec §2.2 / §5.2).
+    A read projection over existing rows: .loft files and the
+    subscription relationships that produced them. Nothing here writes,
+    and no total is returned: a lane is a lens over the library, not an
+    inbox with a backlog figure.
 
-    Both lanes are viewer-independent; without a viewer identity they
-    still render, just without progress badges.
+    ``after`` positions the read behind an already-read row and does not
+    combine with ``offset``, which would skip an arbitrary number of
+    rows inside an already-positioned page.
     """
     scoped = _scoped_drive(x_lit_drive, unlocked_groups)
     if drive != scoped:
@@ -948,48 +954,26 @@ async def list_watch(
             detail="drive query does not match X-Lit-Drive scope",
         )
 
+    cursor = _parse_after(after) if after is not None else None
+    if cursor is not None and offset != 0:
+        raise HTTPException(
+            status_code=422,
+            detail="after cannot be combined with offset",
+        )
+
     rows = subdb.list_watch_lane(
         drive,
         lane,
         limit=limit,
         offset=offset,
+        after=cursor,
         # `regular` is bounded per source; `feed` is the chronological
         # lane and stays uncapped (spec 2026-08-19-watch-lane-bounds §2).
         per_source_limit=(
             subdb.REGULAR_PER_SOURCE if lane == "regular" else None
         ),
     )
-
-    # Progress is an annotation on an already-complete list. Losing it
-    # costs the badges and nothing else — a video must never disappear
-    # because its playback state could not be read (spec §7).
-    markers: dict[str, tuple[float, float]] = {}
-    if viewer_id is not None and rows:
-        try:
-            markers = subdb.load_playback_markers(
-                viewer_id, [row["file_id"] for row in rows]
-            )
-        except Exception:
-            logger.exception(
-                "Failed to read playback markers for drive=%s lane=%s",
-                drive,
-                lane,
-            )
-
-    items: list[WatchItem] = []
-    for row in rows:
-        marker = markers.get(row["file_id"])
-        playback = (
-            WatchPlayback(
-                position=marker[0],
-                duration=marker[1],
-                state=_playback_state(marker[0], marker[1]),
-            )
-            if marker is not None
-            else None
-        )
-        items.append(_to_watch_item(row, playback))
-    return items
+    return [_to_watch_item(row) for row in rows]
 
 
 @router.post(
