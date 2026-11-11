@@ -72,3 +72,7 @@ docker compose up -d --build
 `url_import: false` のドライブでは Add メニューの「URL から取り込む」行が出ない。
 
 未指定キーは graceful degradation で enable される。
+
+## License
+
+[AGPL-3.0](LICENSE)
