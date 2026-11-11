@@ -1,6 +1,9 @@
 import { lazy } from "react";
 
-import { watchShelfProviders, type ShelfProvider } from "./watchShelfProviders";
+import {
+  watchPageProviders,
+  type ShelfPageProvider,
+} from "./watchShelfProviders";
 
 // Side-effect: register Media Import's official .loft players (YouTube,
 // Vimeo) against core's playerRegistry. Importing this module on slot
@@ -15,4 +18,5 @@ export const slotComponents: Record<string, React.LazyExoticComponent<React.Comp
   "loft-refresh": lazy(() => import("./LoftRefreshMenuItem")),
 };
 
-export const slotProviders: Record<string, ShelfProvider> = watchShelfProviders;
+export const slotPageProviders: Record<string, ShelfPageProvider> =
+  watchPageProviders;

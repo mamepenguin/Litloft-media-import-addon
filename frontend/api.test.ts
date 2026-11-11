@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getLoftMetadata, refreshLoft } from "@/addons/media_import/api";
+import { getLoftMetadata, listWatch, refreshLoft } from "@/addons/media_import/api";
 
 const fetchSpy = vi.fn(
   async (_input: RequestInfo | URL, _init?: RequestInit) =>
@@ -46,5 +46,37 @@ describe("refreshLoft", () => {
     fetchSpy.mockResolvedValueOnce(new Response("{}", { status: 404 }));
 
     await expect(refreshLoft("f1", "d")).rejects.toThrow();
+  });
+});
+
+describe("SPEC-ADDON-091 listWatch reads one keyset page", () => {
+  function sentQuery(): URLSearchParams {
+    const url = new URL(String(fetchSpy.mock.calls[0][0]), "http://localhost");
+    expect(url.pathname).toBe("/api/addons/media_import/watch");
+    return url.searchParams;
+  }
+
+  it("SPEC-ADDON-091 sends the lane and limit, and neither after nor offset when after is not given", async () => {
+    fetchSpy.mockResolvedValueOnce(new Response("[]", { status: 200 }));
+
+    await listWatch("d", "feed", { limit: 60 });
+
+    const query = sentQuery();
+    expect(query.get("lane")).toBe("feed");
+    expect(query.get("limit")).toBe("60");
+    expect(query.has("after")).toBe(false);
+    expect(query.has("offset")).toBe(false);
+  });
+
+  it("SPEC-ADDON-091 sends after when given, and still no offset", async () => {
+    fetchSpy.mockResolvedValueOnce(new Response("[]", { status: 200 }));
+
+    await listWatch("d", "regular", { limit: 60, after: "WyIyMDI2Il0" });
+
+    const query = sentQuery();
+    expect(query.get("lane")).toBe("regular");
+    expect(query.get("limit")).toBe("60");
+    expect(query.get("after")).toBe("WyIyMDI2Il0");
+    expect(query.has("offset")).toBe(false);
   });
 });

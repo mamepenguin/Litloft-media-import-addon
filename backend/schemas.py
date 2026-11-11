@@ -43,16 +43,16 @@ class LoftMetadataResponse(BaseModel):
 
 
 DisplayMode = Literal["library", "feed", "regular"]
-"""How prominently a subscription's new videos appear in Watch.
+"""How prominently a subscription's new videos appear in the video app.
 
-- ``library``: imported and indexed, never placed in a Watch lane.
-- ``feed``: appears in the chronological recent lane.
-- ``regular``: appears in the prominent regular-sources lane.
+- ``library``: imported and indexed, never placed in a shelf.
+- ``feed``: appears in the chronological "New from subscriptions" shelf.
+- ``regular``: appears in the "Regular sources" shelf.
 
 ``library`` is the default everywhere — for new subscriptions and, via
 the column DEFAULT, for every subscription that predates this field.
 Importing a video has never implied an intent to watch it, so opting
-*in* is the only way into Watch (spec
+*in* is the only way onto the video app's Discover (spec
 ``2026-08-10-media-import-watch-surface.md`` §1 / §2.1).
 """
 
@@ -245,27 +245,11 @@ lanes that grow at completely different rates.
 """
 
 
-PlaybackState = Literal["not_started", "in_progress", "completed"]
-"""Informational only — never a queue position.
-
-Derived from core ``WatchHistory``; Media Import keeps no watched flag
-of its own. A view-only ``0 / 0`` row is ``not_started``: opening a
-file's detail page is not watching it (spec §4.1).
-"""
-
-
-class WatchPlayback(BaseModel):
-    position: float
-    duration: float
-    state: PlaybackState
-
-
 class WatchItem(BaseModel):
     """One video in a Watch lane.
 
-    ``playback`` is None when there is no history row for this viewer,
-    and also when reading playback state failed — Watch degrades to
-    "no badge", never to "no video" (spec §7).
+    ``cursor`` names this row's position in the lane's order; the next
+    read of the same lane passes it back as ``after``.
     """
 
     file_id: str
@@ -281,4 +265,4 @@ class WatchItem(BaseModel):
     url: str
     subscription_id: int | None = None
     subscription_title: str | None = None
-    playback: WatchPlayback | None = None
+    cursor: str

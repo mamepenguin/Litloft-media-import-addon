@@ -10,6 +10,7 @@ operation with the SQL inlined. Callers decide *when* and *why*.
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from dataclasses import dataclass
@@ -318,12 +319,12 @@ _PUBLISHED_SORT_KEY = """
         END
 """
 
-# The columns a lane returns. Spelled out for the final SELECT so the
-# collapse/rank scaffolding (``published_sort``, ``rn``) stays internal
-# instead of riding along in the row dicts.
+# The columns a lane returns. ``published_sort`` rides along because every
+# item's cursor is built from it; the router does not put it in the response.
 _WATCH_OUTPUT_COLUMNS = (
     "file_id, filename, title, thumbnail_path, duration, created_at, "
-    "url, channel, published_at, subscription_id, subscription_title"
+    "url, channel, published_at, subscription_id, subscription_title, "
+    "published_sort"
 )
 
 # Every Watch row is a live .loft on this drive. ``active_file_filter``
@@ -350,12 +351,30 @@ _WATCH_COLUMNS = """
 REGULAR_PER_SOURCE = 2
 
 
+def _encode_cursor(
+    published_sort: str, created_at: str, file_id: str
+) -> str:
+    """Opaque position of one row in a lane, as its three sort keys."""
+    payload = json.dumps([published_sort, created_at, file_id]).encode()
+    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+# Strictly behind the cursor, matching the lane's ORDER BY.
+_AFTER_CONDITION = (
+    "(published_sort < :after_published "
+    " OR (published_sort = :after_published "
+    "  AND (created_at < :after_created "
+    "   OR (created_at = :after_created AND file_id < :after_file))))"
+)
+
+
 def list_watch_lane(
     drive: str,
     display_mode: str,
     *,
     limit: int,
     offset: int,
+    after: tuple[str, str, str] | None = None,
     per_source_limit: int | None = None,
 ) -> list[dict]:
     """Recent .loft imports from subscriptions set to ``display_mode``.
@@ -372,8 +391,12 @@ def list_watch_lane(
     means no cap, which is what ``feed`` uses: that lane *is* the
     chronological view.
 
-    Deliberately returns no total count: Watch is not an inbox and must
-    never render a backlog figure (spec §2.2).
+    ``after`` is the cursor of a row already read; the lane then starts
+    behind it. ``file_id`` is the last sort key so that ties are ordered
+    totally and a cursor can always name one row.
+
+    Deliberately returns no total count: a lane is a lens over the
+    library, not an inbox with a backlog figure.
     """
     # The sort key reaches into ``m.published_at`` / ``f.created_at``,
     # neither of which survives the collapse under its own name. It is
@@ -397,18 +420,27 @@ def list_watch_lane(
         "  AND s.display_mode = :mode "
         "GROUP BY f.id"
     )
-    order = "ORDER BY published_sort DESC, created_at DESC "
+    order = "ORDER BY published_sort DESC, created_at DESC, file_id DESC "
     params: dict = {
         "drive": drive,
         "mode": display_mode,
         "limit": limit,
         "offset": offset,
     }
+    where_after = ""
+    if after is not None:
+        where_after = f"WHERE {_AFTER_CONDITION} "
+        (
+            params["after_published"],
+            params["after_created"],
+            params["after_file"],
+        ) = after
 
     if per_source_limit is None:
         sql = (
             f"WITH collapsed AS ({collapsed}) "
             f"SELECT {_WATCH_OUTPUT_COLUMNS} FROM collapsed "
+            f"{where_after}"
             f"{order}"
             "LIMIT :limit OFFSET :offset"
         )
@@ -421,12 +453,13 @@ def list_watch_lane(
             "ranked AS ("
             "  SELECT *, ROW_NUMBER() OVER ("
             "    PARTITION BY subscription_id "
-            "    ORDER BY published_sort DESC, created_at DESC"
+            "    ORDER BY published_sort DESC, created_at DESC, file_id DESC"
             "  ) AS rn FROM collapsed"
             ") "
             f"SELECT {_WATCH_OUTPUT_COLUMNS} FROM ranked "
             "WHERE rn <= :per_source "
-            f"{order}"
+            + (f"AND {_AFTER_CONDITION} " if after is not None else "")
+            + f"{order}"
             "LIMIT :limit OFFSET :offset"
         )
         params["per_source"] = per_source_limit
@@ -436,49 +469,19 @@ def list_watch_lane(
         rows = db.execute(text(sql), params).mappings().all()
     finally:
         db.close()
-    return [dict(r) for r in rows]
-
-
-def load_playback_markers(
-    viewer_id: str, file_ids: list[str]
-) -> dict[str, tuple[float, float]]:
-    """``file_id -> (position, duration)`` for the given files.
-
-    Split out from the lane query on purpose: a failure to read
-    playback state must cost the badges, not the videos. Callers run
-    this after the lane is already assembled and fall back to an empty
-    mapping (spec §7 — "failure to read progress must not hide
-    videos").
-    """
-    if not file_ids:
-        return {}
-    placeholders = ", ".join(f":f{i}" for i in range(len(file_ids)))
-    params: dict = {f"f{i}": fid for i, fid in enumerate(file_ids)}
-    params["viewer"] = viewer_id
-    db = SessionLocal()
-    try:
-        rows = db.execute(
-            text(
-                "SELECT file_id, playback_position, duration "
-                "FROM watch_history "
-                "WHERE viewer_id = :viewer "
-                f"  AND file_id IN ({placeholders})"
+    return [
+        {
+            **dict(row),
+            "cursor": _encode_cursor(
+                row["published_sort"], str(row["created_at"]), row["file_id"]
             ),
-            params,
-        ).mappings().all()
-    finally:
-        db.close()
-    return {
-        r["file_id"]: (r["playback_position"], r["duration"]) for r in rows
-    }
+        }
+        for row in rows
+    ]
 
 
 def count_surfaced_subscriptions(drive: str) -> int:
-    """How many subscriptions on this drive are not ``library``.
-
-    Drives the Watch empty state ("nothing is surfaced yet"), which is
-    a statement about configuration — not a count of unwatched videos.
-    """
+    """How many subscriptions on this drive are not ``library``."""
     db = SessionLocal()
     try:
         row = db.execute(

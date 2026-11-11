@@ -101,11 +101,11 @@ export interface SubscriptionResolveResponse {
 }
 
 /**
- * How prominently a subscription's new videos appear in Watch.
+ * Where a subscription's new videos appear in the video app.
  *
  * `library` is the default and stays the default: importing a video
  * has never meant an intent to watch it, so a source only reaches a
- * Watch lane when the user opts it in. Spec
+ * shelf when the user opts it in. Spec
  * `2026-08-10-media-import-watch-surface.md` §1.
  */
 export type DisplayMode = "library" | "feed" | "regular";
@@ -422,14 +422,6 @@ export async function listActivity(
  */
 export type WatchLane = "regular" | "feed";
 
-export type PlaybackState = "not_started" | "in_progress" | "completed";
-
-export interface WatchPlayback {
-  position: number;
-  duration: number;
-  state: PlaybackState;
-}
-
 export interface WatchItem {
   file_id: string;
   filename: string;
@@ -444,55 +436,28 @@ export interface WatchItem {
   url: string;
   subscription_id: number | null;
   subscription_title: string | null;
-  /**
-   * Null when this viewer has no history for the file — and also when
-   * reading playback state failed. Either way the item still renders,
-   * just without a badge.
-   */
-  playback: WatchPlayback | null;
-}
-
-export interface WatchLaneConfig {
-  limit: number;
-  /** Whether a full page means "ask for another one". */
-  pageable: boolean;
+  /** Opaque position of this row in the lane; pass as `after` to continue behind it. */
+  cursor: string;
 }
 
 /**
- * How much of each lane to show, and whether it grows.
+ * Fetch one page of one lane, starting behind `after` when it is given.
  *
- * Per lane rather than shared, because the slices differ in kind and
- * not only in size. `regular` is
- * already bounded by construction on the server (the newest few from
- * each source), so paging has nothing well-defined to return. Only
- * `feed` is a chronological list where digging further back is a real
- * thing to want.
- *
- * Spec: 2026-08-19-watch-lane-bounds.md §4.
- */
-export const WATCH_LANE_CONFIG: Record<WatchLane, WatchLaneConfig> = {
-  regular: { limit: 12, pageable: false },
-  feed: { limit: 12, pageable: true },
-};
-
-/**
- * Fetch one bounded page of one Watch lane.
- *
- * There is deliberately no total: Watch is a lens over the library,
+ * There is deliberately no total: a lane is a lens over the library,
  * not an inbox, and must never show a backlog count. A full page back
- * is the only "there may be more" signal — and only `feed` acts on it.
+ * is the only "there may be more" signal.
  */
 export async function listWatch(
   drive: string,
   lane: WatchLane,
-  { limit = WATCH_LANE_CONFIG[lane].limit, offset = 0 } = {},
+  { limit, after }: { limit: number; after?: string },
 ): Promise<WatchItem[]> {
   const params = new URLSearchParams({
     lane,
     drive,
     limit: String(limit),
-    offset: String(offset),
   });
+  if (after !== undefined) params.set("after", after);
   const res = await fetch(`${BASE}/watch?${params}`, {
     credentials: "include",
     headers: driveHeaders(drive),
