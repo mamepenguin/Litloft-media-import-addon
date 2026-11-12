@@ -69,6 +69,7 @@ class _ScriptedProvider:
     broken_loft_items: set[str] = field(default_factory=set)
     fetch_calls: list[tuple[str, float]] = field(default_factory=list)
     lookup_calls: list[tuple[str, float]] = field(default_factory=list)
+    events: list[tuple[str, Any]] = field(default_factory=list)
 
     def resolve_ref(self, url: str) -> SubscriptionRef | None:
         if "fake/channel/" in url:
@@ -81,6 +82,7 @@ class _ScriptedProvider:
 
     def fetch_item(self, ref, item_id):
         self.fetch_calls.append((item_id, time.monotonic()))
+        self.events.append(("fetch", item_id))
         steps = self.script.get(item_id)
         step = steps.pop(0) if steps else OK
         if isinstance(step, BaseException):
@@ -109,6 +111,7 @@ class _ScriptedProvider:
     def fetch_item_title(self, *args):
         item_id = args[-1]
         self.lookup_calls.append((item_id, time.monotonic()))
+        self.events.append(("lookup", item_id))
         answer = self.lookup_titles.get(item_id)
         if isinstance(answer, BaseException):
             raise answer
@@ -582,6 +585,15 @@ class TestRateLimitStop:
 class TestInterItemDelay:
     """SPEC-ADDON-028 / I4: the delay follows every network attempt."""
 
+    @pytest.fixture(autouse=True)
+    def _record_sleeps(self, monkeypatch, provider) -> None:
+        # Recorded in the provider's event order instead of slept: measured
+        # gaps put an upper bound on wall time, which a loaded CI runner
+        # exceeds.
+        monkeypatch.setattr(
+            time, "sleep", lambda seconds: provider.events.append(("sleep", seconds))
+        )
+
     def test_spec_addon_028_delay_after_every_attempt_but_not_after_reuse_or_last(
         self, mgr, sub_id, provider, media_import_db, drive_path
     ) -> None:
@@ -597,19 +609,17 @@ class TestInterItemDelay:
         provider.lookup_titles = {"n1": "Looked up"}
 
         mgr._sync_blocking(sub_id)
-        end = time.monotonic()
 
-        times = dict(provider.fetch_calls)
-        assert list(times) == ["n1", "n3", "n4"]
-        # One sleep after n1, none after the reuse of n2.
-        assert _DELAY <= times["n3"] - times["n1"] < 2 * _DELAY
-        # A failed attempt (n3) is followed by the delay too.
-        assert times["n4"] - times["n3"] >= _DELAY
-        # Nothing is slept after the last attempt.
-        assert end - times["n4"] < _DELAY
-        # The title lookup runs before the delay that follows its attempt.
-        lookup_t = dict(provider.lookup_calls)["n1"]
-        assert lookup_t - times["n1"] < _DELAY
+        # One sleep after n1 and its title lookup, none after the reuse of
+        # n2, one after the failed n3, and none after the last attempt.
+        assert provider.events == [
+            ("fetch", "n1"),
+            ("lookup", "n1"),
+            ("sleep", _DELAY),
+            ("fetch", "n3"),
+            ("sleep", _DELAY),
+            ("fetch", "n4"),
+        ]
 
     def test_spec_addon_028_no_delay_after_rate_limited_attempt(
         self, mgr, sub_id, provider
@@ -622,9 +632,8 @@ class TestInterItemDelay:
         provider.script = {"n1": [_rate_limited()]}
 
         mgr._sync_blocking(sub_id)
-        end = time.monotonic()
 
-        assert end - dict(provider.fetch_calls)["n1"] < _DELAY
+        assert provider.events == [("fetch", "n1")]
 
 
 # ---- steps 3, 4, 9: titles ----------------------------------------
