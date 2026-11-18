@@ -106,6 +106,7 @@ export default function YouTubeEmbed({
   onEnded,
   mediaSessionMetadata,
   posterUrl,
+  pictureOverlay,
 }: LoftEmbedProps) {
   const videoId = extractYouTubeId(url);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -519,6 +520,20 @@ export default function YouTubeEmbed({
           boxed ? FULLSCREEN_BOX : "inset-0",
         ].join(" ")}
       />
+
+      {/* The node measures its own box as the picture, so it needs the
+          iframe's box rather than the frame's — the two differ in full
+          screen, where the iframe is letterboxed inside the frame. */}
+      {pictureOverlay != null && (
+        <div
+          className={[
+            "pointer-events-none absolute",
+            boxed ? FULLSCREEN_BOX : "inset-0",
+          ].join(" ")}
+        >
+          {pictureOverlay}
+        </div>
+      )}
 
       {/* Faded rather than removed: the iframe paints black for a frame
           between the player reporting ready and its own poster going up.
