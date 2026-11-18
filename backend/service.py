@@ -40,6 +40,9 @@ _LOFT_MIME = "application/vnd.litloft.loft+json"
 _STT_TEMP_SUFFIX = ".stt_temp.m4a"
 _STT_TEMP_MAX_AGE = timedelta(hours=24)
 
+# yt-dlp enables only Deno on its own; the image installs Node instead.
+JS_RUNTIME_OPTIONS = {"js_runtimes": {"node": {}}}
+
 
 def _sanitize_filename(title: str) -> str:
     """Remove characters that are invalid in filenames.
@@ -76,7 +79,9 @@ def _extract_title_sync(url: str) -> str:
     """Synchronously extract video title via yt-dlp (no download)."""
     import yt_dlp
 
-    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
+    with yt_dlp.YoutubeDL(
+        {"quiet": True, "no_warnings": True, **JS_RUNTIME_OPTIONS}
+    ) as ydl:
         info = ydl.extract_info(url, download=False)
         if info and info.get("title"):
             return info["title"]
@@ -162,7 +167,9 @@ def _fetch_metadata_sync(url: str) -> dict:
     """Synchronously fetch full metadata via yt-dlp (no download)."""
     import yt_dlp
 
-    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
+    with yt_dlp.YoutubeDL(
+        {"quiet": True, "no_warnings": True, **JS_RUNTIME_OPTIONS}
+    ) as ydl:
         info = ydl.extract_info(url, download=False)
         if not info:
             return {}
@@ -261,6 +268,7 @@ def _download_captions_sync(
             "subtitlesformat": "vtt",
             "subtitleslangs": [lang],
             "outtmpl": str(Path(scratch) / "captions.%(ext)s"),
+            **JS_RUNTIME_OPTIONS,
         }
 
         try:
@@ -333,6 +341,7 @@ def _download_stt_audio_sync(url: str, output_stem: Path) -> Path:
                 "preferredcodec": "m4a",
             }
         ],
+        **JS_RUNTIME_OPTIONS,
     }
 
     try:

@@ -1,1 +1,2 @@
-yt-dlp>=2025.10.0
+yt-dlp[default]>=2026.10.26
+nodejs-wheel>=24,<25

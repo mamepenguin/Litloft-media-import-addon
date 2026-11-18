@@ -35,6 +35,7 @@ from app.services.diskpath import AmbiguousPath, name_taken, resolve_on_disk
 from app.services import event_hooks
 
 from ..service import (
+    JS_RUNTIME_OPTIONS,
     _save_loft_thumbnail,
     _save_subscription_avatar,
     _youtube_thumbnail_fallbacks,
@@ -95,6 +96,7 @@ def _resolve_channel_id_via_yt_dlp(url: str) -> str | None:
         "extract_flat": True,
         "skip_download": True,
         "playlistend": 1,
+        **JS_RUNTIME_OPTIONS,
     }
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:

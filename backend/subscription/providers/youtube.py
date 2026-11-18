@@ -54,6 +54,7 @@ from ..registry import (
     SubscriptionRef,
     TranscriptResult,
 )
+from ...service import JS_RUNTIME_OPTIONS
 
 
 logger = logging.getLogger(__name__)
@@ -188,6 +189,7 @@ def _yt_dlp_extract_flat(url: str, limit: int | None) -> list[dict]:
         "no_warnings": True,
         "extract_flat": True,
         "skip_download": True,
+        **JS_RUNTIME_OPTIONS,
     }
     if limit is not None:
         opts["playlistend"] = limit
@@ -214,6 +216,7 @@ def _yt_dlp_source_info(url: str) -> dict:
         "extract_flat": True,
         "skip_download": True,
         "playlistend": 1,
+        **JS_RUNTIME_OPTIONS,
     }
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
