@@ -1,4 +1,5 @@
 import { listWatch, type WatchItem, type WatchLane } from "./api";
+import { formatPublishedDate } from "./lib/publishedDate";
 
 export interface ShelfPageItem {
   id: string;
@@ -23,31 +24,9 @@ const READ = 60;
 // one Discover visit walk a whole lane.
 const MAX_READS = 10;
 
-/** The calendar date written in `published_at`, as `YYYY-MM-DD`, or null. */
-function calendarDate(publishedAt: string): string | null {
-  const value = publishedAt.trim();
-  let day: string;
-  if (/^\d{8}/.test(value)) {
-    day = `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`;
-  } else if (/^\d{4}-\d{2}-\d{2}/.test(value)) {
-    day = value.slice(0, 10);
-  } else {
-    return null;
-  }
-  return Number.isNaN(Date.parse(`${day}T00:00:00Z`)) ? null : day;
-}
-
 function bylineOf(item: WatchItem, locale: string): string | undefined {
   const channel = item.channel?.trim() || undefined;
-  const day = item.published_at ? calendarDate(item.published_at) : null;
-  const date = day
-    ? new Intl.DateTimeFormat(locale, {
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-        timeZone: "UTC",
-      }).format(new Date(`${day}T00:00:00Z`))
-    : undefined;
+  const date = formatPublishedDate(item.published_at, locale) ?? undefined;
   const parts = [channel, date].filter((part): part is string => !!part);
   return parts.length > 0 ? parts.join(" · ") : undefined;
 }
