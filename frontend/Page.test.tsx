@@ -13,9 +13,11 @@ import type { Subscription } from "@/addons/media_import/api";
 
 const mockListSubscriptions = vi.fn();
 const routeParams = vi.hoisted(() => ({ current: { name: "d" } }));
+const noQuery = vi.hoisted(() => new URLSearchParams());
 
 vi.mock("next/navigation", () => ({
   useParams: () => routeParams.current,
+  useSearchParams: () => noQuery,
   useRouter: () => ({ push: vi.fn() }),
 }));
 

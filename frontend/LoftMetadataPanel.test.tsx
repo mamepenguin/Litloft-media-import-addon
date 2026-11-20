@@ -17,6 +17,22 @@ vi.mock("@/addons/media_import/api", () => ({
   refreshLoft: (...args: unknown[]) => refreshLoft(...args),
 }));
 
+vi.mock("next/link", () => ({
+  default: ({
+    children,
+    href,
+    ...props
+  }: {
+    children: React.ReactNode;
+    href: string;
+    [key: string]: unknown;
+  }) => (
+    <a href={href} data-next-link="" {...props}>
+      {children}
+    </a>
+  ),
+}));
+
 import LoftMetadataPanel from "@/addons/media_import/LoftMetadataPanel";
 import { notifyLoftRefreshed } from "@/addons/media_import/loftRefresh";
 
@@ -372,5 +388,82 @@ describe("LoftMetadataPanel", () => {
       ).toHaveAttribute("aria-expanded", "false");
       expect(screen.getByText(/Line one/)).toHaveClass("line-clamp-3", "select-none");
     });
+  });
+
+  describe("SPEC-ADDON-160 channel link", () => {
+    function renderOn(drive: string, metadata: LoftMetadata) {
+      getLoftMetadata.mockResolvedValue(metadata);
+      return render(
+        <NextIntlClientProvider locale="en" messages={messages}>
+          <ToastProvider>
+            <LoftMetadataPanel fileId="f1" drive={drive} />
+          </ToastProvider>
+        </NextIntlClientProvider>,
+      );
+    }
+
+    it("SPEC-ADDON-160 I7 links the channel name to the channel view of the panel's drive", async () => {
+      renderOn("d", makeMetadata({ provider: "youtube", channel: "Channel" }));
+
+      const link = await screen.findByRole("link", { name: "Channel" });
+      expect(link).toHaveAttribute(
+        "href",
+        "/drive/d/addons/media_import?provider=youtube&channel=Channel",
+      );
+      expect(link).toHaveAttribute("data-next-link");
+    });
+
+    it("SPEC-ADDON-160 I7 encodes the drive, the provider and the raw untrimmed channel", async () => {
+      const drive = "動画 & clips/2026";
+      const provider = "you tube";
+      const channel = "  Tom & Jerry / 公式 #1? ";
+      renderOn(drive, makeMetadata({ provider, channel }));
+
+      const link = await screen.findByRole("link", { name: /Tom & Jerry/ });
+      expect(link.getAttribute("href")).toBe(
+        `/drive/${encodeURIComponent(drive)}/addons/media_import` +
+          `?provider=${encodeURIComponent(provider)}` +
+          `&channel=${encodeURIComponent(channel)}`,
+      );
+    });
+
+    it("SPEC-ADDON-160 keeps the channel before the publication date", async () => {
+      const { container } = renderOn(
+        "d",
+        makeMetadata({ channel: "Channel", published_at: "2026-11-01" }),
+      );
+
+      await screen.findByRole("link", { name: "Channel" });
+      const text = container.textContent!;
+      expect(text.indexOf("Channel")).toBeGreaterThanOrEqual(0);
+      expect(text.indexOf("Channel")).toBeLessThan(text.indexOf("2026"));
+    });
+
+    it.each([
+      ["null", null],
+      ["empty", ""],
+      ["spaces", "   "],
+      ["tab", "\t"],
+    ])(
+      "SPEC-ADDON-160 I7 draws no link and nothing for a %s channel",
+      async (_label, channel) => {
+        const named = renderOn("d", makeMetadata({ channel: "Named" }));
+        await screen.findByRole("link", { name: "Named" });
+        named.unmount();
+
+        const { container } = renderOn(
+          "d",
+          makeMetadata({ channel, description: "Desc", published_at: null }),
+        );
+
+        await screen.findByText("Desc");
+        expect(screen.queryByRole("link")).toBeNull();
+        expect(container.textContent).not.toMatch(/\t/);
+        const blankLeaves = [...container.querySelectorAll("span, a, p, div")].filter(
+          (el) => el.children.length === 0 && el.textContent !== "" && el.textContent!.trim() === "",
+        );
+        expect(blankLeaves).toEqual([]);
+      },
+    );
   });
 });
