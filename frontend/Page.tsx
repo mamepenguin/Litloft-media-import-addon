@@ -5,7 +5,7 @@
 import "./players/registerMediaImportPlayers";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 
 import { Rss } from "lucide-react";
@@ -15,6 +15,7 @@ import { PageHeader } from "@/components/PageHeader";
 
 import { listSubscriptions } from "./api";
 import ActivityFeed from "./ActivityFeed";
+import ChannelVideos from "./ChannelVideos";
 import Composer from "./Composer";
 import SubscriptionsDashboard from "./SubscriptionsDashboard";
 
@@ -37,7 +38,21 @@ import SubscriptionsDashboard from "./SubscriptionsDashboard";
  */
 export default function MediaImportPage() {
   const params = useParams();
+  const searchParams = useSearchParams();
   const drive = decodeURIComponent((params?.name as string) ?? "");
+  const provider = searchParams.get("provider") ?? "";
+  const channel = searchParams.get("channel") ?? "";
+
+  if (provider.trim() !== "" && channel.trim() !== "") {
+    return (
+      <ChannelVideos
+        key={`${drive}\u0000${provider}\u0000${channel}`}
+        drive={drive}
+        provider={provider}
+        channel={channel}
+      />
+    );
+  }
 
   return <DriveMediaImportPage key={drive} drive={drive} />;
 }

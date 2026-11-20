@@ -41,6 +41,8 @@ ROUTES: list[tuple[str, str, dict | None]] = [
     ("GET", f"{_P}/watch?lane=feed&drive={{drive}}", None),
     ("POST", f"{_P}/subscriptions/1/videos/x/resolve-conflict", {"action": "skip"}),
     ("POST", f"{_P}/subscriptions/1/videos/x/dismiss", None),
+    # SPEC-ADDON-161
+    ("GET", f"{_P}/channel-videos?provider=youtube&channel=Chan", None),
 ]
 
 
@@ -101,7 +103,7 @@ def test_routes_table_is_every_drive_scoped_route() -> None:
         and route.path_regex.match(path.split("?")[0])
     }
 
-    assert len(ROUTES) == 20
+    assert len(ROUTES) == 21
     assert declared == scoped
 
 

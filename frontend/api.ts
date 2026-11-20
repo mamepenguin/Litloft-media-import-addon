@@ -465,6 +465,29 @@ export async function listWatch(
   return _json<WatchItem[]>(res);
 }
 
+// ---- Channel videos ------------------------------------------------
+
+export interface ChannelVideoItem {
+  file_id: string;
+  published_at: string | null;
+}
+
+export async function listChannelVideos(
+  drive: string,
+  provider: string,
+  channel: string,
+  signal?: AbortSignal,
+): Promise<ChannelVideoItem[]> {
+  const params = new URLSearchParams({ provider, channel });
+  const res = await fetch(`${BASE}/channel-videos?${params}`, {
+    credentials: "include",
+    headers: driveHeaders(drive),
+    signal,
+  });
+  const data = await _json<{ items: ChannelVideoItem[] }>(res);
+  return data.items;
+}
+
 export async function resolveConflict(
   drive: string,
   id: number,

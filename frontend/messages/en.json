@@ -17,6 +17,9 @@
       "videoFeed": "New from subscriptions"
     },
     "loadingDrive": "Loading drive...",
+    "channelView": {
+      "empty": "No videos from this channel in this drive."
+    },
     "displayMode": {
       "legend": "Show in the video app",
       "library": {

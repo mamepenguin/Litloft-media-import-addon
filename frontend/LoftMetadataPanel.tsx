@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { Captions } from "lucide-react";
 import { useTranslations } from "next-intl";
 
@@ -90,13 +91,21 @@ export default function LoftMetadataPanel({
 
   if (!metadata) return null;
 
+  const channel =
+    typeof metadata.channel === "string" && metadata.channel.trim() !== ""
+      ? metadata.channel
+      : null;
+
   return (
     <>
       <div className="mt-3 min-w-0 text-xs text-text-muted">
-        {metadata.channel && (
-          <span className="font-medium text-text-primary">
-            {metadata.channel}
-          </span>
+        {channel !== null && (
+          <Link
+            href={`/drive/${encodeURIComponent(drive)}/addons/media_import?provider=${encodeURIComponent(metadata.provider)}&channel=${encodeURIComponent(channel)}`}
+            className="font-medium text-text-primary hover:underline"
+          >
+            {channel}
+          </Link>
         )}
         {metadata.published_at && <span> · {metadata.published_at}</span>}
         {metadata.description && (
