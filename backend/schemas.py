@@ -39,6 +39,17 @@ class LoftMetadataResponse(BaseModel):
     fetch_error: str | None = None
 
 
+class ChannelVideoItem(BaseModel):
+    """One .loft in a channel's list, with its stored publication date."""
+
+    file_id: str
+    published_at: str | None = None
+
+
+class ChannelVideosResponse(BaseModel):
+    items: list[ChannelVideoItem]
+
+
 # ---- Subscription schemas (Phase 2 Commit 4) -----------------------
 
 

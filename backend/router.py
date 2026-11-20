@@ -12,6 +12,7 @@ Endpoints:
 - GET  /api/addons/media_import/subscriptions/{id}/videos
 - POST /api/addons/media_import/subscriptions/{id}/videos/{item_id}/retry
 - GET  /api/addons/media_import/watch?lane=...&drive=X&after=...  — one page of a lane
+- GET  /api/addons/media_import/channel-videos?provider=&channel= — one channel's ids
 
 On startup:
 - Ensures the ``loft_metadata`` table exists (idempotent).
@@ -37,6 +38,8 @@ from app.database import SessionLocal
 
 from .schemas import (
     ActivityEntry,
+    ChannelVideoItem,
+    ChannelVideosResponse,
     LoftCreateRequest,
     LoftCreateResponse,
     LoftMetadataResponse,
@@ -974,6 +977,34 @@ async def list_watch(
         ),
     )
     return [_to_watch_item(row) for row in rows]
+
+
+# ---- Channel view --------------------------------------------------
+
+
+@router.get("/channel-videos", response_model=ChannelVideosResponse)
+async def list_channel_videos(
+    provider: str | None = Query(None, description="Provider name"),
+    channel: str | None = Query(None, description="Channel name"),
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
+) -> ChannelVideosResponse:
+    """One channel's active .loft files in the scoped drive, newest first.
+
+    Both parameters are declared optional so a locked or unknown drive
+    answers 404 before a missing parameter can answer 422: the drive
+    check must not depend on the other arguments.
+    """
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    if provider is None or not provider.strip():
+        raise HTTPException(status_code=422, detail="provider is required")
+    if channel is None or not channel.strip():
+        raise HTTPException(status_code=422, detail="channel is required")
+
+    rows = subdb.list_channel_videos(scoped, provider, channel)
+    return ChannelVideosResponse(
+        items=[ChannelVideoItem(**row) for row in rows]
+    )
 
 
 @router.post(

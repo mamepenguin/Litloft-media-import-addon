@@ -18,9 +18,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import column, select, table, text
 
 from app.database import SessionLocal
+from app.models import File, active_file_filter
 from app.services.chapters import normalise_chapters, replace_chapters
 from app.services.scanner import register_single_file
 
@@ -297,27 +298,30 @@ def list_activity(drive: str, limit: int) -> list[dict]:
 
 # ---- Watch projection ---------------------------------------------
 
-# Media Import records ``published_at`` as yt-dlp's ``upload_date``,
-# i.e. the bare ``YYYYMMDD`` string, while ``files.created_at`` is an
-# ISO timestamp. Ordering a lane by whichever is present therefore has
-# to normalise first, or the two formats interleave arbitrarily.
-#
-# Import time alone is not usable as the sort key: a backfill imports
-# old videos today, which would park a five-year-old upload at the top
-# of "recent". Publication date is what the lane claims to show, so it
-# leads, and the import timestamp only fills in when the provider gave
-# us no date at all (and breaks ties).
-_PUBLISHED_SORT_KEY = """
+def _published_sort_key(
+    files_table: str = "f", metadata_table: str = "m"
+) -> str:
+    """Publication date to sort by, normalising yt-dlp's ``YYYYMMDD``.
+
+    It leads over import time, or a backfill would park old uploads at the
+    top of "recent"; import time only fills in where no date was stored.
+    The table names are arguments because the Watch lane aliases both
+    tables while the channel query joins them under their own names.
+    """
+    return f"""
         CASE
-            WHEN m.published_at GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
-                THEN substr(m.published_at, 1, 4) || '-'
-                     || substr(m.published_at, 5, 2) || '-'
-                     || substr(m.published_at, 7, 2)
-            WHEN m.published_at IS NOT NULL AND m.published_at <> ''
-                THEN substr(m.published_at, 1, 10)
-            ELSE substr(f.created_at, 1, 10)
+            WHEN {metadata_table}.published_at GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+                THEN substr({metadata_table}.published_at, 1, 4) || '-'
+                     || substr({metadata_table}.published_at, 5, 2) || '-'
+                     || substr({metadata_table}.published_at, 7, 2)
+            WHEN {metadata_table}.published_at IS NOT NULL AND {metadata_table}.published_at <> ''
+                THEN substr({metadata_table}.published_at, 1, 10)
+            ELSE substr({files_table}.created_at, 1, 10)
         END
 """
+
+
+_PUBLISHED_SORT_KEY = _published_sort_key()
 
 # The columns a lane returns. ``published_sort`` rides along because every
 # item's cursor is built from it; the router does not put it in the response.
@@ -477,6 +481,51 @@ def list_watch_lane(
             ),
         }
         for row in rows
+    ]
+
+
+# ---- Channel projection -------------------------------------------
+
+
+def list_channel_videos(
+    drive: str, provider: str, channel: str
+) -> list[dict]:
+    """Every active .loft on ``drive`` with this exact provider and channel.
+
+    Uncapped on purpose: the caller pages the ids it receives, so a bound
+    here would silently drop the tail of a large channel.
+    """
+    metadata = table(
+        "loft_metadata",
+        column("file_id"),
+        column("provider"),
+        column("channel"),
+        column("published_at"),
+    )
+    statement = (
+        select(File.id, metadata.c.published_at)
+        .select_from(File)
+        .join(metadata, metadata.c.file_id == File.id)
+        .where(
+            File.drive == drive,
+            active_file_filter(),
+            metadata.c.provider == provider,
+            metadata.c.channel == channel,
+        )
+        .order_by(
+            text(_published_sort_key("files", "loft_metadata") + " DESC"),
+            File.created_at.desc(),
+            File.id.desc(),
+        )
+    )
+    db = SessionLocal()
+    try:
+        rows = db.execute(statement).all()
+    finally:
+        db.close()
+    return [
+        {"file_id": file_id, "published_at": published_at}
+        for file_id, published_at in rows
     ]
 
 
