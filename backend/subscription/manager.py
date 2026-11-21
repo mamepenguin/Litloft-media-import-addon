@@ -729,7 +729,7 @@ class SubscriptionManager:
         transcript_error: str | None = None
         if meta.has_captions or include_no_transcript:
             tr = provider.fetch_transcript(
-                ref, item_id, language=meta.language
+                ref, item_id, language=meta.caption_track or meta.language
             )
             if tr.vtt_text is not None:
                 _save_vtt(loft_path, tr.vtt_text)
