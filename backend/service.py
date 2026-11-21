@@ -163,6 +163,20 @@ def _youtube_thumbnail_fallbacks(video_id: str) -> list[str]:
     ]
 
 
+def _caption_track(info: dict) -> str | None:
+    language = info.get("language") or "ja"
+    base = language.split("-", 1)[0]
+    candidates = dict.fromkeys(
+        (language, f"{language}-orig", base, f"{base}-orig")
+    )
+    listed = set((info.get("subtitles") or {}).keys()) - {"live_chat"}
+    listed |= set((info.get("automatic_captions") or {}).keys())
+    for candidate in candidates:
+        if candidate in listed:
+            return candidate
+    return None
+
+
 def _fetch_metadata_sync(url: str) -> dict:
     """Synchronously fetch full metadata via yt-dlp (no download)."""
     import yt_dlp
@@ -173,6 +187,7 @@ def _fetch_metadata_sync(url: str) -> dict:
         info = ydl.extract_info(url, download=False)
         if not info:
             return {}
+        caption_track = _caption_track(info)
         return {
             "title": info.get("title"),
             "duration": info.get("duration"),
@@ -180,8 +195,9 @@ def _fetch_metadata_sync(url: str) -> dict:
             "channel": info.get("uploader") or info.get("channel"),
             "published_at": info.get("upload_date"),
             "language": info.get("language"),
+            "caption_track": caption_track,
             "thumbnail_url": _pick_video_thumbnail_url(info),
-            "has_captions": bool(info.get("subtitles") or info.get("automatic_captions")),
+            "has_captions": caption_track is not None,
             # Taken as yt-dlp reports it. It already derives these from
             # the provider's own markers and, where those are absent,
             # from timestamps in the description — a second parser here
@@ -232,6 +248,29 @@ def _classify_caption_error(message: str | None) -> str | None:
         if marker in message:
             return "rate_limited"
     return None
+
+
+def _metadata_error_is_unavailable(exc: Exception) -> bool:
+    # Deferred: the YouTube provider imports this module at module level.
+    from .subscription.providers.youtube import _classify_fetch_error
+    from .subscription.registry import ItemUnavailable
+
+    return isinstance(_classify_fetch_error(exc), ItemUnavailable)
+
+
+def _mark_caption_error_permanent(file_id: str) -> None:
+    db = SessionLocal()
+    try:
+        db.execute(
+            text(
+                "UPDATE loft_metadata SET caption_error_kind = 'permanent' "
+                "WHERE file_id = :file_id"
+            ),
+            {"file_id": file_id},
+        )
+        db.commit()
+    finally:
+        db.close()
 
 
 def _download_captions_sync(
@@ -513,6 +552,7 @@ def _dedup_rolling_vtt(vtt_path: Path) -> None:
         return
 
     deduped: list[dict] = []
+    removed_any = len(filtered) != len(cues)
     prev_text = ""
     for cue in filtered:
         text = " ".join(cue["lines"])
@@ -528,8 +568,15 @@ def _dedup_rolling_vtt(vtt_path: Path) -> None:
             new_lines = cur_lines[overlap:] if overlap else cur_lines
             new_text = " ".join(new_lines).strip()
         if new_text:
+            if new_text != text:
+                removed_any = True
             deduped.append({**cue, "lines": [new_text]})
+        else:
+            removed_any = True
         prev_text = text
+
+    if not removed_any:
+        return
 
     out = list(header_lines)
     out.append("")
@@ -904,7 +951,12 @@ class LoftManager:
                 logger.warning("Failed to queue caption retry for %s", file_id)
 
     def _fetch_and_update(self, item: LoftFetchItem) -> None:
-        meta = _fetch_metadata_sync(item.url)
+        try:
+            meta = _fetch_metadata_sync(item.url)
+        except Exception as exc:
+            if _metadata_error_is_unavailable(exc):
+                _mark_caption_error_permanent(item.file_id)
+            raise
         if not meta:
             return
 
@@ -989,7 +1041,9 @@ class LoftManager:
                     )
                     output_stem = loft_path.with_suffix("")
                     captions_ok, caption_error_kind = _download_captions_sync(
-                        item.url, output_stem, language=meta.get("language"),
+                        item.url,
+                        output_stem,
+                        language=meta.get("caption_track") or meta.get("language"),
                     )
                 except Exception as exc:
                     logger.warning(

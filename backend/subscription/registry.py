@@ -98,6 +98,7 @@ class ItemMetadata:
     channel: str | None = None
     published_at: str | None = None
     language: str | None = None
+    caption_track: str | None = None
     duration: int | None = None
     thumbnail_url: str | None = None
     has_captions: bool = False

@@ -543,6 +543,7 @@ class YouTubeProvider:
             channel=meta.get("channel"),
             published_at=meta.get("published_at"),
             language=meta.get("language"),
+            caption_track=meta.get("caption_track"),
             duration=meta.get("duration"),
             thumbnail_url=meta.get("thumbnail_url"),
             has_captions=bool(meta.get("has_captions")),
