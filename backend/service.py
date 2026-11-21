@@ -552,7 +552,6 @@ def _dedup_rolling_vtt(vtt_path: Path) -> None:
         return
 
     deduped: list[dict] = []
-    removed_any = len(filtered) != len(cues)
     prev_text = ""
     for cue in filtered:
         text = " ".join(cue["lines"])
@@ -568,15 +567,8 @@ def _dedup_rolling_vtt(vtt_path: Path) -> None:
             new_lines = cur_lines[overlap:] if overlap else cur_lines
             new_text = " ".join(new_lines).strip()
         if new_text:
-            if new_text != text:
-                removed_any = True
             deduped.append({**cue, "lines": [new_text]})
-        else:
-            removed_any = True
         prev_text = text
-
-    if not removed_any:
-        return
 
     out = list(header_lines)
     out.append("")

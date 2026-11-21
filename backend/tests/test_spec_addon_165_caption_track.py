@@ -32,6 +32,18 @@ LOFT_MIME = "application/vnd.litloft.loft+json"
 VTT = "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nhello\n"
 
 
+def _vtt_for(key: str) -> str:
+    return f"WEBVTT\n\n00:00:00.000 --> 00:00:01.000\ncaption {key}\n"
+
+
+def _cue_texts(path: Path) -> list[str]:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return [
+        line for line in lines
+        if line and line != "WEBVTT" and "-->" not in line and not line.isdigit()
+    ]
+
+
 def _info(language, subtitles=(), automatic=()) -> dict:
     return {
         "id": VIDEO_ID,
@@ -76,7 +88,7 @@ def _ydl_for(info: dict):
             for key in self.opts.get("subtitleslangs") or []:
                 if key in listed:
                     Path(self.opts["outtmpl"].replace("%(ext)s", f"{key}.vtt")).write_text(
-                        VTT, encoding="utf-8"
+                        _vtt_for(key), encoding="utf-8"
                     )
             return 0
 
@@ -226,7 +238,7 @@ def test_spec_addon_165_fetch_path_saves_the_base_language_track_for_a_region_vi
 
     assert _caption_requests(ydl) == [["en"]]
     assert len(ydl.built) == 2
-    assert (loft.parent / f"{TITLE}.vtt").read_text(encoding="utf-8") == VTT
+    assert _cue_texts(loft.parent / f"{TITLE}.vtt") == ["caption en"]
     assert tuple(_caption_row(media_import_db, "fcap0000001")) == (1, 1, None)
     assert _retried(media_import_db) == []
 
@@ -335,7 +347,7 @@ def test_spec_addon_165_subscription_saves_the_base_language_track_for_a_region_
     assert _caption_requests(ydl) == [["en"]]
     assert video["status"] == "imported"
     assert (drive_path / f"{TITLE}.loft").exists()
-    assert (drive_path / f"{TITLE}.vtt").read_text(encoding="utf-8") == VTT
+    assert _cue_texts(drive_path / f"{TITLE}.vtt") == ["caption en"]
     assert (bool(meta[0]), bool(meta[1])) == (True, True)
 
 
