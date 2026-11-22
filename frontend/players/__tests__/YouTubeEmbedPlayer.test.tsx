@@ -319,7 +319,7 @@ describe("YouTubeEmbed click overlay", () => {
     expect(overlayOf(container).style.pointerEvents).toBe("none");
   });
 
-  it("stands down on the end screen so related videos stay clickable", async () => {
+  it("stands down on the end screen in the page", async () => {
     const { container } = await mountPlayer();
     await act(async () => {
       lastOptions!.events.onStateChange({ data: YT_STATE_ENDED });
@@ -349,6 +349,188 @@ describe("YouTubeEmbed click overlay", () => {
       vi.advanceTimersByTime(1000);
     });
     expect(overlayOf(container).style.pointerEvents).toBe("auto");
+  });
+});
+
+describe("SPEC-ADDON-168 the end of a video in fullscreen", () => {
+  function frameOf(container: HTMLElement): HTMLElement {
+    const frame = container.querySelector<HTMLElement>('[data-testid="player-frame"]');
+    if (!frame) throw new Error("player frame not found");
+    return frame;
+  }
+
+  function makeCoarseTouchDevice() {
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query.includes("pointer: coarse"),
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+  }
+
+  function setFullscreenElement(element: Element | null) {
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      get: () => element,
+    });
+  }
+
+  async function enterNativeFullscreen(container: HTMLElement) {
+    setFullscreenElement(frameOf(container));
+    await act(async () => {
+      document.dispatchEvent(new Event("fullscreenchange"));
+    });
+    expect(frameOf(container).className).toContain("[container-type:size]");
+  }
+
+  async function leaveNativeFullscreen() {
+    setFullscreenElement(null);
+    await act(async () => {
+      document.dispatchEvent(new Event("fullscreenchange"));
+    });
+  }
+
+  async function reportEnded() {
+    player.getPlayerState.mockReturnValue(YT_STATE_ENDED);
+    await act(async () => {
+      lastOptions!.events.onStateChange({ data: YT_STATE_ENDED });
+    });
+  }
+
+  afterEach(() => {
+    setFullscreenElement(null);
+  });
+
+  it("I1: keeps the overlay interactive when the video ends in native fullscreen", async () => {
+    const { container } = await mountPlayer();
+    await enterNativeFullscreen(container);
+
+    await reportEnded();
+
+    expect(overlayOf(container).style.pointerEvents).toBe("auto");
+  });
+
+  it("I1: keeps the overlay interactive when the video ends in pseudo fullscreen", async () => {
+    makeCoarseTouchDevice();
+    const { container } = await mountPlayer();
+    await act(async () => {
+      pressShortcut("f");
+    });
+    expect(frameOf(container).className).toContain("fixed");
+    expect(screen.getByRole("button", { name: "Exit full screen" })).toBeInTheDocument();
+
+    await reportEnded();
+
+    expect(overlayOf(container).style.pointerEvents).toBe("auto");
+  });
+
+  it("I4: entering fullscreen at the end makes the overlay interactive", async () => {
+    const { container } = await mountPlayer();
+    await reportEnded();
+    expect(overlayOf(container).style.pointerEvents).toBe("none");
+
+    await enterNativeFullscreen(container);
+
+    expect(overlayOf(container).style.pointerEvents).toBe("auto");
+  });
+
+  it("I4: leaving native fullscreen at the end stands the overlay down without a state change", async () => {
+    const { container } = await mountPlayer();
+    await enterNativeFullscreen(container);
+    await reportEnded();
+    expect(overlayOf(container).style.pointerEvents).toBe("auto");
+
+    await leaveNativeFullscreen();
+
+    expect(overlayOf(container).style.pointerEvents).toBe("none");
+  });
+
+  it("I4: leaving pseudo fullscreen at the end stands the overlay down without a state change", async () => {
+    makeCoarseTouchDevice();
+    const { container } = await mountPlayer();
+    await act(async () => {
+      pressShortcut("f");
+    });
+    await reportEnded();
+    expect(overlayOf(container).style.pointerEvents).toBe("auto");
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Exit full screen" }));
+    });
+
+    expect(overlayOf(container).style.pointerEvents).toBe("none");
+  });
+
+  it("I3: an ad stands the overlay down in fullscreen at the end", async () => {
+    vi.useFakeTimers();
+    const { container } = await mountPlayer(600);
+    await enterNativeFullscreen(container);
+    await reportEnded();
+    expect(overlayOf(container).style.pointerEvents).toBe("auto");
+
+    player.getDuration.mockReturnValue(15);
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+    });
+
+    expect(overlayOf(container).style.pointerEvents).toBe("none");
+  });
+
+  it("I7: draws the control bar's scrim at the end in fullscreen, as when paused, and not in the page", async () => {
+    const scrim = () =>
+      container.querySelector("[data-testid='control-bar-scrim']")?.className ?? "";
+    const { container } = await mountPlayer();
+    await reportEnded();
+    expect(container.querySelector("[data-testid='control-bar-scrim']")).not.toBeNull();
+    expect(scrim()).not.toContain("backdrop-blur");
+
+    await enterNativeFullscreen(container);
+
+    expect(scrim()).toContain("backdrop-blur");
+  });
+
+  it("I7: a click with a fine pointer at the end in fullscreen restarts the video", async () => {
+    vi.useFakeTimers();
+    const { container } = await mountPlayer();
+    await enterNativeFullscreen(container);
+    await reportEnded();
+    player.playVideo.mockClear();
+
+    await act(async () => {
+      fireEvent.click(overlayOf(container), { detail: 1 });
+      vi.advanceTimersByTime(300);
+    });
+
+    expect(player.playVideo).toHaveBeenCalledTimes(1);
+  });
+
+  it("I7: a double-click at the end in fullscreen leaves fullscreen", async () => {
+    vi.useFakeTimers();
+    const exitFullscreen = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(document, "exitFullscreen", {
+      configurable: true,
+      value: exitFullscreen,
+    });
+    try {
+      const { container } = await mountPlayer();
+      await enterNativeFullscreen(container);
+      await reportEnded();
+      const overlay = overlayOf(container);
+
+      await act(async () => {
+        fireEvent.click(overlay, { detail: 1 });
+        fireEvent.click(overlay, { detail: 2 });
+        fireEvent.dblClick(overlay, { detail: 2 });
+        vi.advanceTimersByTime(300);
+      });
+
+      expect(exitFullscreen).toHaveBeenCalledTimes(1);
+    } finally {
+      delete (document as unknown as { exitFullscreen?: unknown }).exitFullscreen;
+    }
   });
 });
 

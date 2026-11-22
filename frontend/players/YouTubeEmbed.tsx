@@ -282,10 +282,7 @@ export default function YouTubeEmbed({
             enablejsapi: 1,
             // The one setting that decides which UI is on screen.
             // Litloft draws its own control bar (MediaControls) at 0;
-            // at 1 the player draws its own and ours stands down. The
-            // pause-time related-video overlay and the end screen are
-            // NOT removable either way, and must not be covered — see
-            // the gesture overlay's interactive gate.
+            // at 1 the player draws its own and ours stands down.
             controls: youtubeUi ? 1 : 0,
             ...(youtubeUi ? {} : { playsinline: 1 }),
             disablekb: youtubeUi ? 0 : 1,
@@ -479,12 +476,12 @@ export default function YouTubeEmbed({
 
   // The gesture overlay (drawn by MediaControls) is the only way to
   // react to input on the video: the iframe is cross-origin, so its
-  // events never reach us. That makes it a liability during an ad or on
-  // the end screen, where YouTube's own UI (skip button, advertiser
-  // link, related videos) has to stay clickable — covering those breaks
-  // the player and interferes with ads, which the API terms forbid.
-  // Stand down in both states.
-  const gesturesInteractive = !adActive && !ended;
+  // events never reach us. During an ad it has to stand down: covering
+  // the skip button and the advertiser link breaks the player and
+  // interferes with ads, which the API terms forbid. On the end screen
+  // it stands down only in the page, where the title and channel links
+  // stay clickable; in fullscreen it would leave no way out by touch.
+  const gesturesInteractive = !adActive && (!ended || fullscreen.isFullscreen);
 
   // The pinned frame outlives isFullscreen while it animates out.
   const boxed = fullscreen.isFullscreen || fullscreen.isPseudo;
