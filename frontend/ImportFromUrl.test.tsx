@@ -295,7 +295,7 @@ describe("Import from URL dialog", () => {
     },
   );
 
-  it("keeps the dialog, the URL and the folder when the import fails", async () => {
+  it("SPEC-ADDON-188 I2b: keeps the dialog, the URL and the folder when the import fails, showing the fallback", async () => {
     mockCreateLoft.mockRejectedValue(new Error("Failed to create link"));
     rememberFolder("d", "youtube", "video", "remembered");
     const before = storageSnapshot();
@@ -304,7 +304,8 @@ describe("Import from URL dialog", () => {
     fireEvent.change(screen.getByLabelText("folder"), { target: { value: "videos/sub" } });
     submitUrl(VIDEO);
 
-    expect(await screen.findByText("Failed to create link")).toBeInTheDocument();
+    expect(await screen.findByText("Import failed")).toBeInTheDocument();
+    expect(screen.queryByText("Failed to create link")).not.toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: ROW })).toBeInTheDocument();
     expect(screen.getByLabelText("Video URL")).toHaveValue(VIDEO);
     expect(screen.getByLabelText("folder")).toHaveValue("videos/sub");
@@ -446,7 +447,7 @@ describe("Import from URL dialog submitting", () => {
     renderRow({ path: "videos" });
     openDialog();
     submitUrl(VIDEO);
-    await screen.findByText("Failed to create link");
+    await screen.findByText("Import failed");
 
     const button = screen.getByRole("button", { name: "Import" });
     expect(button).toBeEnabled();

@@ -1,6 +1,6 @@
 {
   "captionStatus": {
-    "noCaptions": "YouTube has no captions for this video",
+    "noCaptions": "This video has no captions",
     "rateLimited": "Retrying caption download (temporary error)",
     "permanent": "Captions unavailable (video may be private, removed, or region-locked)",
     "failed": "Failed to download captions",
@@ -17,6 +17,10 @@
       "videoFeed": "New from subscriptions"
     },
     "loadingDrive": "Loading drive...",
+    "importError": {
+      "unsupportedUrl": "No video could be read from this URL. The site is not supported, or the page has no video.",
+      "unavailable": "This video cannot be imported. It may be private, removed or region-locked."
+    },
     "channelView": {
       "empty": "No videos from this channel in this drive."
     },

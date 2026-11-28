@@ -13,6 +13,7 @@ import { setupMediaSession } from "@/lib/mediaSession";
 import { getMediaClockSnapshot, subscribeMediaClock } from "@/lib/mediaClock";
 import { useShortcuts } from "@/hooks/useShortcuts";
 import type { LoftEmbedProps } from "@/components/loft/types";
+import GenericLinkCard from "@/components/loft/GenericLinkCard";
 import MediaControls from "@/components/player/MediaControls";
 import { useFullscreen } from "@/components/player/hooks/useFullscreen";
 import { useEmbedVideoSize } from "@/lib/embedVideoSize";
@@ -120,6 +121,13 @@ export default function YouTubeEmbed({
   >(null);
   const controllerRef = useRef<MediaController | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
+  // Which video id's API load has already failed. A rerun of the effect for
+  // anything but a new URL — a player-UI switch, a new callback identity —
+  // must not retry, or a load that failed once could still become a player.
+  const failedVideoIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (failedVideoIdRef.current !== videoId) failedVideoIdRef.current = null;
+  }, [videoId]);
   // The video's owner disallows embedding (YT error 101/150). No
   // playerVars combination recovers this — it's rejected at the iframe
   // level — so once set, the fallback link-out replaces the frame
@@ -256,6 +264,7 @@ export default function YouTubeEmbed({
 
   useEffect(() => {
     if (!videoId) return;
+    if (failedVideoIdRef.current === videoId) return;
     let cancelled = false;
     setLoadFailed(false);
     setEmbedRestricted(false);
@@ -371,6 +380,7 @@ export default function YouTubeEmbed({
       })
       .catch(() => {
         if (cancelled) return;
+        failedVideoIdRef.current = videoId;
         setLoadFailed(true);
       });
     return () => {
@@ -442,7 +452,7 @@ export default function YouTubeEmbed({
   ]);
 
   if (!videoId || loadFailed) {
-    return null;
+    return <GenericLinkCard fileId={fileId} url={url} />;
   }
 
   if (embedRestricted) {

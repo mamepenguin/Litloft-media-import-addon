@@ -12,6 +12,28 @@ export interface LoftCreateResponse {
   filename: string;
 }
 
+export type LoftCreateErrorCode = "unsupported_url" | "unavailable" | "failed";
+
+const LOFT_CREATE_ERROR_CODES: ReadonlySet<string> = new Set([
+  "unsupported_url",
+  "unavailable",
+  "failed",
+]);
+
+/**
+ * A refused `POST /link`. `code` is the reason the server named, or null when
+ * the answer carried none of the known reasons.
+ */
+export class CreateLoftError extends Error {
+  readonly code: LoftCreateErrorCode | null;
+
+  constructor(code: LoftCreateErrorCode | null, status: number) {
+    super(code ?? `Error: ${status}`);
+    this.name = "CreateLoftError";
+    this.code = code;
+  }
+}
+
 export type SttMode = "always" | "missing_captions" | "manual";
 
 export type CaptionErrorKind = "rate_limited" | "permanent" | null;
@@ -44,7 +66,12 @@ export async function createLoft(
   });
   if (!res.ok) {
     const data = await res.json().catch(() => null);
-    throw new Error(data?.detail ?? `Error: ${res.status}`);
+    const detail: unknown = data?.detail;
+    const code =
+      typeof detail === "string" && LOFT_CREATE_ERROR_CODES.has(detail)
+        ? (detail as LoftCreateErrorCode)
+        : null;
+    throw new CreateLoftError(code, res.status);
   }
   return res.json();
 }

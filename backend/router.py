@@ -65,11 +65,15 @@ from .subscription.registry import (
     get_subscription_provider,
 )
 from .service import (
+    LoftTitleFetchError,
     loft_manager,
     subscription_avatar_path,
     _backfill_provider_item_ids,
     _ensure_loft_table,
     _ensure_subscription_tables,
+    _LOFT_MIME,
+    _resolve_drive_file_path,
+    _title_fetch_failure_code,
 )
 from .provider_registration import register_media_import_providers
 from .subscription.manager import subscription_manager
@@ -192,9 +196,16 @@ async def create_loft(
             request.drive,
             request.folder_path,
         )
+    except LoftTitleFetchError as exc:
+        code = _title_fetch_failure_code(exc.__cause__)
+        if code is not None:
+            logger.info("Refused to create loft ref (%s): %s", code, request.url)
+            raise HTTPException(status_code=422, detail=code)
+        logger.exception("Failed to create loft ref: %s", request.url)
+        raise HTTPException(status_code=500, detail="failed")
     except Exception:
         logger.exception("Failed to create loft ref: %s", request.url)
-        raise HTTPException(status_code=500, detail="Failed to create link")
+        raise HTTPException(status_code=500, detail="failed")
 
     await loft_manager.enqueue_fetch(
         file_id, request.url, request.drive, request.stt_mode
@@ -245,6 +256,22 @@ async def get_loft_metadata(
         db.close()
 
 
+def _loft_url_from_file(
+    drive: str, file_path: str, mime_type: str | None
+) -> str | None:
+    """The ``url`` in a stored ``.loft`` body, or None when it is unusable."""
+    if mime_type != _LOFT_MIME:
+        return None
+    try:
+        body = json.loads(
+            _resolve_drive_file_path(drive, file_path).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return None
+    url = body.get("url") if isinstance(body, dict) else None
+    return url if isinstance(url, str) and url.strip() else None
+
+
 @router.post("/link/{file_id}/refresh")
 async def refresh_loft(
     file_id: str,
@@ -259,9 +286,23 @@ async def refresh_loft(
             text("SELECT url FROM loft_metadata WHERE file_id = :file_id"),
             {"file_id": file_id},
         ).mappings().first()
-        if not row:
-            raise HTTPException(status_code=404, detail="Metadata not found")
-        url = row["url"]
+        if row:
+            url = row["url"]
+        else:
+            from app.models import File
+
+            file_record = db.query(File).filter(File.id == file_id).first()
+            url = (
+                _loft_url_from_file(
+                    file_record.drive,
+                    file_record.file_path,
+                    file_record.mime_type,
+                )
+                if file_record
+                else None
+            )
+            if url is None:
+                raise HTTPException(status_code=404, detail="Metadata not found")
     finally:
         db.close()
 

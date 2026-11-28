@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import type { LoftEmbedProps } from "@/components/loft/types";
+import GenericLinkCard from "@/components/loft/GenericLinkCard";
 
 const VIMEO_HOSTS = new Set([
   "vimeo.com",
@@ -28,10 +29,10 @@ export function extractVimeoId(url: string): string | null {
   return null;
 }
 
-export default function VimeoEmbed({ url, initialTime }: LoftEmbedProps) {
+export default function VimeoEmbed({ fileId, url, initialTime }: LoftEmbedProps) {
   const videoId = useMemo(() => extractVimeoId(url), [url]);
 
-  if (!videoId) return null;
+  if (!videoId) return <GenericLinkCard fileId={fileId} url={url} />;
 
   // Vimeo's player honours `#t=<seconds>s` in the iframe URL on initial
   // load. We don't currently embed @vimeo/player for runtime seeks,

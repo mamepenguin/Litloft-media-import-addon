@@ -14,6 +14,7 @@ import { useShortcuts } from "@/hooks/useShortcuts";
 import { OVERLAY_PRIORITY } from "@/lib/shortcuts";
 
 import { createLoft, resolveSubscriptionUrl, type SubscriptionKind } from "./api";
+import { linkFailureMessage } from "./lib/linkFailure";
 import { isSubscriptionKind } from "./lib/subscriptionKind";
 import { readStoredSttMode } from "./lib/sttMode";
 
@@ -32,6 +33,7 @@ interface Props {
  */
 export default function ImportFromUrlDialog({ drive, path, onCancel, onImported }: Props) {
   const t = useTranslations("mediaImport.importFromUrl");
+  const ti = useTranslations("mediaImport.importError");
   const tc = useTranslations("common");
   const host = useDialogPortalTarget();
   const [url, setUrl] = useState("");
@@ -81,7 +83,7 @@ export default function ImportFromUrlDialog({ drive, path, onCancel, onImported 
       await createLoft(trimmed, drive, folder, readStoredSttMode());
       onImported();
     } catch (e) {
-      setError(e instanceof Error && e.message ? e.message : t("errorFallback"));
+      setError(linkFailureMessage(e, ti, t("errorFallback")));
     } finally {
       setSubmitting(false);
     }
