@@ -67,6 +67,9 @@ export function loadYouTubeIframeApi(): Promise<YTNamespace> {
     // headers, and cookies are scoped to youtube.com so there's no
     // credential leak from loading as a plain <script>.
     script.onerror = () => {
+      // A tag left in place makes a later call's `existing` check attach to a
+      // load that already failed instead of starting a new one.
+      script.remove();
       ytApiPromise = null;
       reject(new Error("Failed to load YouTube IFrame API"));
     };

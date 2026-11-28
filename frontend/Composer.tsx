@@ -26,10 +26,12 @@ import {
   resolveSubscriptionUrl,
   syncSubscription,
   type DisplayMode,
+  type LoftCreateResponse,
   type SttMode,
   type SubscriptionKind,
 } from "./api";
 import DisplayModeField from "./DisplayModeField";
+import { linkFailureMessage } from "./lib/linkFailure";
 import {
   getLastFolder,
   rememberFolder,
@@ -101,6 +103,7 @@ export default function Composer({
   onCreated,
 }: Props) {
   const t = useTranslations("mediaImport");
+  const ti = useTranslations("mediaImport.importError");
   const [expanded, setExpanded] = useState(initialExpanded);
   const [url, setUrl] = useState("");
   const [kind, setKind] = useState<SubscriptionKind>("unknown");
@@ -192,7 +195,13 @@ export default function Composer({
         await syncSubscription(drive, sub.id, backfill);
       } else {
         window.localStorage.setItem(STT_MODE_STORAGE_KEY, sttMode);
-        const result = await createLoft(trimmed, drive, folder, sttMode);
+        let result: LoftCreateResponse;
+        try {
+          result = await createLoft(trimmed, drive, folder, sttMode);
+        } catch (e) {
+          setError(linkFailureMessage(e, ti, t("composer.errorFallback")));
+          return;
+        }
         const next: PendingItem = {
           url: trimmed,
           filename: result.filename,

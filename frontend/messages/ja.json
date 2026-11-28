@@ -1,6 +1,6 @@
 {
   "captionStatus": {
-    "noCaptions": "YouTubeに字幕がありません",
+    "noCaptions": "この動画には字幕がありません",
     "rateLimited": "字幕の取得を再試行します（一時的なエラー）",
     "permanent": "字幕を取得できません（動画が非公開・削除・地域制限の可能性）",
     "failed": "字幕の取得に失敗しました",
@@ -17,6 +17,10 @@
       "videoFeed": "購読の新着"
     },
     "loadingDrive": "ドライブを読み込み中...",
+    "importError": {
+      "unsupportedUrl": "このURLからは動画を読み取れません。対応していないサイトか、動画のないページです",
+      "unavailable": "この動画は取り込めません。非公開・削除済み・地域制限の可能性があります"
+    },
     "channelView": {
       "empty": "このドライブにはこのチャンネルの動画がありません。"
     },
