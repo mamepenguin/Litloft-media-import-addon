@@ -13,7 +13,7 @@ import type { LoftMetadata } from "@/addons/media_import/api";
 
 const messages = {
   captionStatus: {
-    noCaptions: "YouTube has no captions for this video",
+    noCaptions: "This video has no captions",
     rateLimited: "Retrying caption download (temporary error)",
     permanent:
       "Captions unavailable (video may be private, removed, or region-locked)",
@@ -67,11 +67,15 @@ describe("CaptionStatusBadge", () => {
     expect(getByText("Caption status not yet checked")).toBeTruthy();
   });
 
-  it("shows the no-captions label when YouTube has no captions", () => {
-    const { getByText } = renderBadge(
-      makeMetadata({ has_captions: false }),
+  it.each([
+    ["youtube", "https://www.youtube.com/watch?v=abc"],
+    ["vimeo", "https://vimeo.com/123456"],
+  ])("SPEC-ADDON-190 I5: the no-captions label for a %s video names no provider", (provider, url) => {
+    const { container, getByText } = renderBadge(
+      makeMetadata({ provider, url, has_captions: false }),
     );
-    expect(getByText("YouTube has no captions for this video")).toBeTruthy();
+    expect(getByText("This video has no captions")).toBeTruthy();
+    expect(container.textContent).not.toMatch(/youtube|vimeo/i);
   });
 
   it("shows the permanent-failure label when caption_error_kind is 'permanent'", () => {

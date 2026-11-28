@@ -274,7 +274,7 @@ describe("Composer submit dispatch", () => {
     });
   });
 
-  it("renders error message when createLoft throws", async () => {
+  it("SPEC-ADDON-188 I2b: renders the fallback when createLoft throws, and a subscription's own text when it fails", async () => {
     mockResolveUrl.mockResolvedValue({ kind: "unknown", provider: null, ref: null });
     mockCreateLoft.mockRejectedValue(new Error("Boom"));
 
@@ -290,7 +290,23 @@ describe("Composer submit dispatch", () => {
     fireEvent.click(screen.getByTestId("composer-submit"));
 
     await waitFor(() => {
-      expect(screen.getByTestId("composer-error")).toHaveTextContent("Boom");
+      expect(screen.getByTestId("composer-error")).toHaveTextContent("Failed to import");
+    });
+    expect(screen.getByTestId("composer-error")).not.toHaveTextContent("Boom");
+
+    mockResolveUrl.mockResolvedValue({ kind: "channel", provider: "youtube", ref: "UCabc" });
+    mockCreateSubscription.mockRejectedValue(new Error("Subscription server text"));
+    fireEvent.change(
+      screen.getByPlaceholderText("https://..."),
+      { target: { value: "https://www.youtube.com/channel/UCabc" } },
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId("composer-submit")).toHaveTextContent("Subscribe");
+    });
+    fireEvent.click(screen.getByTestId("composer-submit"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("composer-error")).toHaveTextContent("Subscription server text");
     });
   });
 });
