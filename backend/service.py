@@ -948,8 +948,10 @@ class LoftManager:
                         "AND (h.caption_error_kind IS NULL "
                         "     OR h.caption_error_kind != 'permanent') "
                         "AND f.deleted_at IS NULL "
-                        "AND f.missing_since IS NULL"
-                    )
+                        "AND f.missing_since IS NULL "
+                        "AND f.mime_type = :mime"
+                    ),
+                    {"mime": _LOFT_MIME},
                 ).fetchall()
             finally:
                 db.close()
@@ -968,6 +970,19 @@ class LoftManager:
                 logger.warning("Failed to queue caption retry for %s", file_id)
 
     def _fetch_and_update(self, item: LoftFetchItem) -> None:
+        db = SessionLocal()
+        try:
+            still_a_loft = (
+                db.query(File.id)
+                .filter(File.id == item.file_id, File.mime_type == _LOFT_MIME)
+                .first()
+                is not None
+            )
+        finally:
+            db.close()
+        if not still_a_loft:
+            logger.info("loft fetch skipped, not a .loft (file %s)", item.file_id)
+            return
         try:
             meta = _fetch_metadata_sync(item.url)
         except Exception as exc:
@@ -982,6 +997,11 @@ class LoftManager:
             file_record = db.query(File).filter(File.id == item.file_id).first()
             if not file_record:
                 logger.warning("File not found for loft fetch: %s", item.file_id)
+                return
+            if file_record.mime_type != _LOFT_MIME:
+                logger.info(
+                    "loft fetch skipped, not a .loft (file %s)", item.file_id
+                )
                 return
 
             if meta.get("duration"):

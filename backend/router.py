@@ -282,6 +282,12 @@ async def refresh_loft(
     db = SessionLocal()
     try:
         _require_active_file_in_drive(db, file_id, scoped)
+        mime_type = db.execute(
+            text("SELECT mime_type FROM files WHERE id = :file_id"),
+            {"file_id": file_id},
+        ).scalar_one()
+        if mime_type != _LOFT_MIME:
+            raise HTTPException(status_code=404, detail="File not found")
         row = db.execute(
             text("SELECT url FROM loft_metadata WHERE file_id = :file_id"),
             {"file_id": file_id},
@@ -825,7 +831,7 @@ async def list_subscription_videos(
 
 
 def _title_from_filename(filename: str | None) -> str | None:
-    """Strip the trailing ``.loft`` extension for display.
+    """The filename without its last extension, for display.
 
     .loft files use ``<sanitized_title>.loft`` as canonical naming
     (see service.py allocator). The bare title is more readable than
@@ -833,9 +839,7 @@ def _title_from_filename(filename: str | None) -> str | None:
     """
     if not filename:
         return None
-    if filename.endswith(".loft"):
-        return filename[: -len(".loft")]
-    return filename
+    return filename.rsplit(".", 1)[0]
 
 
 @router.post(
