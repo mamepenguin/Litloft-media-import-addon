@@ -24,8 +24,9 @@ interface Props {
  * from without scattering that information across two lists.
  */
 
-function trimLoftExt(name: string): string {
-  return name.endsWith(".loft") ? name.slice(0, -".loft".length) : name;
+function trimExtension(name: string): string {
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 ? name.slice(0, dot) : name;
 }
 
 function formatDayHeading(
@@ -166,7 +167,7 @@ export default function ActivityFeed({ drive, refreshKey }: Props) {
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-medium text-text-primary">
-                      {trimLoftExt(e.filename)}
+                      {trimExtension(e.filename)}
                     </div>
                     <div className="mt-0.5 flex items-center gap-1.5 truncate text-xs text-text-muted">
                       <SourceBadge entry={e} />
