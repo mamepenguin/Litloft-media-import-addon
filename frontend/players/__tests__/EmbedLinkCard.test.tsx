@@ -176,4 +176,16 @@ describe("SPEC-ADDON-191 a YouTube IFrame API that failed to load", () => {
     expect(screen.getByRole("link", { name: "Watch on YouTube" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: URL_B })).not.toBeInTheDocument();
   });
+
+  it("SPEC-ADDON-191 §3 I6: returning to a URL whose load failed earlier tries the load again", async () => {
+    const { rerender } = render(<YouTubeEmbed fileId="f1" url={URL_A} />);
+    await waitFor(() => linkCardFor(URL_A));
+
+    loader.load = () => Promise.resolve(workingApi);
+    rerender(<YouTubeEmbed fileId="f1" url={URL_B} />);
+    await waitFor(() => expect(loader.constructed).toHaveLength(1));
+
+    rerender(<YouTubeEmbed fileId="f1" url={URL_A} />);
+    await waitFor(() => expect(loader.constructed).toHaveLength(2));
+  });
 });

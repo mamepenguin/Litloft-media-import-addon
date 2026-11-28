@@ -125,6 +125,9 @@ export default function YouTubeEmbed({
   // anything but a new URL — a player-UI switch, a new callback identity —
   // must not retry, or a load that failed once could still become a player.
   const failedVideoIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (failedVideoIdRef.current !== videoId) failedVideoIdRef.current = null;
+  }, [videoId]);
   // The video's owner disallows embedding (YT error 101/150). No
   // playerVars combination recovers this — it's rejected at the iframe
   // level — so once set, the fallback link-out replaces the frame
