@@ -100,6 +100,32 @@ describe("ActivityFeed", () => {
     });
   });
 
+  it("shows a converted file's filename without its extension", async () => {
+    mockListActivity.mockResolvedValue([
+      entry({ file_id: "converted1", filename: "Title.mp4" }),
+      entry({ file_id: "converted2", filename: "v1.2 talk.mp4" }),
+    ]);
+
+    render(<ActivityFeed drive="d" refreshKey={0} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Title")).toBeInTheDocument();
+      expect(screen.getByText("v1.2 talk")).toBeInTheDocument();
+    });
+  });
+
+  it("shows a .loft entry's filename as before", async () => {
+    mockListActivity.mockResolvedValue([
+      entry({ file_id: "loft1", filename: "v1.2 talk.loft" }),
+    ]);
+
+    render(<ActivityFeed drive="d" refreshKey={0} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("v1.2 talk")).toBeInTheDocument();
+    });
+  });
+
   it("refetches when refreshKey changes", async () => {
     mockListActivity.mockResolvedValue([]);
     const { rerender } = render(
