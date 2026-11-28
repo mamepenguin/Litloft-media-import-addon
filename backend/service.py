@@ -258,6 +258,28 @@ def _metadata_error_is_unavailable(exc: Exception) -> bool:
     return isinstance(_classify_fetch_error(exc), ItemUnavailable)
 
 
+class LoftTitleFetchError(Exception):
+    """``_extract_title_sync`` failed; ``__cause__`` is the exception it raised."""
+
+
+def _title_fetch_failure_code(exc: Exception) -> str | None:
+    """The refusal code for a failed title fetch, or None when unclassified."""
+    # Deferred: the YouTube provider imports this module at module level.
+    from yt_dlp.utils import DownloadError, UnsupportedError
+
+    from .subscription.providers.youtube import _classify_fetch_error
+    from .subscription.registry import ItemUnavailable
+
+    # Unsupported is checked before unavailable: yt-dlp's wrapper message for a
+    # page without a video can also carry "Video unavailable".
+    error_info = exc.exc_info if isinstance(exc, DownloadError) else None
+    if error_info and isinstance(error_info[1], UnsupportedError):
+        return "unsupported_url"
+    if isinstance(_classify_fetch_error(exc), ItemUnavailable):
+        return "unavailable"
+    return None
+
+
 def _mark_caption_error_permanent(file_id: str) -> None:
     db = SessionLocal()
     try:
@@ -730,7 +752,10 @@ class LoftManager:
 
         Runs in executor (blocking). Title is fetched synchronously.
         """
-        title = _extract_title_sync(url)
+        try:
+            title = _extract_title_sync(url)
+        except Exception as exc:
+            raise LoftTitleFetchError(url) from exc
         safe_title = _sanitize_filename(title)
         provider = detect_provider(url)
 
